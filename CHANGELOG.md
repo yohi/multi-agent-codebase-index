@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.29.1](https://github.com/yohi/nexus/compare/v1.29.0...v1.29.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* 本番依存の推移的パッケージをoverridesで安全なバージョンに固定 ([ac1238d](https://github.com/yohi/nexus/commit/ac1238dda8a9df45915e4de64d7d4c73684e962c))
+* 配布用plugin.jsonのversionをpackage.jsonと同期させる ([7a359c4](https://github.com/yohi/nexus/commit/7a359c4ae66ece88967286281f43c6658e6833d2))
+* 配布用plugin.jsonのversionをpackage.jsonと同期させる ([1f46a3b](https://github.com/yohi/nexus/commit/1f46a3b0f96b20b7ba0e3a499a2f8cffc3f43714))
+
 ## [1.29.0](https://github.com/yohi/nexus/compare/v1.28.6...v1.29.0) (2026-07-21)
 
 
