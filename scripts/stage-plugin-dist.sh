@@ -43,6 +43,13 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const src = JSON.parse(readFileSync('.claude-plugin/plugin.json', 'utf8'));
 delete src.userConfig;
 
+// package.json の version(= release-please が管理するリリース版番号)を
+// plugin.json に同期する。これを行わないと、Claude Code 側のプラグイン
+// キャッシュキー(= plugin.json の version)がリリースを重ねても変化せず、
+// 古いキャッシュ(未ビルド/ビルド失敗状態を含む)が再利用され続けてしまう。
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+src.version = pkg.version;
+
 const env = {
   NEXUS_PACKAGE_MODE: '1',
   NEXUS_EMBEDDING_PROVIDER: 'bedrock',
