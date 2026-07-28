@@ -12,7 +12,7 @@
 
 - TypeScript strict types. `npm run lint` fails on `any` and bare `@ts-ignore`; never add `@ts-expect-error`.
 - Do not commit machine-specific absolute paths, credentials, tokens, or generated local state.
-- Do not create new project-level agent configuration files or directories; edit existing canonical files only.
+- Do not create new project-level agent configuration files or directories; edit existing canonical files only. (Exception: `.agents/skills/` is the canonical location for agent skills introduced by this plan.)
 - Preserve local-first behavior; no external data transmission unless explicitly asked.
 - Run `npm run lint` before claiming TypeScript changes are complete.
 - Prefer running install, lint, build, and tests inside the devcontainer if `.devcontainer/` is available; do not run git commands inside the devcontainer.
@@ -86,6 +86,8 @@ Keep this file small; prefer authoritative docs over duplicating details here.
 ## Verification
 
 - Run the narrowest relevant Vitest test first, then `npm run lint` for TypeScript changes.
+
+- For architecture, setup, configuration, distribution, and observability details, see [SPEC.md](SPEC.md), [docs/configuration.md](docs/configuration.md), [docs/setup.md](docs/setup.md), [docs/distribution.md](docs/distribution.md), and [docs/observability/README.md](docs/observability/README.md).
 ```
 
 - [ ] **Step 3: Verify line count**
