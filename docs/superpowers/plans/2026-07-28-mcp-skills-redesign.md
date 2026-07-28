@@ -73,7 +73,7 @@ Keep this file small; prefer authoritative docs over duplicating details here.
 
 - When installing or configuring, ask the user to choose **Source Build** or **Package Usage** before running setup commands. Never ask for secrets or GitHub tokens in chat.
 - Do not commit machine-specific absolute paths, credentials, tokens, or generated local state.
-- Do not create new project-level agent configuration files or directories; edit existing canonical files only.
+- Do not create new project-level agent configuration files or directories; edit existing canonical files only. (Exception: `.agents/skills/` is the canonical location for agent skills introduced by this plan.)
 
 ## Tool Selection Triggers
 
