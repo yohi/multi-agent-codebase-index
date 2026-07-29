@@ -15,7 +15,7 @@ Task 5 では、コード探索のトリガーに応じて `code-search.md` と�
 3. 曖昧な機能探索なので `hybrid_search` で `reindex` の実装候補を検索する。
 4. 上位候補に対して `get_context` を `startLine` と `endLine` 付きで呼び出し、結果行の周辺を取得する。
 
-依頼に対する主要経路は、`code-search.md` → `hybrid_search` → `get_context` である。
+依頼に対する主要経路は、`code-search.md` → `index_status` → `hybrid_search` → `get_context` である。
 
 ### Success criteria: Vague feature search
 
@@ -37,8 +37,8 @@ Task 5 では、コード探索のトリガーに応じて `code-search.md` と�
 3. 正確なシンボル追跡なので `grep_search` で `executeHybridSearch` を検索する。
 4. 呼び出し候補に対して `get_context` を `startLine` と `endLine` 付きで呼び出し、各 call site の周辺を取得する。
 
-依頼に対する主要経路は、`code-search.md` → `grep_search`
-（`executeHybridSearch`）→ `get_context` である。
+依頼に対する主要経路は、`code-search.md` → `index_status` →
+`grep_search`（`executeHybridSearch`）→ `get_context` である。
 
 ### Success criteria: Exact symbol trace
 
@@ -63,6 +63,8 @@ Task 5 では、コード探索のトリガーに応じて `code-search.md` と�
 4. `.codegraph/` が存在しない場合は、Nexus の検索前提として
    `index_status` を呼び出し、`hybrid_search` で `search/` ディレクトリに
    関係する候補を探索する。
+5. 候補取得後、`get_context` を `startLine` と `endLine` 付きで呼び出し、
+   依存関係を構成する根拠となるコード周辺を取得する。
 
 ### Success criteria: Structural call-tree request
 
