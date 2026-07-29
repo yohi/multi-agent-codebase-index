@@ -127,7 +127,7 @@ export const createNexusServer = (
   server.registerTool(
     "semantic_search",
     {
-      description: "Search the codebase using natural language (embeddings)",
+      description: "Vector-only semantic search; prefer hybrid_search for most tasks.",
       inputSchema: {
         query: z.string(),
         topK: z.number().int().positive().optional(),
@@ -160,7 +160,7 @@ export const createNexusServer = (
   server.registerTool(
     "grep_search",
     {
-      description: "ripgrep-based text search",
+      description: "Exact string search for symbols, errors, or code fragments.",
       inputSchema: {
         pattern: z.string(),
         filePattern: z.string().optional(),
@@ -194,7 +194,7 @@ export const createNexusServer = (
   server.registerTool(
     "hybrid_search",
     {
-      description: "Combined semantic and grep search",
+      description: "Semantic + grep hybrid search for vague or conceptual queries.",
       inputSchema: {
         query: z.string(),
         topK: z.number().int().positive().optional(),
@@ -228,7 +228,7 @@ export const createNexusServer = (
   server.registerTool(
     "get_context",
     {
-      description: "Retrieve file context",
+      description: "Return a specific line range from a file; prefer partial reads.",
       inputSchema: {
         filePath: z.string(),
         symbolName: z.string().optional(),
@@ -260,7 +260,7 @@ export const createNexusServer = (
   server.registerTool(
     "index_status",
     {
-      description: "Return index state and statistics",
+      description: "Check indexing progress and statistics before searching.",
       inputSchema: {},
     },
     withToolMetrics(
@@ -287,7 +287,7 @@ export const createNexusServer = (
   server.registerTool(
     "reindex",
     {
-      description: "Manually trigger reindexing",
+      description: "Manually rebuild the local search index.",
       inputSchema: {
         fullRebuild: z.boolean().optional(),
       },
