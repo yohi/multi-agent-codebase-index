@@ -46,23 +46,36 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 ### 1. WHAT & WHY (Project Overview)
 - **Purpose**: Nexus is a local-first code indexing and search platform for AI agents, providing hybrid semantic search, ripgrep, and AST-based context parsing.
 
-### 2. Tool Usage Rules (Playbook)
-- **Index Status**: Run `index_status` before searching. If `pipelineProgress.status === 'running'`, search results may be incomplete.
+### 2. Tool Selection Triggers
+- **Load the code-search skill first**: For any code investigation or design exploration, load the project-local `.agents/skills/code-search.md` before searching. It defines the standard pipeline and One-Call / Deferred Loading patterns.
+- **Structural / call-tree tracing**: If the repository has a `.codegraph/` directory, prefer `codegraph_explore` for dependency and call-tree questions; otherwise use Nexus search tools.
+- **Vague or conceptual search**: Use `hybrid_search` (combines vector & ripgrep via RRF).
+- **Exact symbol or error-string search**: Use `grep_search`.
+- **Minimal file context retrieval**: Use `get_context` with explicit `startLine` and `endLine`.
+
+### 3. One-Call & Deferred Loading Patterns
+- **One-Call pattern**: After `hybrid_search` or `grep_search` returns candidates, call `get_context` for the top 1-3 candidates before answering. The first response should contain an actionable, evidence-based summary with file paths and line ranges, not just a list of hits.
+- **Deferred Loading**: Return a summary plus file/line references first. Expand the explanation or fetch additional ranges only when the user asks for details or the initial snippets are insufficient. Never load an entire file through `get_context` merely for background.
+
+### 4. Tool Usage Rules (Playbook)
+- **Index Status**: Run `index_status` before any Nexus search (`hybrid_search`, `grep_search`, `semantic_search`). CodeGraph exploration does not depend on the Nexus index, so `index_status` is not required before `codegraph_explore`.
 - **Search Strategy**:
   - Use `hybrid_search` for semantic queries, vague feature exploration, or architectural questions (combines vector & ripgrep via RRF).
   - Use `grep_search` to pinpoint exact symbols, class/function names, or error strings.
+  - If the repository has a `.codegraph/` directory, use `codegraph_explore` for structural or call-tree tracing.
 - **Context Budgeting**:
-  - When calling `get_context`, **DO NOT** read the entire file. Always specify `startLine` and `endLine` parameters to retrieve the minimal relevant snippet to conserve context tokens.
+  - When calling `get_context`, **prefer** partial reads: specify `startLine` and `endLine` to retrieve the minimal relevant snippet whenever you know the range. If you need a complete analysis of a file, omitting the range to read the entire file is acceptable.
   - If you switch branches or make massive code changes, manually call `reindex` to refresh the local LanceDB store.
 
-### 3. Project-Specific Context
+### 5. Project-Specific Context
 - **Local Documentation**: In repositories where Nexus is active, refer to the project-local `SPEC.md` for architecture details and `AGENTS.md` for specific development constraints, if they exist.
+- **Skill Layer**: For code-search tasks, the canonical skill file is `.agents/skills/code-search.md`. It contains the standard pipeline (task classification → choose index → get context → act), One-Call pattern, and Deferred Loading guidance.
 ````
 
 <details>
 <summary><h3>FOR AGENTS (AIエージェント向け手順)</h3></summary>
 
-あなたがターミナル操作可能なAIエージェントであるなら、**まず [AGENTS.md](AGENTS.md) を読み込み、そこに記載された「MANDATORY PROTOCOL」に即座に従ってください。** 
+あなたがターミナル操作可能なAIエージェントであるなら、**まず [AGENTS.md](AGENTS.md) を読み込み、そこに記載された「[Mandatory constraints](AGENTS.md#mandatory-constraints)」に即座に従ってください。**
 
 **重要要件**:
 - **ステップ0**: 独断で進めず、必ずお手持ちの**ユーザー対話ツール（`ask_user`, `input`, `confirm` 等）**を使用して、ユーザーに以下のいずれのインストール方式を希望するか確認してください。
@@ -75,11 +88,15 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 
 #### 💡 運用ガイドライン (Playbook)
 
-- **インデックス状態の確認**: 作業開始前に必ず `index_status` を呼び出し、インデックス構築が完了しているか（`pipelineProgress.status === 'idle'`）を確認してください。
+- **インデックス状態の確認**: Nexus の検索（`hybrid_search`、`grep_search`、`semantic_search`）を実行する前に `index_status` を呼び出し、インデックス構築が完了しているか（`pipelineProgress.status === 'idle'`）を確認してください。CodeGraph のみを使う構造探索では不要です。
+- **スキルのロード**: コード調査や設計把握のタスクでは、検索実行前にプロジェクトローカルの `.agents/skills/code-search.md` を読み込んでください。そこに標準パイプライン、One-Call パターン、Deferred Loading の手順が定義されています。
+- **構造・コールツリーの追跡**: リポジトリに `.codegraph/` ディレクトリが存在する場合は、構造追跡に `codegraph_explore` を優先してください。CodeGraph が存在しない場合は、`index_status` を確認してから Nexus の検索ツールでカバーします。
 - **検索の使い分け**:
   - **曖昧な探索・関連箇所の特定**: `hybrid_search` を最優先で使用してください。セマンティック検索と ripgrep が融合され、最適な結果が得られます。
   - **特定のシンボルやコード断片の検索**: `grep_search` を使用してください。特定のクラス名、関数定義、エラーメッセージなどをピンポイントで検出できます。
-- **コンテキスト取得**: `get_context` でファイル全体を読み込むとLLMのコンテキストウィンドウを圧迫します。極力、必要な行範囲（`startLine` 〜 `endLine`）を絞り込んで部分的に取得してください。
+  - **構造・コールツリーの追跡**: `.codegraph/` が存在する場合は `codegraph_explore` を優先してください。
+- **One-Call パターン**: `hybrid_search` や `grep_search` の結果を返す前に、上位 1〜3 件の候補に対して `get_context` を呼び出し、行範囲付きの根拠をまとめてください。最初の回答は検索ヒット一覧だけでなく、ファイルパスと行番号を含む実用的なまとめであるべきです。
+- **Deferred Loading**: 最初はサマリーとファイル/行番号のみを返し、ユーザーが詳細を求めた場合や初回スニペットで不足する場合だけ追加の範囲を取得してください。背景説明だけを目的に `get_context` でファイル全体を取得しないでください。
 - **インデックスの鮮度**: 大規模なファイル変更や `git checkout` によるブランチ切り替えの後は、`reindex` を呼び出してインデックスを手動で更新することを強く推奨します。
 
 設定が必要な場合は、プロジェクトルートに `.nexus.json` を作成してください。

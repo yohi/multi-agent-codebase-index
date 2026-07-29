@@ -6,6 +6,7 @@ Load this skill before any code investigation or design exploration. Trigger phr
 
 - "Where is this implemented?", "find the reindex logic", or "locate the relevant code".
 - "Who calls `<symbol>`?", "show the call sites", or "trace this symbol".
+- "〜を調べて", "〜の実装を探して", or "〜の影響範囲を知りたい".
 - "How does this feature work?", architecture questions, and dependency exploration.
 - "Search the codebase", "find an example", or any request to inspect implementation details.
 
@@ -17,6 +18,9 @@ Use this order for every code-search task:
 
 **task classification → choose index → get context → act**
 
+This is an agent procedure, not a Nexus MCP prerequisite. Nexus accepts its tools
+in any order, so clients that call tools directly are not blocked by this sequence.
+
 1. **Task classification**
    - Vague, conceptual, or architectural request: identify concepts and likely related areas.
    - Exact symbol, error, string, or code fragment: preserve the exact search term.
@@ -24,6 +28,7 @@ Use this order for every code-search task:
 2. **Choose index**
    - Call Nexus `index_status` before any Nexus search. If indexing is running, treat results as potentially incomplete.
    - Use `codegraph_explore` for structural tracing only when the project has a `.codegraph/` directory.
+   - Without a CodeGraph index, trace structural requests with `index_status`, then Nexus `hybrid_search` and `get_context`.
    - Use Nexus `hybrid_search` for vague or conceptual exploration.
    - Use Nexus `grep_search` for exact symbols, errors, and strings.
    - If a branch switch or large file change may have made the index stale, call `reindex` before relying on search results.
@@ -36,7 +41,12 @@ Use this order for every code-search task:
 
 ## One-Call pattern
 
-After a search returns candidates, call `get_context` for the top candidates before returning search results. Select the most relevant one to three candidates, request targeted line ranges, and use those snippets to validate relevance. The first response should contain an actionable answer or a grounded summary, not only a list of search hits.
+After a search returns candidates, call `get_context` for the top candidates before
+returning search results. Select the most relevant one to three candidates, request
+targeted line ranges, and use those snippets to validate relevance. The first
+response should contain an actionable answer or a grounded summary, not only a list
+of search hits. This pattern may use multiple MCP calls, but produces one
+evidence-based agent response.
 
 For a vague query, the normal sequence is:
 
@@ -65,3 +75,57 @@ Nexus is a local-first code indexing platform that combines semantic search, rip
 - **Project context:** When Nexus is active, consult `SPEC.md` for architecture details and `AGENTS.md` for project constraints when those details affect the task.
 
 All exploration should remain local-first. Do not introduce external data transmission as part of code search unless the user explicitly requests it.
+
+## Verification examples
+
+Use the following scenarios to confirm that the standard pipeline, One-Call pattern, and tool triggers are applied correctly.
+
+### 1. Vague feature search
+
+**User input:** "Where is the reindex logic implemented?"
+
+**Expected tool sequence:**
+1. Load this skill (`code-search.md`).
+2. Call `index_status` to confirm the index is ready.
+3. Call `hybrid_search` with a query like `reindex logic`.
+4. Call `get_context` for the top 1–3 candidates with explicit `startLine` and `endLine`.
+
+**Success criteria:**
+- `hybrid_search` is chosen instead of `grep_search`.
+- The final answer includes the implementation file path(s) and the line ranges retrieved via `get_context`.
+- The answer explains the reindex logic using the retrieved snippets, not just a list of search hits.
+
+### 2. Exact symbol trace
+
+**User input:** "Who calls `executeHybridSearch`?"
+
+**Expected tool sequence:**
+1. Load this skill (`code-search.md`).
+2. Call `index_status` to confirm the index is ready.
+3. Call `grep_search` for the exact symbol `executeHybridSearch`.
+4. Call `get_context` for each call site with explicit line ranges.
+
+**Success criteria:**
+- `grep_search` uses the exact symbol name as the query.
+- The final answer lists every call site with file path and line number.
+- The answer distinguishes callers from the definition itself.
+
+### 3. Structural call-tree request
+
+**User input:** "Show me the dependency graph of the search module."
+
+**Expected tool sequence (if `.codegraph/` exists):**
+1. Load this skill (`code-search.md`).
+2. Call `codegraph_explore` for the search module structure.
+3. Use `get_context` to retrieve key line ranges that support the reported graph.
+
+**Expected tool sequence (if `.codegraph/` does not exist):**
+1. Load this skill (`code-search.md`).
+2. Call `index_status` to confirm the index is ready.
+3. Call `hybrid_search` to explore files under the `search/` directory or related symbols.
+4. Call `get_context` for relevant results.
+
+**Success criteria:**
+- The tool choice branches on the presence of `.codegraph/`.
+- `codegraph_explore` is never called when `.codegraph/` is absent.
+- The final answer includes module dependencies and the evidence paths.

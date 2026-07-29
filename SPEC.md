@@ -61,7 +61,7 @@ stdio 接続のみに対応した MCP クライアント（OpenCode など）か
 
 Bridge はデフォルトで自動的にプロジェクト専用のループバック HTTP サーバーを発見または起動します。既存の HTTP サーバーが `endpoint.json` 記述子で健全性を示していればそれを再利用し、なければ `nexus --port 0 --managed` を detached な子プロセスとして起動します。auto-discovery と auto-launch の descriptor 検証は loopback 専用です。明示 URL モード（`--url` 引数または `NEXUS_BRIDGE_URL` 環境変数）はこの制限の例外で、外部サービスへ接続できます。このモードでは自動起動と descriptor 検証を行いません。
 
-自動管理プロセスの descriptor は `<storage.rootDir>/endpoint.json` に一時ファイルへの書き込み後 `rename` する原子的操作で永続化され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。managed server の descriptor 検証と health 検証は loopback 専用で、コネクターは、descriptor の `projectRoot` が要求元と一致し、`url` が `127.0.0.1`（ループバック）を指し、記録された `pid` が生存し、`GET /health` が同一 `instanceId`/`projectRoot` を返す、という条件をすべて満たした場合のみ健全と判定します。いずれかを満たさない descriptor は削除され、再起動候補として扱われます。起動が競合した場合、`project-start-<hash>` ロック（§7.3）を取得できなかった側は新規プロセスを起動せず、既存の健全なプロセスを停止・削除することもありません。取得できなかった側は、ロック獲得側が公開する descriptor をポーリングで待ち受け、健全と判定できた時点で同じ URL に接続します。本機能はループバックのみを対象とし、ネットワーク公開・外部ホストからの接続・systemd 等の外部プロセス管理には依存しません。明示 URL モードではこの descriptor/health 検証を行いません。
+自動管理プロセスの descriptor は `<storage.rootDir>/endpoint.json` に一時ファイルへの書き込み後 `rename` する原子的操作で永続化され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。managed server の descriptor 検証と health 検証は loopback 専用で、コネクターは、descriptor の `projectRoot` が要求元と一致し、`url` が `127.0.0.1`（ループバック）を指し、記録された `pid` が生存し、`GET /health` が同一 `instanceId`/`projectRoot` を返す、という条件をすべて満たした場合のみ健全と判定します。いずれかを満たさない descriptor は削除され、再起動候補として扱われます。起動が競合した場合、`project-start-<hash>` ロック（§8.3）を取得できなかった側は新規プロセスを起動せず、既存の健全なプロセスを停止・削除することもありません。取得できなかった側は、ロック獲得側が公開する descriptor をポーリングで待ち受け、健全と判定できた時点で同じ URL に接続します。本機能はループバックのみを対象とし、ネットワーク公開・外部ホストからの接続・systemd 等の外部プロセス管理には依存しません。明示 URL モードではこの descriptor/health 検証を行いません。
 
 同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP サーバー/transport インスタンスを持ちますが、SQLite・LanceDB・File Watcher などのランタイムリソースは 1 つの managed HTTP サーバープロセスだけが所有し、全クライアントで共有します。
 
@@ -91,7 +91,7 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
 
 ### 3.4. Embedder
 
-- `Ollama` や `openai-compat` プラグインを利用し、抽出されたチャンクをベクトル化します。`bedrock` プラグインで AWS Bedrock Runtime を直接呼び出すこともできます（詳細は §9.1）。
+- `Ollama` や `openai-compat` プラグインを利用し、抽出されたチャンクをベクトル化します。`bedrock` プラグインで AWS Bedrock Runtime を直接呼び出すこともできます（詳細は §10.1）。
 - **Concurrency Control**: パイプラインの並行度とは独立して、プロバイダーレベルのセマフォ (`p-limit`) で同時リクエスト数を制限し、GPU VRAM の枯渇やタイムアウトを防ぎます。
 
 - **CPU 負荷抑制 (Ollama Thread Limit)**: Ollama プロバイダーは `/api/embed` リクエストに `options.num_thread` を含めます。デフォルト値は `2` であり、環境変数 `NEXUS_OLLAMA_NUM_THREAD` または `.nexus.json` の `embedding.ollamaNumThread` で変更できます。受付可能な範囲は整数 `1` から `16` までで、無効な値（`0`、負数、小数、`16` 超過など）は安全なデフォルト `2` にフォールバックします。OpenAI-compatible プロバイダーにはこの Ollama 専用オプションは送信されません。
@@ -131,7 +131,76 @@ LanceDB のフラグメンテーションを防ぐため、以下のタイミン
 - **Grep Search**: `ripgrep` の子プロセスを呼び出した高速なテキスト・正規表現検索。タイムアウト付きの `AbortController` でゾンビプロセスを防止。
 - **RRF (Reciprocal Rank Fusion)**: Semantic 検索と Grep 検索の結果を統合し、最適なランキング (`topK`) を返します。
 
-## 6. MCP ツール
+## 6. AI エージェント統合と探索パイプライン
+
+Nexus は単体の MCP 実行基盤として動作するだけでなく、プロジェクトローカルのエージェント指示書（`AGENTS.md`）およびスキルファイル（`.agents/skills/*.md`）と連携して、AI エージェントがツール選択に迷わず効率的にコード探索できるように設計されています。
+
+### 6.1. 3 層分離アーキテクチャ
+
+```text
+[ AI Agent ]
+    │
+    ├─ 1. Global Layer: AGENTS.md            ← 常駐、トリガー判定のみ（50行以内）
+    ├─ 2. Procedure Layer: .agents/skills/  ← 動的ロード、タスク別最適パイプライン
+    └─ 3. Execution Layer: Nexus MCP        ← 実行・検索・構造追跡（.codegraph/ 使用可）
+```
+
+| レイヤー | コンポーネント | 役割 |
+| --- | --- | --- |
+| グローバル層 | `AGENTS.md` | プロジェクト基本制約と、タスク種別ごとのツール・スキル選択トリガーを決定論的に記述 |
+| 知識・手順層 | `.agents/skills/*.md` | タスクごとの実行フロー標準化。Nexus と CodeGraph の役割分担、One-Call、Deferred Loading 手順を記述 |
+| 実行・接続層 | `Nexus MCP` + 任意の CodeGraph | コード検索・ベクトルアクセス・ファイルコンテキスト取得。CodeGraph は `.codegraph/` が存在する場合のみ活用 |
+
+手順層はエージェントが従う操作契約であり、Nexus MCP は各ツールを任意順序で受け付けます。ロードは利用するエージェントホストの Skill ローダーが担い、MCP サーバーは手順の順序を強制しません。
+
+### 6.2. 標準探索パイプライン
+
+`.agents/skills/code-search.md` は、以下の標準パイプラインを定義します。
+
+```text
+Step 1: タスク分類
+  → 抽象/概念調査？ 正確なシンボル追跡？ エラー原因特定？ 構造追跡？
+
+Step 2: 存在するインデックスを使い分ける
+  → .codegraph/ がある場合：codegraph_explore で構造・Call Tree を特定（Nexus の index_status は不要）
+  → 曖昧な検索：Nexus index_status を確認してから hybrid_search
+  → 正確なシンボル/エラー文字列：Nexus index_status を確認してから grep_search
+Step 3: ファイルコンテキスト取得
+  → Nexus get_context(startLine, endLine) で最小範囲を取得
+  → ファイル全体が必要な場合のみ全体取得
+
+Step 4: 修正・回答へ移行
+```
+
+### 6.3. One-Call 行動パターン
+
+`hybrid_search` や `grep_search` のトップ候補に対して、結果を返す前に `get_context` を呼び出し、行番号範囲を絞ってまとめて返します。検索とコンテキスト取得を別々の往復に分けないことで、ツール呼び出し往復数を削減します。
+
+本フェーズの One-Call は、エージェントが複数の MCP ツール呼び出しを完了して一度の根拠付き回答を返す行動パターンを指します。単一 MCP 呼び出しで検索結果とスニペットを返す API は将来の拡張対象とします。
+
+### 6.4. Deferred Loading
+
+大きなファイルや大量の検索結果を扱う場合は「概要 + 行番号 + 必要に応じた取得コマンド」を優先し、全文を一括展開しません。追加コンテキストは、初回のスニペットで不足する場合またはユーザーが詳細を求めた場合だけ取得します。
+
+### 6.5. CodeGraph 連携
+
+リポジトリに `.codegraph/` ディレクトリが存在する場合、構造・依存関係・コールツリーの追跡には `codegraph_explore` を優先します。存在しない場合は Nexus 単体（`hybrid_search` / `grep_search` + `get_context`）でカバーします。
+
+### 6.6. 今後の拡張（Future Work）
+
+本節で定義した探索パイプラインは、現在の MCP ツールセットを使ったエージェント側の手続きとして実装しています。今後、さらなるトークン削減と応答精度向上を目指し、以下の拡張を検討します。
+
+各 MCP ツールの JSON Schema `description` は、ツール選択を支援する簡潔な説明へ
+最適化済みです。各ツールの JSON Schema は MCP プロトコル統合テストで、inputSchema の存在と `properties` キー集合を固定検証します。
+- **`hybrid_search` へのスニペット付き応答オプション**: `includeSnippet` や `contextLines` などのパラメータを追加し、1 回のツール呼び出しで検索結果と前後のコードスニペットを同時に返せるようにする。
+- **`get_context` の Deferred Loading モード**: 長大なファイルを扱う際に、最初に「概要 + 行番号 + 必要に応じた取得コマンド案内」を返し、詳細な全文展開をユーザーまたは下位ツールの要求に委ねる動的読み込みモードを追加する。
+
+これらは MCP サーバー側の API 拡張に伴う破壊的変更を避けるため、別途計画・設計を行ってから実装します。
+
+探索パイプラインの適用が正しいことを確認するための具体例は、`.agents/skills/code-search.md` の「Verification examples」セクションに記載しています。曖昧な機能探索、正確なシンボル追跡、構造・コールツリー探索の 3 シナリオについて、ユーザー入力・期待ツール列・成功基準を定義しています。
+
+## 7. MCP ツール
+
 
 AI エージェントに公開される MCP ツールとそれぞれの設計役割・ユースケースは以下の通りです:
 
@@ -158,9 +227,9 @@ AI エージェントに公開される MCP ツールとそれぞれの設計役
 **Path Sanitization (セキュリティ)**:
 すべてのツールハンドラで入力パスに対する2段階検証 (論理パス・物理パスの検証および symlink 解決) を行い、プロジェクト外へのパストラバーサル攻撃を防御します。
 
-## 7. 耐障害性とエッジケース (Resilience)
+## 8. 耐障害性とエッジケース (Resilience)
 
-### 7.1. Dead Letter Queue (DLQ)
+### 8.1. Dead Letter Queue (DLQ)
 
 - Embedding のリトライが上限に達したイベントは DLQ に退避され、インデックスパイプラインの停止を防ぎます。
 - バックグラウンドのリカバリループが定期的にヘルスチェックを行い、プロバイダー復旧後に再処理 (Reprocess) を試みます。DLQ内のリカバリスイープ処理は排他制御されており、二重起動は防止されます。
@@ -168,13 +237,13 @@ AI エージェントに公開される MCP ツールとそれぞれの設計役
 - **TTLパージ**: リカバリスイープの実行開始時に、作成から一定時間（`ttlMs`、デフォルト24時間）が経過した期限切れエントリを自動的にクリーンアップします。
 - 古くなった (stale) イベント (キューイング後にファイルが更に変更された等) は、ハッシュ比較により自動的に破棄されます。
 
-### 7.2. Startup Reconciliation
+### 8.2. Startup Reconciliation
 
 - サーバー起動時に SQLite の Merkle ハッシュと実際のファイルシステムのハッシュを突き合わせます。
 - クラッシュ等によって生じた LanceDB と SQLite 間のデータ不整合 (Orphan, Missing, Stale) を検出し、自動的に修復・再インデックスを行います。
 - これにより、複雑な Write-Ahead Log (WAL) なしに結果整合性を保証します。
 
-### 7.3. Process Locking (プロセス間排他制御)
+### 8.3. Process Locking (プロセス間排他制御)
 
 #### Project-Level Lock (プロジェクト単位ロック)
 
@@ -190,11 +259,11 @@ AI エージェントに公開される MCP ツールとそれぞれの設計役
 - **Bounded Retry / Stale Policy**: グローバルロックは `proper-lockfile` のファイルベースロックを使用します。stale lock の検出タイムアウトは `60_000ms`、ロック獲得の retry 回数は `10` 回、retry 間隔は最低 `100ms`・最高 `1000ms` に制限されています。これにより、クラッシュしたプロセスの stale lock は自動回復しつつ、後続プロセスが無限待ちになることを防ぎます。
 - **Error Safety**: `embed()` 呼び出しは `try { ... } finally { lock.release() }` で囲まれており、成功・失敗・例外のいずれでもロック解放が試行されます。解放失敗は元のエラーを隠蔽しません。
 
-## 8. Observability (可視化)
+## 9. Observability (可視化)
 
 Nexus は、単一プロセスの内部状態だけでなく、複数プロジェクト・複数 Nexus プロセスを横断したアプリケーション層メトリクスを Prometheus / Grafana で監視できるように設計されています。
 
-### 8.1. Metrics Collector & HTTP Server
+### 9.1. Metrics Collector & HTTP Server
 
 - 各コアモジュール (EventQueue, IndexPipeline, DLQ) に `metricsHooks` を注入し、非同期でメトリクスを収集します。
 - MCP ツール、検索結果数、コンテキスト取得行数、Embedding provider 呼び出しも同じ `MetricsCollector` に集約されます。
@@ -205,7 +274,7 @@ Nexus は、単一プロセスの内部状態だけでなく、複数プロジ�
   - `GET /metrics/json`: `prom-client` の JSON 配列形式メトリクス
   - `GET /health`: メトリクスサーバーのヘルスチェック
 
-### 8.2. Application-level Metrics
+### 9.2. Application-level Metrics
 
 既存の Queue / Indexing / DLQ メトリクスに加え、AI エージェント利用状況と検索品質を把握するために以下のアプリケーション層メトリクスを公開します。
 
@@ -221,7 +290,7 @@ Nexus は、単一プロセスの内部状態だけでなく、複数プロジ�
 
 MCP ツールは `withToolMetrics` によりハンドラー外側で成否とレイテンシを計測します。検索結果数や `get_context` の取得行数などの固有メトリクスは、ハンドラー内で結果オブジェクトが確定した後に記録します。Embedding provider は Decorator (`InstrumentedEmbeddingProvider`) でラップされ、既存 provider 実装を変更せずに `embed()` の成功・失敗・処理時間・バッチサイズを記録します。
 
-### 8.3. Telemetry Aggregator
+### 9.3. Telemetry Aggregator
 
 `nexus dashboard` は TUI と同じプロセス内で Telemetry Aggregator を起動します。Aggregator は複数 Nexus プロセスを登録・監視し、Grafana / Prometheus 向けの単一 scrape endpoint を提供します。
 
@@ -247,7 +316,7 @@ Aggregator のエンドポイントは以下の通りです。
 
 `GET /metrics` は登録済みノードを並列に取得し、`Promise.allSettled` の fulfilled 結果だけを採用します。個別ノードの失敗はスキップされ、他ノードの結果は返却されます。全ノード取得に失敗した場合も Prometheus 互換の空テキストを HTTP 200 で返します。メトリクスは名前ごとにグループ化され、`values` は単純結合されます。各 Nexus プロセスが `project` / `pid` default label を付与するため、異なるノードの label set は一意であり、Histogram の `_bucket` / `_sum` / `_count` も算術加算せずそのまま再構築できます。
 
-### 8.4. Registration & Health Checking
+### 9.4. Registration & Health Checking
 
 通常モード（`packageMode=false`）では、各 Nexus プロセスはメトリクス HTTP サーバー起動後、`RegistrationClient` により Aggregator へ登録されます。
 
@@ -255,9 +324,9 @@ Aggregator のエンドポイントは以下の通りです。
 - 登録リクエストのタイムアウトは 1 秒です。
 - Aggregator 未起動、停止、ネットワーク遅延、タイムアウトは debug ログのみで扱われ、Nexus 本体の稼働を停止させません。
 - Aggregator は 15 秒間隔で登録ノードの `/health` を確認し、失敗または非 OK 応答のノードを即座に evict します。誤判定された場合も、次回 Heartbeat により最大 30 秒程度で再登録されます。
-- **Package Mode での登録スキップ**: `NEXUS_PACKAGE_MODE=1` で起動した場合、`registrationClient` は生成されず（`null`）、Aggregator への登録・Heartbeat は行われません。ローカルの metrics HTTP サーバーおよび `nexus dashboard`（TUI）はこのモードでも変わらず起動します（§9.1 参照）。
+- **Package Mode での登録スキップ**: `NEXUS_PACKAGE_MODE=1` で起動した場合、`registrationClient` は生成されず（`null`）、Aggregator への登録・Heartbeat は行われません。ローカルの metrics HTTP サーバーおよび `nexus dashboard`（TUI）はこのモードでも変わらず起動します（§10.1 参照）。
 
-### 8.5. TUI Dashboard, Standalone Aggregator & Grafana
+### 9.5. TUI Dashboard, Standalone Aggregator & Grafana
 
 - Dashboard は独立した npm workspace パッケージ (`@yohi/nexus-dashboard`) として実装されています。
 - `nexus dashboard` サブコマンドで起動し、React と ink を使用した Queue / Throughput / DLQ Health の TUI を提供します。
@@ -267,11 +336,11 @@ Aggregator のエンドポイントは以下の通りです。
 - Aggregator 起動時に `EADDRINUSE` が発生した場合は、既に別プロセスで Aggregator が起動済みとみなし、TUI クライアント（または集約プロセス）として継続、あるいはスキップします。
 - Grafana ダッシュボード定義は `docs/observability/grafana-dashboard.json`、セットアップ手順とメトリクスカタログは `docs/observability/README.md` にあります。
 
-## 9. パッケージ版としての配布 (Package Mode & Distribution)
+## 10. パッケージ版としての配布 (Package Mode & Distribution)
 
 Nexus は単一コードベース上で、開発者向けのオリジナル動作（`packageMode=false`、デフォルト）と、社内向けに統制されたパッケージ版プラグイン（`packageMode=true`）の両方を提供します。フォークやコード複製ではなく、設定駆動で差分を表現します。
 
-### 9.1. Package Mode (`NEXUS_PACKAGE_MODE`)
+### 10.1. Package Mode (`NEXUS_PACKAGE_MODE`)
 
 #### 実装上の注意
 
@@ -282,9 +351,9 @@ Nexus は単一コードベース上で、開発者向けのオリジナル動�
 - `Config.packageMode: boolean`（env `NEXUS_PACKAGE_MODE`、既定 `false`）。
 - `true` の場合、`src/server/factory.ts` の `assertPackageModeConstraints()` が `setupPluginRegistry()` の最初に呼ばれ、`embedding.provider !== "bedrock"` なら即座に fail-fast で例外を投げます（サーバー起動失敗）。
 - **ロック対象は provider のみ**です。`model` / `dimensions` / `region` はデプロイ時に運用者が変更できる可変値であり、ハードロックの対象外です。
-- メトリクス層には非干渉です。`MetricsCollector`・各プロセスの metrics HTTP サーバー・`nexus dashboard`（TUI）は `packageMode` の値に関わらず常に起動します。一方、Grafana/Prometheus 向けの Aggregator への自動登録（`RegistrationClient`）のみ `packageMode=true` でスキップされます（§8.4）。
+- メトリクス層には非干渉です。`MetricsCollector`・各プロセスの metrics HTTP サーバー・`nexus dashboard`（TUI）は `packageMode` の値に関わらず常に起動します。一方、Grafana/Prometheus 向けの Aggregator への自動登録（`RegistrationClient`）のみ `packageMode=true` でスキップされます（§9.4）。
 
-### 9.2. ソースミラー配布 (Bitbucket 経由の Claude Code Plugin)
+### 10.2. ソースミラー配布 (Bitbucket 経由の Claude Code Plugin)
 
 Nexus は社内 Claude Code plugin marketplace（Bitbucket Cloud 上でホスト）を通じて `yohi-nexus` という名前で配布されます。`better-sqlite3` / `@lancedb/lancedb` のネイティブ依存と `tsc` の非バンドルビルドを持つため、一般的な「`dist/` のみを配布する」方式は使えません（ビルド済み `dist/` は実行時に `node_modules` と、利用者プラットフォーム向けにビルドされたネイティブバイナリを必要とするため）。代わりに「ソースミラー」方式を採用します。
 

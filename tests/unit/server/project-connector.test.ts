@@ -413,8 +413,8 @@ describe('project-connector', () => {
       const castOptions = options as { env: Record<string, string> };
       // Read the log paths the connector generated itself (rather than
       // overriding them) so writes below land where buildFailureError reads.
-      stdoutLog = castOptions.env.NEXUS_STARTUP_STDOUT_LOG;
-      stderrLog = castOptions.env.NEXUS_STARTUP_STDERR_LOG;
+      stdoutLog = castOptions.env.NEXUS_STARTUP_STDOUT_LOG ?? '';
+      stderrLog = castOptions.env.NEXUS_STARTUP_STDERR_LOG ?? '';
       return fakeChild;
     });
     harness.fetchImpl.mockResolvedValue(new Response('not found', { status: 404 }));
@@ -454,8 +454,8 @@ describe('project-connector', () => {
     harness.spawnImpl.mockImplementation((_exec: string, _args: readonly string[], options: object) => {
       fakeChild = createFakeChildProcess();
       const castOptions = options as { env: Record<string, string> };
-      stdoutLog = castOptions.env.NEXUS_STARTUP_STDOUT_LOG;
-      stderrLog = castOptions.env.NEXUS_STARTUP_STDERR_LOG;
+      stdoutLog = castOptions.env.NEXUS_STARTUP_STDOUT_LOG ?? '';
+      stderrLog = castOptions.env.NEXUS_STARTUP_STDERR_LOG ?? '';
       return fakeChild;
     });
     harness.fetchImpl.mockResolvedValue(new Response('not found', { status: 404 }));
