@@ -146,6 +146,29 @@ describe('Phase 2 MCP protocol integration', () => {
       'reindex',
       'semantic_search',
     ]);
+    expect(Object.fromEntries(tools.tools.map((tool) => [tool.name, tool.description]))).toEqual({
+      get_context: 'Return a specific line range from a file; prefer partial reads.',
+      grep_search: 'Exact string search for symbols, errors, or code fragments.',
+      hybrid_search: 'Semantic + grep hybrid search for vague or conceptual queries.',
+      index_status: 'Check indexing progress and statistics before searching.',
+      reindex: 'Manually rebuild the local search index.',
+      semantic_search: 'Vector-only semantic search; prefer hybrid_search for most tasks.',
+    });
+    expect(
+      Object.fromEntries(
+        tools.tools.map((tool) => [
+          tool.name,
+          Object.keys(tool.inputSchema.properties ?? {}).sort(),
+        ]),
+      ),
+    ).toEqual({
+      get_context: ['endLine', 'filePath', 'startLine', 'symbolName'],
+      grep_search: ['caseSensitive', 'filePattern', 'filePatterns', 'maxResults', 'pattern'],
+      hybrid_search: ['filePattern', 'filePatterns', 'grepPattern', 'language', 'query', 'topK'],
+      index_status: [],
+      reindex: ['fullRebuild'],
+      semantic_search: ['filePattern', 'filePatterns', 'language', 'query', 'topK'],
+    });
 
     const semantic = await client.callTool({ name: 'semantic_search', arguments: { query: 'authenticate', topK: 3 } });
     expect(parseResult(semantic)).toMatchObject({
