@@ -52,6 +52,8 @@ const DEFAULT_CONFIG = (projectRoot: string): Config => ({
       'node_modules',
       '.git',
       '.claude',
+      '.agents',
+      'AGENTS.md',
       '.worktrees',
       '.nexus',
       'dist',

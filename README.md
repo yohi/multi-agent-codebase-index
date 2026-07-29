@@ -239,7 +239,7 @@ server.listen(3000, '127.0.0.1');
 
 - **依存・ビルド**: `node_modules`, `dist`, `build`, `out`
 - **ロックファイル**: `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`, `*.lock`
-- **内部データ**: `.git`, `.nexus`, `.worktrees`
+- **内部データ**: `.git`, `.nexus`, `.worktrees`, `.claude`, `.agents`, `AGENTS.md`
 - **テスト・キャッシュ**: `coverage`, `.cache`, `.parcel-cache`
 - **Python キャッシュ**: `__pycache__`, `*.pyc`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`
 - **仮想環境**: `venv`, `.venv`, `env`
