@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.30.0](https://github.com/yohi/nexus/compare/v1.29.1...v1.30.0) (2026-07-29)
+
+
+### Features
+
+* **config:** デフォルトignorePathsに.agents/、.nexus/、AGENTS.mdを追加 ([94826c6](https://github.com/yohi/nexus/commit/94826c6b56619623c082a11d6dea15f69c3cd268))
+* MCP × Agent Skills 役割分離・再設計 ([e2913f0](https://github.com/yohi/nexus/commit/e2913f0dd31cb9208079fd36749fe0fe9963256f))
+
+
+### Bug Fixes
+
+* デフォルト除外一覧を文書と同期 ([28bcf59](https://github.com/yohi/nexus/commit/28bcf59cf236f17866508bc9d1c0ba9c81b2aeee))
+* デフォルト除外一覧を文書と同期 ([0d56bf1](https://github.com/yohi/nexus/commit/0d56bf1454f6a9957f82a52fe4fa343aebce4dd8))
+
 ## [1.29.1](https://github.com/yohi/nexus/compare/v1.29.0...v1.29.1) (2026-07-27)
 
 
