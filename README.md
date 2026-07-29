@@ -88,9 +88,9 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 
 #### 💡 運用ガイドライン (Playbook)
 
-- **インデックス状態の確認**: 作業開始前に必ず `index_status` を呼び出し、インデックス構築が完了しているか（`pipelineProgress.status === 'idle'`）を確認してください。
+- **インデックス状態の確認**: Nexus の検索（`hybrid_search`、`grep_search`、`semantic_search`）を実行する前に `index_status` を呼び出し、インデックス構築が完了しているか（`pipelineProgress.status === 'idle'`）を確認してください。CodeGraph のみを使う構造探索では不要です。
 - **スキルのロード**: コード調査や設計把握のタスクでは、検索実行前にプロジェクトローカルの `.agents/skills/code-search.md` を読み込んでください。そこに標準パイプライン、One-Call パターン、Deferred Loading の手順が定義されています。
-- **構造・コールツリーの追跡**: リポジトリに `.codegraph/` ディレクトリが存在する場合は、構造追跡に `codegraph_explore` を優先してください。存在しない場合は Nexus の検索ツールでカバーします。
+- **構造・コールツリーの追跡**: リポジトリに `.codegraph/` ディレクトリが存在する場合は、構造追跡に `codegraph_explore` を優先してください。CodeGraph が存在しない場合は、`index_status` を確認してから Nexus の検索ツールでカバーします。
 - **検索の使い分け**:
   - **曖昧な探索・関連箇所の特定**: `hybrid_search` を最優先で使用してください。セマンティック検索と ripgrep が融合され、最適な結果が得られます。
   - **特定のシンボルやコード断片の検索**: `grep_search` を使用してください。特定のクラス名、関数定義、エラーメッセージなどをピンポイントで検出できます。
