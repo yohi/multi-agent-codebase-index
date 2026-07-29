@@ -210,6 +210,9 @@ describe('loadConfig', () => {
     const ignorePaths = config.watcher.ignorePaths ?? [];
 
     expect(ignorePaths).toContain('.claude');
+    expect(ignorePaths).toContain('.agents/');
+    expect(ignorePaths).toContain('.nexus/');
+    expect(ignorePaths).toContain('AGENTS.md');
     for (const lockfile of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', '*.lock']) {
       expect(ignorePaths).toContain(lockfile);
     }

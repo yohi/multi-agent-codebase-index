@@ -50,10 +50,13 @@ const DEFAULT_CONFIG = (projectRoot: string): Config => ({
     fullScanThreshold: 5_000,
     ignorePaths: [
       'node_modules',
+      '.agents/',
+      'AGENTS.md',
       '.git',
       '.claude',
       '.worktrees',
       '.nexus',
+      '.nexus/',
       'dist',
       'build',
       'out',
