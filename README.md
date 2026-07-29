@@ -58,13 +58,13 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 - **Deferred Loading**: Return a summary plus file/line references first. Expand the explanation or fetch additional ranges only when the user asks for details or the initial snippets are insufficient. Never load an entire file through `get_context` merely for background.
 
 ### 4. Tool Usage Rules (Playbook)
-- **Index Status**: Run `index_status` before searching. If `pipelineProgress.status === 'running'`, search results may be incomplete.
+- **Index Status**: Run `index_status` before any Nexus search (`hybrid_search`, `grep_search`, `semantic_search`). CodeGraph exploration does not depend on the Nexus index, so `index_status` is not required before `codegraph_explore`.
 - **Search Strategy**:
   - Use `hybrid_search` for semantic queries, vague feature exploration, or architectural questions (combines vector & ripgrep via RRF).
   - Use `grep_search` to pinpoint exact symbols, class/function names, or error strings.
   - If the repository has a `.codegraph/` directory, use `codegraph_explore` for structural or call-tree tracing.
 - **Context Budgeting**:
-  - When calling `get_context`, **DO NOT** read the entire file. Always specify `startLine` and `endLine` parameters to retrieve the minimal relevant snippet to conserve context tokens.
+  - When calling `get_context`, **prefer** partial reads: specify `startLine` and `endLine` to retrieve the minimal relevant snippet whenever you know the range. If you need a complete analysis of a file, omitting the range to read the entire file is acceptable.
   - If you switch branches or make massive code changes, manually call `reindex` to refresh the local LanceDB store.
 
 ### 5. Project-Specific Context
@@ -75,7 +75,7 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 <details>
 <summary><h3>FOR AGENTS (AIエージェント向け手順)</h3></summary>
 
-あなたがターミナル操作可能なAIエージェントであるなら、**まず [AGENTS.md](AGENTS.md) を読み込み、そこに記載された「MANDATORY PROTOCOL」に即座に従ってください。** 
+あなたがターミナル操作可能なAIエージェントであるなら、**まず [AGENTS.md](AGENTS.md) を読み込み、そこに記載された「[Mandatory constraints](AGENTS.md#mandatory-constraints)」に即座に従ってください。**
 
 **重要要件**:
 - **ステップ0**: 独断で進めず、必ずお手持ちの**ユーザー対話ツール（`ask_user`, `input`, `confirm` 等）**を使用して、ユーザーに以下のいずれのインストール方式を希望するか確認してください。

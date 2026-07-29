@@ -8,7 +8,7 @@ Nexus is a local-first MCP server for codebase indexing, hybrid search, and prec
 - **How**: Node.js >=24; use `npm` (package-lock.json present). Run `npx vitest` for tests and `npm run lint` for TypeScript changes.
 - **Why**: Give AI agents fast, private, evidence-based codebase exploration without external data transmission.
 
-## Mandatory constraints
+## Mandatory constraints <!-- #mandatory-constraints also kept for compatibility -->
 
 - Before setup, ask the user to choose **Source Build** or **Package Usage**; follow [docs/setup.md](docs/setup.md) after the choice.
 - Never ask the user to paste secrets or GitHub tokens into chat.

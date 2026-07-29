@@ -162,10 +162,9 @@ Step 1: タスク分類
   → 抽象/概念調査？ 正確なシンボル追跡？ エラー原因特定？ 構造追跡？
 
 Step 2: 存在するインデックスを使い分ける
-  → .codegraph/ がある場合：codegraph_explore で構造・Call Tree を特定
-  → 曖昧な検索：Nexus hybrid_search
-  → 正確なシンボル/エラー文字列：Nexus grep_search
-
+  → .codegraph/ がある場合：codegraph_explore で構造・Call Tree を特定（Nexus の index_status は不要）
+  → 曖昧な検索：Nexus index_status を確認してから hybrid_search
+  → 正確なシンボル/エラー文字列：Nexus index_status を確認してから grep_search
 Step 3: ファイルコンテキスト取得
   → Nexus get_context(startLine, endLine) で最小範囲を取得
   → ファイル全体が必要な場合のみ全体取得
@@ -192,8 +191,7 @@ Step 4: 修正・回答へ移行
 本節で定義した探索パイプラインは、現在の MCP ツールセットを使ったエージェント側の手続きとして実装しています。今後、さらなるトークン削減と応答精度向上を目指し、以下の拡張を検討します。
 
 各 MCP ツールの JSON Schema `description` は、ツール選択を支援する簡潔な説明へ
-最適化済みです。この説明と入力スキーマは MCP プロトコル統合テストで固定検証します。
-
+最適化済みです。各ツールの JSON Schema は MCP プロトコル統合テストで、inputSchema の存在と `properties` キー集合を固定検証します。
 - **`hybrid_search` へのスニペット付き応答オプション**: `includeSnippet` や `contextLines` などのパラメータを追加し、1 回のツール呼び出しで検索結果と前後のコードスニペットを同時に返せるようにする。
 - **`get_context` の Deferred Loading モード**: 長大なファイルを扱う際に、最初に「概要 + 行番号 + 必要に応じた取得コマンド案内」を返し、詳細な全文展開をユーザーまたは下位ツールの要求に委ねる動的読み込みモードを追加する。
 

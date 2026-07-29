@@ -156,10 +156,14 @@ describe('Phase 2 MCP protocol integration', () => {
     });
     expect(
       Object.fromEntries(
-        tools.tools.map((tool) => [
-          tool.name,
-          Object.keys(tool.inputSchema.properties ?? {}).sort(),
-        ]),
+        tools.tools.map((tool) => {
+          expect(tool.inputSchema).toBeDefined();
+          expect(tool.inputSchema.properties).toBeDefined();
+          return [
+            tool.name,
+            Object.keys(tool.inputSchema.properties as Record<string, unknown>).sort(),
+          ];
+        }),
       ),
     ).toEqual({
       get_context: ['endLine', 'filePath', 'startLine', 'symbolName'],
