@@ -37,6 +37,9 @@ export interface SearchResult {
 export interface RankedResult extends SearchResult {
   rank: number;
   reciprocalRankScore: number;
+  snippet?: string;
+  snippetStartLine?: number;
+  snippetEndLine?: number;
 }
 
 export interface SearchResponse {

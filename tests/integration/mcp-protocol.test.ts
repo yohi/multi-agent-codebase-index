@@ -168,7 +168,7 @@ describe('Phase 2 MCP protocol integration', () => {
     ).toEqual({
       get_context: ['endLine', 'filePath', 'startLine', 'symbolName'],
       grep_search: ['caseSensitive', 'filePattern', 'filePatterns', 'maxResults', 'pattern'],
-      hybrid_search: ['filePattern', 'filePatterns', 'grepPattern', 'language', 'query', 'topK'],
+      hybrid_search: ['contextLines', 'filePattern', 'filePatterns', 'grepPattern', 'includeSnippet', 'language', 'query', 'topK'],
       index_status: [],
       reindex: ['fullRebuild'],
       semantic_search: ['filePattern', 'filePatterns', 'language', 'query', 'topK'],
