@@ -44,4 +44,22 @@ describe('executeGetContext', () => {
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it('throws Invalid line range when startLine is greater than endLine', async () => {
+    const sanitizer = {
+      sanitize: async (filePath: string) => `/sandbox/${filePath}`,
+    };
+
+    await expect(
+      executeGetContext(
+        async () => 'line1\nline2\nline3\nline4',
+        sanitizer as never,
+        {
+          filePath: 'src/auth.ts',
+          startLine: 3,
+          endLine: 2,
+        },
+      ),
+    ).rejects.toThrow('Invalid line range: startLine (3) is greater than endLine (2)');
+  });
 });

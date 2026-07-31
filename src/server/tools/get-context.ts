@@ -1,4 +1,5 @@
 import type { PathSanitizer } from '../path-sanitizer.js';
+import { resolveLineRange, sliceContent } from './context-helpers.js';
 
 export interface GetContextToolArgs {
   filePath: string;
@@ -26,19 +27,20 @@ export const executeGetContext = async (
   const content = await loadFileContent(sanitizedPath);
   const lines = content.split('\n');
 
-  const resolvedStart = Math.max(1, Math.min(args.startLine ?? 1, lines.length));
-  const resolvedEnd = Math.max(1, Math.min(args.endLine ?? lines.length, lines.length));
+  const range = resolveLineRange(lines.length, args.startLine, args.endLine);
 
-  if (resolvedStart > resolvedEnd) {
-    throw new Error(`Invalid line range: startLine (${resolvedStart}) is greater than endLine (${resolvedEnd})`);
+  if (range === null) {
+    const startLine = args.startLine ?? 1;
+    const endLine = args.endLine ?? lines.length;
+    throw new Error(`Invalid line range: startLine (${startLine}) is greater than endLine (${endLine})`);
   }
 
-  const slice = lines.slice(resolvedStart - 1, resolvedEnd);
+  const slice = sliceContent(content, range);
 
   return {
     filePath: args.filePath,
-    content: slice.join('\n'),
-    startLine: resolvedStart,
-    endLine: resolvedEnd,
+    content: slice,
+    startLine: range.startLine,
+    endLine: range.endLine,
   };
 };
