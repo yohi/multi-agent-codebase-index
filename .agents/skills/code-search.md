@@ -57,11 +57,15 @@ For a vague query, the normal sequence is:
 
 For an exact query, replace `hybrid_search` with `grep_search`. For a structural query, use `codegraph_explore` when `.codegraph/` exists, then use `get_context` when Nexus context is needed.
 
+`hybrid_search` also supports `includeSnippet: true` (with optional `contextLines`, default 3, clamped to a maximum of 20) to attach a code snippet directly to each result (`snippet`, `snippetStartLine`, `snippetEndLine`). When the top candidates already carry a sufficient snippet this way, the agent can reduce or skip the follow-up `get_context` call in step 3 above.
+
 ## Deferred Loading
 
 Return a summary and file/line numbers first. Expand the explanation or retrieve additional context only when the user asks for details, the initial snippets are insufficient, or an edit requires more surrounding code. Keep the initial context bounded by `startLine` and `endLine`; never load an entire file through `get_context` merely to provide background.
 
 When expanding, request the next smallest relevant range rather than repeating the full search. Preserve the original candidate paths and line numbers so deferred results remain traceable.
+
+`get_context` also exposes a built-in Deferred Loading mechanism via `mode: "deferred"`: instead of full content, it returns `totalLines`, a bounded `summary` preview (at most 20 lines), `previewStartLine`/`previewEndLine`, and a `hint` describing how to fetch a specific range. Prefer this mode over manually re-reading a large file in chunks; follow the returned `hint` to request the next range only when needed.
 
 ## Nexus MCP usage rules
 
