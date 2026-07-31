@@ -65,7 +65,7 @@ Return a summary and file/line numbers first. Expand the explanation or retrieve
 
 When expanding, request the next smallest relevant range rather than repeating the full search. Preserve the original candidate paths and line numbers so deferred results remain traceable.
 
-`get_context` also exposes a built-in Deferred Loading mechanism via `mode: "deferred"`: instead of full content, it returns `totalLines`, a bounded `summary` preview (at most 20 lines), `previewStartLine`/`previewEndLine`, and a `hint` describing how to fetch a specific range. Prefer this mode over manually re-reading a large file in chunks; follow the returned `hint` to request the next range only when needed.
+`get_context` also exposes a built-in Deferred Loading mechanism via `mode: "deferred"`: instead of full content, it returns `totalLines`, a bounded `summary` preview (the requested range when both `startLine` and `endLine` are given, otherwise up to 20 lines), `previewStartLine`/`previewEndLine`, and a `hint` describing how to fetch a specific range. Prefer this mode over manually re-reading a large file in chunks; follow the returned `hint` to request the next range only when needed.
 
 ## Nexus MCP usage rules
 
