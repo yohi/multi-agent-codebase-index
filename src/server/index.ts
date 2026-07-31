@@ -202,6 +202,10 @@ export const createNexusServer = (
         filePatterns: z.array(z.string()).optional(),
         language: z.string().optional(),
         grepPattern: z.string().optional(),
+        includeSnippet: z.boolean().optional(),
+        contextLines: z.number().int().positive().optional().describe(
+          "Lines of context to include before and after each match when includeSnippet is true. Maximum 20; values above are clamped.",
+        ),
       },
     },
     withToolMetrics(
@@ -213,6 +217,7 @@ export const createNexusServer = (
           const result = await executeHybridSearch(
             options.orchestrator,
             options.sanitizer,
+            options.loadFileContent,
             args as HybridSearchToolArgs & { filePattern?: string },
             extra?.signal,
           );
