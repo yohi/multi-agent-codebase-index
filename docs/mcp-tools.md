@@ -145,7 +145,7 @@ semantic search と grep search を統合した ranking search です。
 ### 挙動
 
 - path は server-side path sanitizer を通して解決されます。
-- `startLine` または `endLine` を省略した場合はファイル全体を返します。
+- `startLine` と `endLine` を両方省略した場合はファイル全体を返します。片方のみ指定した場合は、指定した行からファイルの対応する境界（先頭または末尾）までの範囲を返します（`startLine` のみ指定 → 指定行〜ファイル末尾、`endLine` のみ指定 → ファイル先頭〜指定行）。
 - 解決後の開始行が終了行を上回る場合はエラーになります。
 - `mode: "deferred"` を指定すると、`content` の代わりに `mode`, `totalLines`, `summary`, `previewStartLine`, `previewEndLine`, `hint` を含む要約レスポンスを返します（大きなファイルを一括で読み込ませないための機能）。
 - deferred モードのプレビュー範囲は次の規則で決まります: `startLine` と `endLine` を両方指定した場合はその範囲（file bounds にクランプ）。`startLine` のみの場合は `startLine` から最大 20 行。`endLine` のみの場合は `endLine` までの直前最大 20 行。両方省略した場合はファイル先頭から最大 20 行。
