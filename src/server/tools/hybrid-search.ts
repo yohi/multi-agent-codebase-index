@@ -35,14 +35,25 @@ export const executeHybridSearch = async (
 
   const contextLines = Math.min(rawContextLines ?? DEFAULT_CONTEXT_LINES, MAX_CONTEXT_LINES);
   const fileContentCache = new Map<string, string | null>();
+  const sanitizedPathCache = new Map<string, string | null>();
 
   for (const result of response.results) {
-    let sanitizedPath: string;
-    try {
-      sanitizedPath = await sanitizer.sanitize(result.chunk.filePath);
-    } catch {
-      // Cannot resolve this chunk's file path; skip its snippet without
-      // aborting the rest of the search results.
+    let sanitizedPath: string | null;
+    const cachedSanitizedPath = sanitizedPathCache.get(result.chunk.filePath);
+    if (cachedSanitizedPath !== undefined) {
+      sanitizedPath = cachedSanitizedPath;
+    } else {
+      try {
+        sanitizedPath = await sanitizer.sanitize(result.chunk.filePath);
+      } catch {
+        // Cannot resolve this chunk's file path; skip its snippet without
+        // aborting the rest of the search results.
+        sanitizedPath = null;
+      }
+      sanitizedPathCache.set(result.chunk.filePath, sanitizedPath);
+    }
+
+    if (sanitizedPath === null) {
       continue;
     }
 
