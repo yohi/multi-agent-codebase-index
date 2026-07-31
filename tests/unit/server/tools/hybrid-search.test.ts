@@ -68,7 +68,7 @@ describe('executeHybridSearch', () => {
       }),
     ).resolves.toEqual(response);
 
-    expect(orchestrator.lastSearchArgs).toMatchObject({
+    expect(orchestrator.lastSearchArgs).toEqual({
       query: 'authenticate',
       filePatterns: ['src/*.ts'],
     });
@@ -106,6 +106,29 @@ describe('executeHybridSearch', () => {
   });
 
   describe('snippet attachment', () => {
+    it('does not attach snippets when includeSnippet is omitted', async () => {
+      const snippetResponse: SearchResponse = {
+        query: 'test',
+        tookMs: 1,
+        results: [makeResult({ startLine: 3, endLine: 3 })],
+      };
+      const orchestrator = new StubOrchestrator(snippetResponse);
+      const loader = vi.fn(async () => 'line1\nline2\nline3\nline4\nline5');
+
+      const result = await executeHybridSearch(
+        orchestrator as never,
+        sanitizer as never,
+        loader,
+        { query: 'test' },
+      );
+
+      expect(result.results[0]?.snippet).toBeUndefined();
+      expect(result.results[0]?.snippetStartLine).toBeUndefined();
+      expect(result.results[0]?.snippetEndLine).toBeUndefined();
+      expect(loader).not.toHaveBeenCalled();
+      expect(orchestrator.lastSearchArgs).toEqual({ query: 'test' });
+    });
+
     it('does not attach snippets when includeSnippet is false', async () => {
       const snippetResponse: SearchResponse = {
         query: 'test',
@@ -113,7 +136,7 @@ describe('executeHybridSearch', () => {
         results: [makeResult({ startLine: 3, endLine: 3 })],
       };
       const orchestrator = new StubOrchestrator(snippetResponse);
-      const loader = async () => 'line1\nline2\nline3\nline4\nline5';
+      const loader = vi.fn(async () => 'line1\nline2\nline3\nline4\nline5');
 
       const result = await executeHybridSearch(
         orchestrator as never,
@@ -125,6 +148,27 @@ describe('executeHybridSearch', () => {
       expect(result.results[0]?.snippet).toBeUndefined();
       expect(result.results[0]?.snippetStartLine).toBeUndefined();
       expect(result.results[0]?.snippetEndLine).toBeUndefined();
+      expect(loader).not.toHaveBeenCalled();
+      expect(orchestrator.lastSearchArgs).toEqual({ query: 'test' });
+    });
+
+    it('does not forward includeSnippet or contextLines to the orchestrator', async () => {
+      const snippetResponse: SearchResponse = {
+        query: 'test',
+        tookMs: 1,
+        results: [makeResult({ startLine: 3, endLine: 3 })],
+      };
+      const orchestrator = new StubOrchestrator(snippetResponse);
+      const loader = vi.fn(async () => 'line1\nline2\nline3\nline4\nline5');
+
+      await executeHybridSearch(
+        orchestrator as never,
+        sanitizer as never,
+        loader,
+        { query: 'test', includeSnippet: true, contextLines: 50 },
+      );
+
+      expect(orchestrator.lastSearchArgs).toEqual({ query: 'test' });
     });
 
     it('attaches a snippet using the requested contextLines when includeSnippet is true', async () => {

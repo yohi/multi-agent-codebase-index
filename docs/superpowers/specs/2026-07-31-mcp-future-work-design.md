@@ -18,9 +18,9 @@ SPEC.md §6.6 に記載された 2 つの MCP API 拡張を後方互換で実装
 
 ## Task 1: 共有スニペットヘルパー抽出
 
-`get-context.ts` のクランプ＋スライスロジックを独立した関数として切り出す。
+`get-context.ts` のクランプ＋スライスロジックを独立したモジュールとして切り出す。
 
-**対象ファイル**: `src/server/tools/get-context.ts`
+**対象ファイル**: `src/server/tools/context-helpers.ts`
 
 **公開インターフェース**（後続 Task が依存）:
 
@@ -70,7 +70,7 @@ snippetEndLine?: number;    // スニペット終了行（1-indexed）
 - スニペット付加は `SearchOrchestrator` の外側（ツール層）で実施。`SearchOrchestrator` と RRF ロジックは非接触。
 - 対象結果は `topK` 適用後の `results` のみ（デフォルト上位 20 件）。
 - **同一ファイル読込キャッシュ**: `sanitizer.sanitize(chunk.filePath)` で解決したサニタイズ済みパスをキーとする `Map<string, string | null>` を1回の呼び出し内で保持し、同一ファイルから複数の chunk をスニペット化する場合でも `loadFileContent` は1回だけ呼ぶ。ファイル読込失敗（ENOENT 等）はキャッシュに `null` を記録し、スニペットのみスキップして検索結果は返す（graceful degradation）。
-- 結果ごとに Task 1 のヘルパーで `chunk.startLine - contextLines` 〜 `chunk.endLine + contextLines` を抽出。
+- 結果ごとに `src/server/tools/context-helpers.ts` の `resolveLineRange` / `sliceContent` で `chunk.startLine - contextLines` 〜 `chunk.endLine + contextLines` を抽出。
 - `abortSignal` は既に orchestrator に伝播済み。スニペット読込でも中断を尊重（abort 時は以後の読込を停止）。
 - `contextLines` の上限は定数 `MAX_CONTEXT_LINES = 20` でクランプ（I/O 増幅対策）。JSON Schema は positive int のみを宣言し、ハンドラ側で clamp。
 
@@ -142,7 +142,7 @@ snippetEndLine?: number;    // スニペット終了行（1-indexed）
   - `hybrid_search`: `['contextLines', 'filePattern', 'filePatterns', 'grepPattern', 'includeSnippet', 'language', 'query', 'topK']`
   - `get_context`: `['endLine', 'filePath', 'mode', 'startLine', 'symbolName']`
   - デフォルト動作（新パラメータなし）のレスポンスが現行通りであることを既存アサーションで担保
-  - 追加: `mode: "deferred"` で `mode` / `totalLines` / `hint` を含み `content` を含まないことを integration テストで確認
+  - 追加: `mode: "deferred"` で `mode` / `totalLines` / `summary` / `previewStartLine` / `previewEndLine` / `hint` を含み `content` / `startLine` / `endLine` を含まないことを integration テストで確認
 - `tests/unit/server/tools/hybrid-search.test.ts`: `includeSnippet` 前後、`contextLines` クランプ（> 20 → 20）、同一ファイルの複数結果に対する読込キャッシュ、パラメータが orchestrator に漏れないこと、読込失敗時の graceful degradation
 - `tests/unit/server/tools/get-context.test.ts`: eager 不変、deferred のレスポンス shape、deferred + range 指定時のプレビュー範囲、`totalLines`、preview クランプ（20 行未満のファイル）
 
