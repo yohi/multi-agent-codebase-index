@@ -176,7 +176,7 @@ Step 4: 修正・回答へ移行
 
 `hybrid_search` や `grep_search` のトップ候補に対して、結果を返す前に `get_context` を呼び出し、行番号範囲を絞ってまとめて返します。検索とコンテキスト取得を別々の往復に分けないことで、ツール呼び出し往復数を削減します。
 
-本フェーズの One-Call は、エージェントが複数の MCP ツール呼び出しを完了して一度の根拠付き回答を返す行動パターンを指します。単一 MCP 呼び出しで検索結果とスニペットを返す API は将来の拡張対象とします。
+本フェーズの One-Call は、エージェントが複数の MCP ツール呼び出しを完了して一度の根拠付き回答を返す行動パターンを指します。`hybrid_search` は `includeSnippet: true` を指定することで、単一のツール呼び出しで検索結果とコードスニペットを同時に返すことも可能です（詳細は §6.6 を参照）。
 
 ### 6.4. Deferred Loading
 
@@ -186,16 +186,16 @@ Step 4: 修正・回答へ移行
 
 リポジトリに `.codegraph/` ディレクトリが存在する場合、構造・依存関係・コールツリーの追跡には `codegraph_explore` を優先します。存在しない場合は Nexus 単体（`hybrid_search` / `grep_search` + `get_context`）でカバーします。
 
-### 6.6. 今後の拡張（Future Work）
+### 6.6. 実装された機能（スニペット添付 / Deferred Loading）
 
-本節で定義した探索パイプラインは、現在の MCP ツールセットを使ったエージェント側の手続きとして実装しています。今後、さらなるトークン削減と応答精度向上を目指し、以下の拡張を検討します。
+探索パイプラインの効率化のため、`hybrid_search` と `get_context` に以下の機能が実装されています。いずれもオプトイン（デフォルト無効）であり、既存の呼び出し方との後方互換性を維持します。
+
+- **`hybrid_search` のスニペット付き応答**（[`src/server/tools/hybrid-search.ts`](src/server/tools/hybrid-search.ts)）: `includeSnippet: true` を指定すると、各結果の `chunk.startLine`/`endLine` を中心に前後 `contextLines` 行（デフォルト 3、20 を超える値は 20 にクランプ）を含むコードスニペットを取得し、`snippet` / `snippetStartLine` / `snippetEndLine` を結果へ追加します。これにより One-Call パターンにおいて、上位候補向けの追加 `get_context` 呼び出しを削減または省略できます。
+- **`get_context` の Deferred Loading モード**（[`src/server/tools/get-context.ts`](src/server/tools/get-context.ts)）: `mode: "deferred"` を指定すると、全文の代わりに `totalLines` / `summary`（プレビュー。`startLine` と `endLine` を両方明示指定した場合はその範囲を file bounds にクランプしたもの、それ以外はデフォルトで最大 20 行）/ `previewStartLine` / `previewEndLine` / `hint` を含む要約レスポンスを返し、全文展開をユーザーまたは下位ツールの要求に委ねます。
+- 両機能に共通する行範囲解決ロジック（`resolveLineRange` / `sliceContent`）は [`src/server/tools/context-helpers.ts`](src/server/tools/context-helpers.ts) に切り出され、`hybrid_search` と `get_context` の双方から利用されています。
 
 各 MCP ツールの JSON Schema `description` は、ツール選択を支援する簡潔な説明へ
 最適化済みです。各ツールの JSON Schema は MCP プロトコル統合テストで、inputSchema の存在と `properties` キー集合を固定検証します。
-- **`hybrid_search` へのスニペット付き応答オプション**: `includeSnippet` や `contextLines` などのパラメータを追加し、1 回のツール呼び出しで検索結果と前後のコードスニペットを同時に返せるようにする。
-- **`get_context` の Deferred Loading モード**: 長大なファイルを扱う際に、最初に「概要 + 行番号 + 必要に応じた取得コマンド案内」を返し、詳細な全文展開をユーザーまたは下位ツールの要求に委ねる動的読み込みモードを追加する。
-
-これらは MCP サーバー側の API 拡張に伴う破壊的変更を避けるため、別途計画・設計を行ってから実装します。
 
 探索パイプラインの適用が正しいことを確認するための具体例は、`.agents/skills/code-search.md` の「Verification examples」セクションに記載しています。曖昧な機能探索、正確なシンボル追跡、構造・コールツリー探索の 3 シナリオについて、ユーザー入力・期待ツール列・成功基準を定義しています。
 

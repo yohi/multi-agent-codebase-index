@@ -89,6 +89,14 @@ semantic search と grep search を統合した ranking search です。
 | `filePatterns` | string[] | no | 複数の file glob filter（`filePattern` と同時に指定可能） |
 | `language` | string | no | 任意の言語 filter |
 | `grepPattern` | string | no | ranking に混ぜる exact-match 用クエリ |
+| `includeSnippet` | boolean | no | `true` の場合、各結果に前後のコードスニペットを添付する |
+| `contextLines` | positive integer | no | スニペットに含める前後の行数。省略時は 3、20 を超える値は 20 にクランプされる |
+
+### 挙動
+
+- `includeSnippet` が `true` の場合、各結果の `chunk.startLine`/`endLine` を中心に前後 `contextLines` 行（デフォルト 3、最大 20）を含むコードスニペットを取得し、`snippet` / `snippetStartLine` / `snippetEndLine` を各結果へ追加します。
+- ファイルの読み込みまたは path sanitization に失敗した結果は、その結果のみスニペットを省略して処理を継続します（検索結果全体は失敗しません）。
+- `includeSnippet` を省略または `false` にした場合、レスポンス形状は変わりません。
 
 ### レスポンス
 
@@ -110,6 +118,16 @@ semantic search と grep search を統合した ranking search です。
 }
 ```
 
+`includeSnippet: true` を指定した場合、各結果に以下のフィールドが追加されます:
+
+```json
+{
+  "snippet": "export function authenticate() {}\n// ...",
+  "snippetStartLine": 1,
+  "snippetEndLine": 4
+}
+```
+
 ## `get_context`
 
 指定した行範囲の file content を返します。
@@ -122,12 +140,16 @@ semantic search と grep search を統合した ranking search です。
 | `symbolName` | string | no | 将来拡張用の予約項目 |
 | `startLine` | positive integer | no | file bounds に clamp される開始行 |
 | `endLine` | positive integer | no | file bounds に clamp される終了行 |
+| `mode` | `"eager"` \| `"deferred"` | no | デフォルトは `"eager"`。`"deferred"` の場合は全文の代わりに要約プレビューを返す |
 
 ### 挙動
 
 - path は server-side path sanitizer を通して解決されます。
-- `startLine` または `endLine` を省略した場合はファイル全体を返します。
+- `startLine` と `endLine` を両方省略した場合はファイル全体を返します。片方のみ指定した場合は、指定した行からファイルの対応する境界（先頭または末尾）までの範囲を返します（`startLine` のみ指定 → 指定行〜ファイル末尾、`endLine` のみ指定 → ファイル先頭〜指定行）。
 - 解決後の開始行が終了行を上回る場合はエラーになります。
+- `mode: "deferred"` を指定すると、`content` の代わりに `mode`, `totalLines`, `summary`, `previewStartLine`, `previewEndLine`, `hint` を含む要約レスポンスを返します（大きなファイルを一括で読み込ませないための機能）。
+- deferred モードのプレビュー範囲は次の規則で決まります: `startLine` と `endLine` を両方指定した場合はその範囲（file bounds にクランプ）。`startLine` のみの場合は `startLine` から最大 20 行。`endLine` のみの場合は `endLine` までの直前最大 20 行。両方省略した場合はファイル先頭から最大 20 行。
+- `hint` フィールドには、必要な範囲を `startLine`/`endLine` で指定して再度 `get_context` を呼び出すよう案内する文字列が含まれます。
 
 ### レスポンス
 
@@ -137,6 +159,20 @@ semantic search と grep search を統合した ranking search です。
   "content": "export function authenticate() {}",
   "startLine": 1,
   "endLine": 1
+}
+```
+
+`mode: "deferred"` を指定した場合のレスポンス例:
+
+```json
+{
+  "filePath": "src/auth.ts",
+  "mode": "deferred",
+  "totalLines": 500,
+  "summary": "export function authenticate() {}\n// ...",
+  "previewStartLine": 1,
+  "previewEndLine": 20,
+  "hint": "Call get_context with startLine/endLine to fetch specific ranges."
 }
 ```
 
