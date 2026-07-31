@@ -267,6 +267,8 @@ describe('Phase 2 MCP protocol integration', () => {
     expect(parsed.results[0]?.snippet.length).toBeGreaterThan(0);
     expect(typeof parsed.results[0]?.snippetStartLine).toBe('number');
     expect(typeof parsed.results[0]?.snippetEndLine).toBe('number');
+    expect(mockMetricsHooks.onContextLinesFetched).toHaveBeenCalledTimes(1);
+    expect(mockMetricsHooks.onContextLinesFetched).toHaveBeenCalledWith('hybrid_search', 4);
   });
 });
 
