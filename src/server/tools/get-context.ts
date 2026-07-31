@@ -30,8 +30,8 @@ export const executeGetContext = async (
   const range = resolveLineRange(lines.length, args.startLine, args.endLine);
 
   if (range === null) {
-    const startLine = args.startLine ?? 1;
-    const endLine = args.endLine ?? lines.length;
+    const startLine = Math.max(1, Math.min(args.startLine ?? 1, lines.length));
+    const endLine = Math.max(1, Math.min(args.endLine ?? lines.length, lines.length));
     throw new Error(`Invalid line range: startLine (${startLine}) is greater than endLine (${endLine})`);
   }
 

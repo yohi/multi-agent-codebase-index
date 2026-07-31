@@ -62,4 +62,22 @@ describe('executeGetContext', () => {
       ),
     ).rejects.toThrow('Invalid line range: startLine (3) is greater than endLine (2)');
   });
+
+  it('throws Invalid line range using clamped values when startLine is out of bounds', async () => {
+    const sanitizer = {
+      sanitize: async (filePath: string) => `/sandbox/${filePath}`,
+    };
+
+    await expect(
+      executeGetContext(
+        async () => 'line1\nline2\nline3\nline4\nline5',
+        sanitizer as never,
+        {
+          filePath: 'src/auth.ts',
+          startLine: 10,
+          endLine: 3,
+        },
+      ),
+    ).rejects.toThrow('Invalid line range: startLine (5) is greater than endLine (3)');
+  });
 });
