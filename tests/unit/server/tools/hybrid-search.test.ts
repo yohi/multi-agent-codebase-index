@@ -150,6 +150,30 @@ describe('executeHybridSearch', () => {
       });
     });
 
+    it('applies the default contextLines of 3 when contextLines is omitted', async () => {
+      const snippetResponse: SearchResponse = {
+        query: 'test',
+        tookMs: 1,
+        results: [makeResult({ startLine: 5, endLine: 5 })],
+      };
+      const orchestrator = new StubOrchestrator(snippetResponse);
+      const content = Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join('\n');
+      const loader = async () => content;
+
+      const result = await executeHybridSearch(
+        orchestrator as never,
+        sanitizer as never,
+        loader,
+        { query: 'test', includeSnippet: true },
+      );
+
+      expect(result.results[0]).toMatchObject({
+        snippet: 'line2\nline3\nline4\nline5\nline6\nline7\nline8',
+        snippetStartLine: 2,
+        snippetEndLine: 8,
+      });
+    });
+
     it('clamps contextLines to the configured maximum of 20', async () => {
       const snippetResponse: SearchResponse = {
         query: 'test',
