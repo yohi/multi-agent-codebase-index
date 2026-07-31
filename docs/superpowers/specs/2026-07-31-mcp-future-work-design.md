@@ -13,6 +13,7 @@ SPEC.md §6.6 に記載された 2 つの MCP API 拡張を後方互換で実装
 
 - **後方互換**: 新規パラメータはすべて optional。未指定時の挙動は現行と完全に同一。
 - **必須キー不変**: 既存 `inputSchema` の required 配列・既存プロパティの意味は変更しない。
+- **レスポンス契約の分離**: `get_context` は `mode` を判別子とする discriminated union として eager / deferred のレスポンス契約を分離する。`mode` 未指定時は eager 契約を維持し、既存呼び出しのレスポンス形状は不変。
 - **破壊的変更ゼロ**: 既存呼び出しのレスポンス shape に新フィールドのみ追加。既存フィールドの型・意味は不変。
 
 ## Task 1: 共有スニペットヘルパー抽出
@@ -29,7 +30,7 @@ export interface LineRange {
   endLine: number;
 }
 
-/** 行番号をファイル行数にクランプし、範囲逆転時は null を返す。後で Result 化してもよい。 */
+/** 行番号をファイル行数にクランプし、範囲逆転時は null を返す。 */
 export const resolveLineRange = (totalLines: number, startLine?: number, endLine?: number): LineRange | null;
 
 /** コンテンツから指定範囲を切り出す。1-indexed, inclusive。 */
@@ -47,7 +48,7 @@ export const sliceContent = (content: string, range: LineRange): string;
 | `includeSnippet` | boolean | `false` | true で結果にスニペット付与 |
 | `contextLines` | positive int | `3` | chunk 前後の取得行数（clamping 対象） |
 
-`contextLines` は `includeSnippet=true` 時のみ意味を持つ。`contextLines` 単独指定でヒントも許容するが、実スニペットは `includeSnippet=true` 時のみ出力する（未指定時レスポンス不変を厳密に守るため）。
+`contextLines` は `includeSnippet=true` 時のみ意味を持つ。`includeSnippet` 未指定/ false 時はレスポンスにスニペットフィールドを含めない（未指定時レスポンス不変を厳密に守るため）。
 
 ### レスポンス拡張
 
@@ -61,12 +62,15 @@ snippetEndLine?: number;    // スニペット終了行（1-indexed）
 
 トップレベル `SearchResponse` は不変（`query` / `results` / `tookMs`）。
 
+読込失敗した結果は `snippet` / `snippetStartLine` / `snippetEndLine` を含まず、それ以外の `chunk` / `score` / `source` / `rank` / `reciprocalRankScore` は維持される。
+
 ### 実装
 
 - `executeHybridSearch` に `loadFileContent` を注入（factory で既存 injector をそのまま渡す）。
 - スニペット付加は `SearchOrchestrator` の外側（ツール層）で実施。`SearchOrchestrator` と RRF ロジックは非接触。
-- 対象結果は `topK` 適用後の `results` のみ（デフォルト上位 20 件）。結果ごとに `sanitizer.sanitize(chunk.filePath)` → `loadFileContent` → Task 1 のヘルパーで `startLine - contextLines` 〜 `endLine + contextLines` を抽出。
-- ファイル読込失敗（ENOENT 等）はスニペットのみスキップして結果は返す（graceful degradation）。
+- 対象結果は `topK` 適用後の `results` のみ（デフォルト上位 20 件）。
+- **同一ファイル読込キャッシュ**: `sanitizer.sanitize(chunk.filePath)` で解決したサニタイズ済みパスをキーとする `Map<string, string | null>` を1回の呼び出し内で保持し、同一ファイルから複数の chunk をスニペット化する場合でも `loadFileContent` は1回だけ呼ぶ。ファイル読込失敗（ENOENT 等）はキャッシュに `null` を記録し、スニペットのみスキップして検索結果は返す（graceful degradation）。
+- 結果ごとに Task 1 のヘルパーで `chunk.startLine - contextLines` 〜 `chunk.endLine + contextLines` を抽出。
 - `abortSignal` は既に orchestrator に伝播済み。スニペット読込でも中断を尊重（abort 時は以後の読込を停止）。
 - `contextLines` の上限は定数 `MAX_CONTEXT_LINES = 20` でクランプ（I/O 増幅対策）。JSON Schema は positive int のみを宣言し、ハンドラ側で clamp。
 
@@ -82,24 +86,48 @@ snippetEndLine?: number;    // スニペット終了行（1-indexed）
 | --- | --- | --- | --- |
 | `mode` | `"eager" \| "deferred"` | `"eager"` | deferred で概要応答 |
 
-`mode` 省略時（= `"eager"`）は現行挙動を完全に維持。
+`mode` 省略時（= `"eager"`）は現行挙動を完全に維持。`mode: "deferred"` 時は `content` / `startLine` / `endLine` を返さない代わりに概要フィールドを返す。
 
-### レスポンス（deferred 時）
+### レスポンス契約
 
-```json
-{
-  "filePath": "src/auth.ts",
-  "mode": "deferred",
-  "totalLines": 1234,
-  "summary": "…先頭プレビュー…",
-  "previewStartLine": 1,
-  "previewEndLine": 20,
-  "hint": "Call get_context with startLine/endLine to fetch specific ranges."
-}
-```
+`get_context` は `mode` を判別子とする discriminated union としてレスポンスを返す。
 
-- `summary` は先頭 `PREVIEW_LINES = 20` 行（ファイル長でクランプ）。
-- 既存フィールド `content` / `startLine` / `endLine` は deferred 時は**未返却**とし、返却 shape を明確に分ける（Union 型）。
+- eager 時（`mode` 未指定含む）:
+
+  ```ts
+  {
+    filePath: string;
+    content: string;
+    startLine: number;
+    endLine: number;
+  }
+  ```
+
+  既存の required フィールド（`content` / `startLine` / `endLine`）は維持される。
+
+- deferred 時:
+
+  ```json
+  {
+    "filePath": "src/auth.ts",
+    "mode": "deferred",
+    "totalLines": 1234,
+    "summary": "…先頭プレビュー…",
+    "previewStartLine": 1,
+    "previewEndLine": 20,
+    "hint": "Call get_context with startLine/endLine to fetch specific ranges."
+  }
+  ```
+
+  この variant には `content` / `startLine` / `endLine` は含まれない。
+
+### Deferred 時の summary 範囲
+
+- `startLine` / `endLine` が両方指定されている場合、`summary` はその要求範囲のプレビューとする。`previewStartLine` / `previewEndLine` は要求範囲をファイル境界にクランプした実際の範囲とする。要求範囲が逆転している場合は既存の eager 契約と同じくエラーとする。
+- `startLine` のみ指定された場合、プレビュー範囲は `startLine` から `min(startLine + PREVIEW_LINES - 1, totalLines)` までとする。
+- `endLine` のみ指定された場合、プレビュー範囲は `max(1, endLine - PREVIEW_LINES + 1)` から `endLine` までとする。
+- 両方未指定時のデフォルトはファイル先頭 `PREVIEW_LINES = 20` 行。
+- いずれの場合も `totalLines` はファイル全体の行数を表す。
 - `hint` の文言は定数で統一。取得案内は `get_context` 自体の再呼び出しを導く形にする（外部コマンド案内はしない＝ローカル完結維持）。
 
 ### 内部実装
@@ -114,9 +142,9 @@ snippetEndLine?: number;    // スニペット終了行（1-indexed）
   - `hybrid_search`: `['contextLines', 'filePattern', 'filePatterns', 'grepPattern', 'includeSnippet', 'language', 'query', 'topK']`
   - `get_context`: `['endLine', 'filePath', 'mode', 'startLine', 'symbolName']`
   - デフォルト動作（新パラメータなし）のレスポンスが現行通りであることを既存アサーションで担保
-  - 追加: `includeSnippet=true` でスニペット項目を含むこと、`mode: "deferred"` で mode/totalLines/hint を含み `content` を含まないことを integration もしくは で確認
-- `tests/unit/server/tools/hybrid-search.test.ts`: includeSnippet 前後、contextLines クランプ（> 20 → 20）、読込失敗時スキップ、パラメータが orchestrator に漏れないこと
-- `tests/unit/server/tools/get-context.test.ts`: eager 不変、deferred のレスポンス shape、totalLines、preview クランプ（20 行未満のファイル）
+  - 追加: `mode: "deferred"` で `mode` / `totalLines` / `hint` を含み `content` を含まないことを integration テストで確認
+- `tests/unit/server/tools/hybrid-search.test.ts`: `includeSnippet` 前後、`contextLines` クランプ（> 20 → 20）、同一ファイルの複数結果に対する読込キャッシュ、パラメータが orchestrator に漏れないこと、読込失敗時の graceful degradation
+- `tests/unit/server/tools/get-context.test.ts`: eager 不変、deferred のレスポンス shape、deferred + range 指定時のプレビュー範囲、`totalLines`、preview クランプ（20 行未満のファイル）
 
 ### ドキュメント
 
@@ -128,13 +156,16 @@ snippetEndLine?: number;    // スニペット終了行（1-indexed）
 ## エラーハンドリング方針
 
 - `get_context` の範囲逆転エラーは現行どおり throw（`errorResult` で `isError: true`）。
-- スニペット読込失敗は結果全体を失敗させない（その結果の snippet を省略）。
 - `contextLines` 非正整数は Zod schema が拒否。上限超過は clamp（エラーにしない）。
+- `includeSnippet=true` かつ `contextLines` 未指定の場合、`contextLines` は `3` として動作する。`includeSnippet=false`（または未指定）時はスニペットフィールドはレスポンスに含まれない。
+- 読込失敗した結果は `snippet` / `snippetStartLine` / `snippetEndLine` を含まず、それ以外の `chunk` / `score` / `source` / `rank` / `reciprocalRankScore` は維持される。
 
 ## メトリクス方針
 
-- スニペット行数は新メトリクスを増やさず、既存 `nexus_context_lines_fetched_total` の `tool_name="hybrid_search"` ラベルで計上する（MetricsHooks には toolName 引数があるため `get_context` 専用固定をやめ、hybrid からも呼べるようにする）。
-- deferred 時は `previewEndLine - previewStartLine + 1` 行を `tool_name="get_context"` で計上。
+- スニペット行数は新メトリクスを増やさず、既存 `nexus_context_lines_fetched_total` を使用する。
+  - `get_context` は `tool_name="get_context"` で計上（変更なし）。
+  - `hybrid_search` は `tool_name="hybrid_search"` で1回の検索呼び出しにつき**1回** `onContextLinesFetched` を呼び出す。計上する行数は、各結果のスニペット範囲を重複排除してマージした総行数（読込失敗したファイルは除外）。これにより複数結果が同一ファイルにまたがる場合でも実際に取得したユニーク行数を計上する。
+  - deferred 時は `previewEndLine - previewStartLine + 1` 行を `tool_name="get_context"` で計上。
 
 ## 非目標 (Out of Scope)
 
