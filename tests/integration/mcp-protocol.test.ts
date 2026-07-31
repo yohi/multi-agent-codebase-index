@@ -244,6 +244,30 @@ describe('Phase 2 MCP protocol integration', () => {
 
     expect(mockMetricsHooks.onContextLinesFetched).toHaveBeenCalledWith('get_context', 20);
   });
+
+  it('attaches populated snippet fields to hybrid_search results when includeSnippet is true', async () => {
+    client = new Client({ name: 'phase2-client', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
+    await client.connect(transport);
+
+    const parseResult = (result: any) => {
+      if (result.content?.[0]?.type === 'text') {
+        return JSON.parse(result.content[0].text);
+      }
+      return result.structuredContent;
+    };
+
+    const hybrid = await client.callTool({
+      name: 'hybrid_search',
+      arguments: { query: 'authenticate token', grepPattern: 'authenticate', includeSnippet: true },
+    });
+
+    const parsed = parseResult(hybrid);
+    expect(typeof parsed.results[0]?.snippet).toBe('string');
+    expect(parsed.results[0]?.snippet.length).toBeGreaterThan(0);
+    expect(typeof parsed.results[0]?.snippetStartLine).toBe('number');
+    expect(typeof parsed.results[0]?.snippetEndLine).toBe('number');
+  });
 });
 
 describe('MCP reindex factory integration', () => {
