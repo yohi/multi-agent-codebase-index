@@ -226,6 +226,44 @@ describe('executeHybridSearch', () => {
       expect(result.results[1]?.snippet).toBeDefined();
     });
 
+    it('sanitizes file path only once when multiple results share the same filePath', async () => {
+      const snippetResponse: SearchResponse = {
+        query: 'test',
+        tookMs: 1,
+        results: [
+          makeResult({ id: 'a', filePath: 'src/auth.ts', startLine: 3, endLine: 3 }),
+          makeResult({ id: 'b', filePath: 'src/auth.ts', startLine: 10, endLine: 10 }),
+        ],
+      };
+      const orchestrator = new StubOrchestrator(snippetResponse);
+      const content = Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join('\n');
+      let sanitizeCallCount = 0;
+      const countingSanitizer = {
+        validateGlob: (pattern: string) => {
+          if (pattern.includes('..')) {
+            throw new PathTraversalError(pattern);
+          }
+          return pattern;
+        },
+        sanitize: async (filePath: string) => {
+          sanitizeCallCount += 1;
+          return `/sandbox/${filePath}`;
+        },
+      };
+      const loader = async () => content;
+
+      const result = await executeHybridSearch(
+        orchestrator as never,
+        countingSanitizer as never,
+        loader,
+        { query: 'test', includeSnippet: true, contextLines: 1 },
+      );
+
+      expect(sanitizeCallCount).toBe(1);
+      expect(result.results[0]?.snippet).toBeDefined();
+      expect(result.results[1]?.snippet).toBeDefined();
+    });
+
     it('skips snippet fields for a result when file loading fails, while preserving the result', async () => {
       const snippetResponse: SearchResponse = {
         query: 'test',
