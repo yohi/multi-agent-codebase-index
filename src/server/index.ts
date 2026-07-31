@@ -16,6 +16,7 @@ import type {
 import { type PathSanitizer } from "./path-sanitizer.js";
 import { sanitizeErrorMessage } from "../utils/error-utils.js";
 import { executeGetContext } from "./tools/get-context.js";
+import { getContextInputSchema } from "./tools/get-context-schema.js";
 import { executeGrepSearch, type GrepSearchToolArgs } from "./tools/grep-search.js";
 import { executeHybridSearch, type HybridSearchToolArgs } from "./tools/hybrid-search.js";
 import { executeIndexStatus } from "./tools/index-status.js";
@@ -234,12 +235,7 @@ export const createNexusServer = (
     "get_context",
     {
       description: "Return a specific line range from a file; prefer partial reads.",
-      inputSchema: {
-        filePath: z.string(),
-        symbolName: z.string().optional(),
-        startLine: z.number().int().positive().optional(),
-        endLine: z.number().int().positive().optional(),
-      },
+      inputSchema: getContextInputSchema,
     },
     withToolMetrics(
       "get_context",
@@ -252,7 +248,9 @@ export const createNexusServer = (
             options.sanitizer,
             args,
           );
-          const lineCount = result.endLine - result.startLine + 1;
+          const lineCount = 'mode' in result
+            ? result.previewEndLine - result.previewStartLine + 1
+            : result.endLine - result.startLine + 1;
           options.metricsHooks?.onContextLinesFetched('get_context', lineCount);
           return toolResult(result);
         } catch (error) {

@@ -23,6 +23,7 @@ import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.
 import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
 import { PathSanitizer } from '../../src/server/path-sanitizer.js';
 import type { CodeChunk } from '../../src/types/index.js';
+import { createMockMetricsHooks } from '../shared/test-helpers.js';
 
 const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
   id: overrides.id ?? 'chunk-1',
@@ -40,6 +41,7 @@ describe('Phase 2 MCP protocol integration', () => {
   let httpServer: ReturnType<typeof createServer>;
   let baseUrl: string;
   let client: Client | null = null;
+  let mockMetricsHooks: ReturnType<typeof createMockMetricsHooks>;
   const fixtureRoot = path.resolve(process.cwd(), 'tests/fixtures/sample-project');
   const authFilePath = path.join(fixtureRoot, 'src/auth.ts');
 
@@ -77,6 +79,7 @@ describe('Phase 2 MCP protocol integration', () => {
     });
 
     const sanitizer = await PathSanitizer.create(fixtureRoot);
+    mockMetricsHooks = createMockMetricsHooks();
 
     const createTestServer = () =>
       createNexusServer({
@@ -91,6 +94,7 @@ describe('Phase 2 MCP protocol integration', () => {
         pluginRegistry,
         runReindex: async () => [],
         loadFileContent: async (filePath) => fs.readFile(filePath, 'utf8'),
+        metricsHooks: mockMetricsHooks,
       });
     const handler = createStreamableHttpHandler({ createServer: createTestServer });
 
@@ -166,7 +170,7 @@ describe('Phase 2 MCP protocol integration', () => {
         }),
       ),
     ).toEqual({
-      get_context: ['endLine', 'filePath', 'startLine', 'symbolName'],
+      get_context: ['endLine', 'filePath', 'mode', 'startLine', 'symbolName'],
       grep_search: ['caseSensitive', 'filePattern', 'filePatterns', 'maxResults', 'pattern'],
       hybrid_search: ['contextLines', 'filePattern', 'filePatterns', 'grepPattern', 'includeSnippet', 'language', 'query', 'topK'],
       index_status: [],
@@ -226,6 +230,19 @@ describe('Phase 2 MCP protocol integration', () => {
       reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
       chunksIndexed: 0,
     });
+  });
+
+  it('records the preview line count via onContextLinesFetched for deferred get_context calls', async () => {
+    client = new Client({ name: 'phase2-client', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
+    await client.connect(transport);
+
+    await client.callTool({
+      name: 'get_context',
+      arguments: { filePath: 'src/auth.ts', mode: 'deferred', startLine: 5 },
+    });
+
+    expect(mockMetricsHooks.onContextLinesFetched).toHaveBeenCalledWith('get_context', 20);
   });
 });
 
