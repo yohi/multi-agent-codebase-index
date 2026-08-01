@@ -354,6 +354,15 @@ Nexus は社内 Claude Code plugin marketplace（Bitbucket Cloud）を通じて 
 | `index_status` | 現在のインデックス進捗や統計情報の確認 |
 | `reindex` | インデックスの手動再作成 |
 
+### 検索コンテキストの効率化
+
+- `hybrid_search` に `includeSnippet: true` を指定すると、検索結果に前後のコードスニペットを追加できます。`contextLines` は前後の行数（既定値 3、最大 20）です。
+- スニペットのファイル読込に失敗しても、検索結果本体は維持され、該当結果のスニペットだけ省略されます。
+- `get_context` に `mode: "deferred"` を指定すると、全文ではなく行数・最大 20 行のプレビュー・追加取得案内を返します。必要な範囲は `startLine` / `endLine` を指定して再取得できます。
+- `mode` を省略した場合は従来どおり eager モードで、指定範囲の本文を返します。
+
+詳細な引数・レスポンス例は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
+
 ## 🏗 アーキテクチャ
 
 アーキテクチャの詳細な設計仕様、各コンポーネントの役割、およびセキュリティ機構については、[SPEC.md](SPEC.md) を参照してください。
