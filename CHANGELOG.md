@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.31.1](https://github.com/yohi/nexus/compare/v1.31.0...v1.31.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* processEvents の例外時にも indexing 状態をリセットする ([ba3b2f8](https://github.com/yohi/nexus/commit/ba3b2f8bb8e56c9db5e8b69751f711ca59800f05))
+* ダッシュボードのIndexing表示でtotalが0になる問題を修正 ([ab65c3f](https://github.com/yohi/nexus/commit/ab65c3f432a626b468415b70250a23764d65d36f))
+* ダッシュボードのIndexing表示でtotalが0になる問題を修正 ([4dce37d](https://github.com/yohi/nexus/commit/4dce37da42657d738b9b5cf4ff920ab46a2eafb0))
+
 ## [1.31.0](https://github.com/yohi/nexus/compare/v1.30.0...v1.31.0) (2026-08-01)
 
 
