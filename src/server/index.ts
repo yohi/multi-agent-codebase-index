@@ -221,6 +221,7 @@ export const createNexusServer = (
             options.loadFileContent,
             args as HybridSearchToolArgs & { filePattern?: string },
             extra?.signal,
+            options.metricsHooks,
           );
           options.metricsHooks?.onSearchResults('hybrid', result.results.length);
           return toolResult(result);

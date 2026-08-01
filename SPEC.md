@@ -193,6 +193,12 @@ Step 4: 修正・回答へ移行
 - **`hybrid_search` のスニペット付き応答**（[`src/server/tools/hybrid-search.ts`](src/server/tools/hybrid-search.ts)）: `includeSnippet: true` を指定すると、各結果の `chunk.startLine`/`endLine` を中心に前後 `contextLines` 行（デフォルト 3、20 を超える値は 20 にクランプ）を含むコードスニペットを取得し、`snippet` / `snippetStartLine` / `snippetEndLine` を結果へ追加します。これにより One-Call パターンにおいて、上位候補向けの追加 `get_context` 呼び出しを削減または省略できます。
 - **`get_context` の Deferred Loading モード**（[`src/server/tools/get-context.ts`](src/server/tools/get-context.ts)）: `mode: "deferred"` を指定すると、全文の代わりに `totalLines` / `summary`（プレビュー。`startLine` と `endLine` を両方明示指定した場合はその範囲を file bounds にクランプしたもの、それ以外はデフォルトで最大 20 行）/ `previewStartLine` / `previewEndLine` / `hint` を含む要約レスポンスを返し、全文展開をユーザーまたは下位ツールの要求に委ねます。
 - 両機能に共通する行範囲解決ロジック（`resolveLineRange` / `sliceContent`）は [`src/server/tools/context-helpers.ts`](src/server/tools/context-helpers.ts) に切り出され、`hybrid_search` と `get_context` の双方から利用されています。
+- `includeSnippet` / `contextLines` / `mode` はすべて任意入力です。`includeSnippet` 未指定または `false` の場合、スニペットフィールドは追加されません。`contextLines` は正の整数だけを受け付け、20を超える値は20にクランプされます。
+- スニペットのサニタイズまたはファイル読込に失敗した場合は、その結果の `chunk` / `score` / `source` / `rank` / `reciprocalRankScore` を維持したまま、スニペットフィールドだけを省略します。検索全体は失敗しません。
+- `get_context` の `mode` 未指定時は eager レスポンス（`filePath` / `content` / `startLine` / `endLine`）を維持します。deferred レスポンスには `content` / `startLine` / `endLine` を含めません。
+- 取得行数は既存の `nexus_context_lines_fetched_total` で計上します。`hybrid_search` は呼び出しごとに、読込成功したスニペット範囲を結果間で重複排除した行数を1回計上し、deferred はプレビュー範囲の行数を計上します。
+- **検索層との分離**: スニペット付与は `SearchOrchestrator` による検索の完了後（上位候補選出後）にツール層で行われます。表示専用の引数（`includeSnippet`, `contextLines`）は検索層の `SemanticSearchParams` には流出しません。
+- **パフォーマンスと安全性の保護**: 同一ツール呼び出し内で複数の検索結果が同じファイルを参照する場合、サニタイズとファイル読込はインメモリでキャッシュ（`Map<string, string | null>`）され、I/O 増幅を防ぎます。また、クライアントからのリクエストが中断（Abort）された場合、以降のスニペットファイル読込は開始されません。進行中の `loadFileContent` 読込はキャンセルされず、完了後に Abort を再確認します。
 
 各 MCP ツールの JSON Schema `description` は、ツール選択を支援する簡潔な説明へ
 最適化済みです。各ツールの JSON Schema は MCP プロトコル統合テストで、inputSchema の存在と `properties` キー集合を固定検証します。

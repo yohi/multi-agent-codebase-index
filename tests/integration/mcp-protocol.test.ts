@@ -45,6 +45,13 @@ describe('Phase 2 MCP protocol integration', () => {
   const fixtureRoot = path.resolve(process.cwd(), 'tests/fixtures/sample-project');
   const authFilePath = path.join(fixtureRoot, 'src/auth.ts');
 
+  const parseResult = (result: any) => {
+    if (result.content?.[0]?.type === 'text') {
+      return JSON.parse(result.content[0].text);
+    }
+    return result.structuredContent;
+  };
+
   beforeEach(async () => {
     const metadataStore = new InMemoryMetadataStore();
     const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
@@ -133,13 +140,6 @@ describe('Phase 2 MCP protocol integration', () => {
     client = new Client({ name: 'phase2-client', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
     await client.connect(transport);
-
-    const parseResult = (result: any) => {
-      if (result.content?.[0]?.type === 'text') {
-        return JSON.parse(result.content[0].text);
-      }
-      return result.structuredContent;
-    };
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
@@ -237,12 +237,48 @@ describe('Phase 2 MCP protocol integration', () => {
     const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
     await client.connect(transport);
 
-    await client.callTool({
+    const result = await client.callTool({
       name: 'get_context',
       arguments: { filePath: 'src/auth.ts', mode: 'deferred', startLine: 5 },
     });
 
+    const parsed = parseResult(result);
+    expect(parsed).toEqual({
+      filePath: 'src/auth.ts',
+      mode: 'deferred',
+      totalLines: expect.any(Number),
+      summary: expect.any(String),
+      previewStartLine: expect.any(Number),
+      previewEndLine: expect.any(Number),
+      hint: expect.any(String),
+    });
+    expect(parsed).not.toHaveProperty('content');
+    expect(parsed).not.toHaveProperty('startLine');
+    expect(parsed).not.toHaveProperty('endLine');
     expect(mockMetricsHooks.onContextLinesFetched).toHaveBeenCalledWith('get_context', 20);
+  });
+
+  it('returns the full eager response shape when get_context mode is omitted', async () => {
+    client = new Client({ name: 'phase2-client', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
+    await client.connect(transport);
+
+    const result = await client.callTool({
+      name: 'get_context',
+      arguments: { filePath: 'src/auth.ts', startLine: 1, endLine: 1 },
+    });
+
+    const parsed = parseResult(result);
+    expect(parsed).toEqual({
+      filePath: 'src/auth.ts',
+      content: expect.any(String),
+      startLine: expect.any(Number),
+      endLine: expect.any(Number),
+    });
+    expect(parsed).not.toHaveProperty('mode');
+    expect(parsed).not.toHaveProperty('totalLines');
+    expect(parsed).not.toHaveProperty('summary');
+    expect(mockMetricsHooks.onContextLinesFetched).toHaveBeenCalledWith('get_context', 1);
   });
 
   it('attaches populated snippet fields to hybrid_search results when includeSnippet is true', async () => {
@@ -267,6 +303,8 @@ describe('Phase 2 MCP protocol integration', () => {
     expect(parsed.results[0]?.snippet.length).toBeGreaterThan(0);
     expect(typeof parsed.results[0]?.snippetStartLine).toBe('number');
     expect(typeof parsed.results[0]?.snippetEndLine).toBe('number');
+    expect(mockMetricsHooks.onContextLinesFetched).toHaveBeenCalledTimes(1);
+    expect(mockMetricsHooks.onContextLinesFetched).toHaveBeenCalledWith('hybrid_search', 4);
   });
 });
 

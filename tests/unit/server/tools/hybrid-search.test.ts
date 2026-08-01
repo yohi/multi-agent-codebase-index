@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { executeHybridSearch } from '../../../../src/server/tools/hybrid-search.js';
 import type { RankedResult, SearchResponse } from '../../../../src/types/index.js';
@@ -68,7 +68,7 @@ describe('executeHybridSearch', () => {
       }),
     ).resolves.toEqual(response);
 
-    expect(orchestrator.lastSearchArgs).toMatchObject({
+    expect(orchestrator.lastSearchArgs).toEqual({
       query: 'authenticate',
       filePatterns: ['src/*.ts'],
     });
@@ -106,6 +106,29 @@ describe('executeHybridSearch', () => {
   });
 
   describe('snippet attachment', () => {
+    it('does not attach snippets when includeSnippet is omitted', async () => {
+      const snippetResponse: SearchResponse = {
+        query: 'test',
+        tookMs: 1,
+        results: [makeResult({ startLine: 3, endLine: 3 })],
+      };
+      const orchestrator = new StubOrchestrator(snippetResponse);
+      const loader = vi.fn(async () => 'line1\nline2\nline3\nline4\nline5');
+
+      const result = await executeHybridSearch(
+        orchestrator as never,
+        sanitizer as never,
+        loader,
+        { query: 'test' },
+      );
+
+      expect(result.results[0]?.snippet).toBeUndefined();
+      expect(result.results[0]?.snippetStartLine).toBeUndefined();
+      expect(result.results[0]?.snippetEndLine).toBeUndefined();
+      expect(loader).not.toHaveBeenCalled();
+      expect(orchestrator.lastSearchArgs).toEqual({ query: 'test' });
+    });
+
     it('does not attach snippets when includeSnippet is false', async () => {
       const snippetResponse: SearchResponse = {
         query: 'test',
@@ -113,7 +136,7 @@ describe('executeHybridSearch', () => {
         results: [makeResult({ startLine: 3, endLine: 3 })],
       };
       const orchestrator = new StubOrchestrator(snippetResponse);
-      const loader = async () => 'line1\nline2\nline3\nline4\nline5';
+      const loader = vi.fn(async () => 'line1\nline2\nline3\nline4\nline5');
 
       const result = await executeHybridSearch(
         orchestrator as never,
@@ -125,6 +148,27 @@ describe('executeHybridSearch', () => {
       expect(result.results[0]?.snippet).toBeUndefined();
       expect(result.results[0]?.snippetStartLine).toBeUndefined();
       expect(result.results[0]?.snippetEndLine).toBeUndefined();
+      expect(loader).not.toHaveBeenCalled();
+      expect(orchestrator.lastSearchArgs).toEqual({ query: 'test' });
+    });
+
+    it('does not forward includeSnippet or contextLines to the orchestrator', async () => {
+      const snippetResponse: SearchResponse = {
+        query: 'test',
+        tookMs: 1,
+        results: [makeResult({ startLine: 3, endLine: 3 })],
+      };
+      const orchestrator = new StubOrchestrator(snippetResponse);
+      const loader = vi.fn(async () => 'line1\nline2\nline3\nline4\nline5');
+
+      await executeHybridSearch(
+        orchestrator as never,
+        sanitizer as never,
+        loader,
+        { query: 'test', includeSnippet: true, contextLines: 50 },
+      );
+
+      expect(orchestrator.lastSearchArgs).toEqual({ query: 'test' });
     });
 
     it('attaches a snippet using the requested contextLines when includeSnippet is true', async () => {
@@ -226,6 +270,33 @@ describe('executeHybridSearch', () => {
       expect(result.results[1]?.snippet).toBeDefined();
     });
 
+    it('records merged snippet line ranges once across all successfully loaded files', async () => {
+      const snippetResponse: SearchResponse = {
+        query: 'test',
+        tookMs: 1,
+        results: [
+          makeResult({ id: 'shared-a', filePath: 'src/shared.ts', startLine: 3, endLine: 4 }),
+          makeResult({ id: 'shared-b', filePath: 'src/shared.ts', startLine: 5, endLine: 6 }),
+          makeResult({ id: 'other', filePath: 'src/other.ts', startLine: 8, endLine: 8 }),
+        ],
+      };
+      const orchestrator = new StubOrchestrator(snippetResponse);
+      const content = Array.from({ length: 10 }, (_, index) => `line${index + 1}`).join('\n');
+      const metricsHooks = { onContextLinesFetched: vi.fn() };
+
+      await executeHybridSearch(
+        orchestrator as never,
+        sanitizer as never,
+        async () => content,
+        { query: 'test', includeSnippet: true, contextLines: 1 },
+        undefined,
+        metricsHooks,
+      );
+
+      expect(metricsHooks.onContextLinesFetched).toHaveBeenCalledTimes(1);
+      expect(metricsHooks.onContextLinesFetched).toHaveBeenCalledWith('hybrid_search', 9);
+    });
+
     it('sanitizes file path only once when multiple results share the same filePath', async () => {
       const snippetResponse: SearchResponse = {
         query: 'test',
@@ -262,6 +333,37 @@ describe('executeHybridSearch', () => {
       expect(sanitizeCallCount).toBe(1);
       expect(result.results[0]?.snippet).toBeDefined();
       expect(result.results[1]?.snippet).toBeDefined();
+    });
+
+    it('does not start a snippet file read after the request is aborted', async () => {
+      const snippetResponse: SearchResponse = {
+        query: 'test',
+        tookMs: 1,
+        results: [
+          makeResult({ id: 'first', filePath: 'src/first.ts', startLine: 3, endLine: 3 }),
+          makeResult({ id: 'second', filePath: 'src/second.ts', startLine: 3, endLine: 3 }),
+        ],
+      };
+      const orchestrator = new StubOrchestrator(snippetResponse);
+      const controller = new AbortController();
+      const abortingSanitizer = {
+        ...sanitizer,
+        sanitize: async (filePath: string) => {
+          controller.abort();
+          return `/sandbox/${filePath}`;
+        },
+      };
+      const loader = vi.fn(async () => 'line1\nline2\nline3\nline4\nline5');
+
+      await executeHybridSearch(
+        orchestrator as never,
+        abortingSanitizer as never,
+        loader,
+        { query: 'test', includeSnippet: true, contextLines: 1 },
+        controller.signal,
+      );
+
+      expect(loader).not.toHaveBeenCalled();
     });
 
     it('skips snippet fields for a result when file loading fails, while preserving the result', async () => {

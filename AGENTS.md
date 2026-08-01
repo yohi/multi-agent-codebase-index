@@ -1,29 +1,55 @@
 # Instructions for AI Agents (Nexus)
 
-Nexus is a local-first MCP server for codebase indexing, hybrid search, and precise context retrieval for AI agents.
+Nexus is a local-first TypeScript MCP server that gives AI agents fast,
+private, evidence-based codebase search and context retrieval.
 
-## Project context
+## Repository map
 
-- **What**: TypeScript MCP server with local LanceDB vector store, ripgrep search, file-watching indexer, and observability dashboards.
-- **How**: Node.js >=24; use `npm` (package-lock.json present). Run `npx vitest` for tests and `npm run lint` for TypeScript changes.
-- **Why**: Give AI agents fast, private, evidence-based codebase exploration without external data transmission.
+- `src/`: MCP server, search/indexing pipeline, storage, plugins, and
+  observability runtime.
+- `packages/dashboard/`: npm workspace for the TUI and telemetry aggregator.
+- `tests/`: Vitest unit, integration, stress, and benchmark coverage.
 
-## Mandatory constraints <!-- #mandatory-constraints also kept for compatibility -->
+## Working conventions
 
-- Before setup, ask the user to choose **Source Build** or **Package Usage**; follow [docs/setup.md](docs/setup.md) after the choice.
+- Use Node.js >=24 and `npm`; `package-lock.json` is authoritative.
+- Prefer existing patterns and deterministic tools over prose style rules.
+- Keep local-first behavior intact: do not introduce external source-code transmission.
+- Do not commit credentials, tokens, machine-specific paths, or generated
+  local state.
+
+## Mandatory constraints
+
+<!-- #mandatory-constraints also kept for compatibility -->
+
+- Before setup, ask the user to choose **Source Build** or **Package Usage**,
+  then follow [docs/setup.md](docs/setup.md).
 - Never ask the user to paste secrets or GitHub tokens into chat.
-- Preserve local-first behavior; do not commit machine-specific paths, credentials, tokens, or generated local state.
-- Do not create project-level agent configuration files or directories; `.agents/skills/` is the canonical exception for this plan.
+- Do not create project-level agent configuration files or directories;
+  `.agents/skills/` is the repository's canonical skills location.
 
-## Tool selection triggers
+## Code investigation
 
-- Code investigation or design exploration → load `.agents/skills/code-search.md`.
-- Structural or call-tree tracing (only if `.codegraph/` exists) → use `codegraph_explore`.
-- Vague or conceptual search → use `nexus/hybrid_search`.
-- Exact symbol or error-string search → use `nexus/grep_search`.
-- Minimal file context retrieval → use `nexus/get_context` with `startLine` and `endLine`.
+- Load `.agents/skills/code-search.md` before code investigation or design exploration.
+- If `.codegraph/` exists, use `codegraph_explore` for structural or call-tree tracing.
+- Before Nexus searches, run `index_status`; use `hybrid_search` for conceptual
+  discovery and `grep_search` for exact symbols or error strings.
+- Use `get_context` with explicit `startLine` and `endLine` when the relevant
+  range is known.
 
 ## Verification
 
-- Run the narrowest relevant Vitest test first, then `npm run lint` for TypeScript changes.
-- For architecture, setup, configuration, distribution, and observability details, see [SPEC.md](SPEC.md), [docs/setup.md](docs/setup.md), [docs/configuration.md](docs/configuration.md), [docs/distribution.md](docs/distribution.md), and [docs/observability/README.md](docs/observability/README.md).
+- Run the narrowest relevant Vitest test first: `npx vitest run <test-file>`.
+- For TypeScript changes, run `npm run lint`; run `npm run build` when public
+  exports, package output, or workspace integration changes.
+- Run `npx vitest run` before completion when the change affects multiple
+  subsystems or shared behavior.
+
+## Progressive disclosure
+
+- Architecture and behavioral contracts: [SPEC.md](SPEC.md)
+- Setup choices and prerequisites: [docs/setup.md](docs/setup.md)
+- Runtime configuration: [docs/configuration.md](docs/configuration.md)
+- MCP tool inputs and responses: [docs/mcp-tools.md](docs/mcp-tools.md)
+- Distribution workflows: [docs/distribution.md](docs/distribution.md)
+- Metrics and dashboards: [docs/observability/README.md](docs/observability/README.md)
