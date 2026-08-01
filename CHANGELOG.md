@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.31.0](https://github.com/yohi/nexus/compare/v1.30.0...v1.31.0) (2026-08-01)
+
+
+### Features
+
+* extract shared context-helpers (resolveLineRange, sliceContent) ([b7d7d06](https://github.com/yohi/nexus/commit/b7d7d0676cae4355b2a834bc811740687738a31c))
+* get_context に Deferred Loading モードを追加 + ドキュメント整合 ([fe5e02f](https://github.com/yohi/nexus/commit/fe5e02fea8e131a641119e7750f142be817da8e1))
+* get_context の Deferred Loading モードを追加 ([14eeb64](https://github.com/yohi/nexus/commit/14eeb64a8139503f82313cbfe6bb80052b053147))
+* hybrid_search に includeSnippet オプションを追加 ([8be0d89](https://github.com/yohi/nexus/commit/8be0d8971b36204ac222561fedfb4cd98953d81b))
+* hybrid_search のスニペット機能を追加 ([3b20edb](https://github.com/yohi/nexus/commit/3b20edbdd67c579d771132ad9eac895b78864906))
+* hybrid_search のスニペット機能を追加 ([ae620bc](https://github.com/yohi/nexus/commit/ae620bc0d26b5f4d42a3b4af2533e06d7af434d4))
+
+
+### Bug Fixes
+
+* hybrid_searchのメトリクスと中断処理を修正 ([8d51091](https://github.com/yohi/nexus/commit/8d5109178dab52618feb0a53e22168acdad98b95))
+* preserve clamped values in get-context Invalid line range message ([dfcd7a3](https://github.com/yohi/nexus/commit/dfcd7a35fa759c8402fdd20fe05257af52c275f9))
+
+
+### Performance Improvements
+
+* hybrid_search の sanitize 結果をキャッシュして重複呼び出しを回避 ([6b69d91](https://github.com/yohi/nexus/commit/6b69d91141f4d0faa89681737ab41ce5c4df64c5))
+
 ## [1.30.0](https://github.com/yohi/nexus/compare/v1.29.1...v1.30.0) (2026-07-29)
 
 
