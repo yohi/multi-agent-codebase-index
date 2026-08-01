@@ -209,57 +209,60 @@ export class IndexPipeline implements IIndexPipeline {
     this.progress.totalFiles = events.length;
 
     let chunksIndexed = 0;
-    const renameCandidates = MerkleTree.detectRenameCandidates(events);
-    const consumedEvents = new Set<IndexEvent>();
+    try {
+      const renameCandidates = MerkleTree.detectRenameCandidates(events);
+      const consumedEvents = new Set<IndexEvent>();
 
-    for (const candidate of renameCandidates) {
-      const affected = await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
-      if (affected > 0) {
-        await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
-        consumedEvents.add(candidate.oldEvent);
-        consumedEvents.add(candidate.newEvent);
-      }
-    }
-
-    if (consumedEvents.size > 0) {
-      this.progress.totalFiles = Math.max(0, this.progress.totalFiles - consumedEvents.size);
-      this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
-    }
-
-    const pending: IndexEvent[] = [];
-    for (const event of events) {
-      if (consumedEvents.has(event)) {
-        continue;
+      for (const candidate of renameCandidates) {
+        const affected = await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
+        if (affected > 0) {
+          await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
+          consumedEvents.add(candidate.oldEvent);
+          consumedEvents.add(candidate.newEvent);
+        }
       }
 
-      if (event.type === 'deleted') {
-        this.progress.currentFile = event.filePath;
-        await this.handleDeleteEvent(event.filePath);
-        this.progress.processedFiles++;
+      if (consumedEvents.size > 0) {
+        this.progress.totalFiles = Math.max(0, this.progress.totalFiles - consumedEvents.size);
         this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
-        continue;
       }
 
-      pending.push(event);
-    }
+      const pending: IndexEvent[] = [];
+      for (const event of events) {
+        if (consumedEvents.has(event)) {
+          continue;
+        }
 
-    if (pending.length > 0 && loadContent === undefined) {
-      throw new Error('loadContent is required for added/modified events');
-    }
+        if (event.type === 'deleted') {
+          this.progress.currentFile = event.filePath;
+          await this.handleDeleteEvent(event.filePath);
+          this.progress.processedFiles++;
+          this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
+          continue;
+        }
 
-    for (let windowStart = 0; windowStart < pending.length; windowStart += this.embedBatchWindowSize) {
-      if (this.abortController.signal.aborted) {
-        break;
+        pending.push(event);
       }
-      const window = pending.slice(windowStart, windowStart + this.embedBatchWindowSize);
-      chunksIndexed += await this.processEventWindow(window, loadContent as ContentLoader);
-      this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
-    }
 
-    this.progress.currentFile = undefined;
-    this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
-    this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
-    return { chunksIndexed };
+      if (pending.length > 0 && loadContent === undefined) {
+        throw new Error('loadContent is required for added/modified events');
+      }
+
+      for (let windowStart = 0; windowStart < pending.length; windowStart += this.embedBatchWindowSize) {
+        if (this.abortController.signal.aborted) {
+          break;
+        }
+        const window = pending.slice(windowStart, windowStart + this.embedBatchWindowSize);
+        chunksIndexed += await this.processEventWindow(window, loadContent as ContentLoader);
+        this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
+      }
+
+      return { chunksIndexed };
+    } finally {
+      this.progress.currentFile = undefined;
+      this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
+      this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
+    }
   }
 
   private async readAndChunkFile(

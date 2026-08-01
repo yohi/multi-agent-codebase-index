@@ -70,4 +70,18 @@ describe('IndexPipeline progress metrics', () => {
     // processedFiles accumulates across incremental batches; totalFiles is reset per batch.
     expect(lastCall).toEqual([4, 3, false]);
   });
+
+  it('resets indexing state even when processEvents throws', async () => {
+    const { pipeline, onIndexingProgress } = await createPipelineWithProgressSpy();
+
+    await expect(
+      pipeline.processEvents([
+        { type: 'added', filePath: 'src/a.ts', detectedAt: new Date().toISOString() },
+      ]),
+    ).rejects.toThrow('loadContent is required for added/modified events');
+
+    const activeFlags = onIndexingProgress.mock.calls.map((call) => call[2]);
+    expect(activeFlags.at(-1)).toBe(false);
+    expect(pipeline.getProgress().currentFile).toBeUndefined();
+  });
 });
