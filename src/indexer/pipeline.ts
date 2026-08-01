@@ -203,6 +203,11 @@ export class IndexPipeline implements IIndexPipeline {
       this.isTreeLoaded = true;
     }
 
+    // For direct calls (incremental events from the drain loop), totalFiles may
+    // still be 0 from initialization. Set it to the current batch size so the
+    // dashboard can show meaningful progress instead of "N / 0 files".
+    this.progress.totalFiles = events.length;
+
     let chunksIndexed = 0;
     const renameCandidates = MerkleTree.detectRenameCandidates(events);
     const consumedEvents = new Set<IndexEvent>();
@@ -253,6 +258,7 @@ export class IndexPipeline implements IIndexPipeline {
 
     this.progress.currentFile = undefined;
     this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
+    this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
     return { chunksIndexed };
   }
 

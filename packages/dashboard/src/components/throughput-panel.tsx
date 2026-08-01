@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { MetricsJSON, MetricValue } from "../hooks/use-metrics.js";
-import { getValue, calculateAvgDuration } from "../utils/metrics.js";
+import { getValue, calculateAvgDuration, formatIndexingProgress } from "../utils/metrics.js";
 import { MetricPanel } from "./metric-panel.js";
 
 interface ThroughputPanelProps {
@@ -24,7 +24,7 @@ export const ThroughputPanel: React.FC<ThroughputPanelProps> = ({ data }) => {
         <Box marginBottom={1}>
           {isIndexing ? (
             <Text color="yellow" bold>
-              ● Indexing: {processed} / {total} files
+              ● {formatIndexingProgress(processed, total)}
             </Text>
           ) : (
             <Text color="gray">● Idle</Text>
