@@ -358,7 +358,7 @@ Nexus は社内 Claude Code plugin marketplace（Bitbucket Cloud）を通じて 
 
 - `hybrid_search` に `includeSnippet: true` を指定すると、検索結果に前後のコードスニペットを追加できます。`contextLines` は前後の行数（既定値 3、最大 20）です。
 - スニペットのファイル読込に失敗しても、検索結果本体は維持され、該当結果のスニペットだけ省略されます。
-- `get_context` に `mode: "deferred"` を指定すると、全文ではなく行数・最大 20 行のプレビュー・追加取得案内を返します。必要な範囲は `startLine` / `endLine` を指定して再取得できます。
+- `get_context` に `mode: "deferred"` を指定すると、全文ではなくプレビューと追加取得案内を返します。`startLine` と `endLine` を両方指定した場合はファイル境界にクランプしたその範囲、それ以外は最大 20 行をプレビューします。
 - `mode` を省略した場合は従来どおり eager モードで、指定範囲の本文を返します。
 
 詳細な引数・レスポンス例は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
