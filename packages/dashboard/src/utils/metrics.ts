@@ -77,3 +77,10 @@ export function calculateAvgDuration(
   const avg = totalSum / totalCount;
   return avg < 1 ? `${(avg * 1000).toFixed(0)}ms` : `${avg.toFixed(1)}s`;
 }
+
+export function formatIndexingProgress(processed: number, total: number): string {
+  if (total === 0 || processed > total) {
+    return `Indexing: ${processed} files`;
+  }
+  return `Indexing: ${processed} / ${total} files`;
+}
