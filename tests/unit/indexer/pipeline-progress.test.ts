@@ -68,8 +68,8 @@ describe('IndexPipeline progress metrics', () => {
     ]);
 
     const lastCall = onIndexingProgress.mock.calls.at(-1);
-    // processedFiles accumulates across incremental batches; totalFiles is reset per batch.
-    expect(lastCall).toEqual([4, 3, false]);
+    // Both processedFiles and totalFiles reflect the current batch only.
+    expect(lastCall).toEqual([3, 3, false]);
   });
 
   it('resets indexing state even when processEvents throws', async () => {

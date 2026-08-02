@@ -207,13 +207,11 @@ export class IndexPipeline implements IIndexPipeline {
       this.isTreeLoaded = true;
     }
 
-    const batchTotal = events.length;
-    this.progress.totalFiles = batchTotal;
-    let batchProcessed = 0;
+    this.progress.totalFiles = events.length;
+    this.progress.processedFiles = 0;
 
     let chunksIndexed = 0;
     let completedSuccessfully = false;
-    const cumulativeStartProcessed = this.progress.processedFiles;
 
     try {
       const renameCandidates = MerkleTree.detectRenameCandidates(events);
@@ -242,7 +240,6 @@ export class IndexPipeline implements IIndexPipeline {
           this.progress.currentFile = event.filePath;
           await this.handleDeleteEvent(event.filePath);
           this.progress.processedFiles++;
-          batchProcessed = Math.max(0, this.progress.processedFiles - cumulativeStartProcessed);
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
           continue;
         }
@@ -260,10 +257,9 @@ export class IndexPipeline implements IIndexPipeline {
         }
         const window = pending.slice(windowStart, windowStart + this.embedBatchWindowSize);
         chunksIndexed += await this.processEventWindow(window, loadContent as ContentLoader);
-        batchProcessed = Math.max(0, this.progress.processedFiles - cumulativeStartProcessed);
         this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
-        if (batchTotal > 1) {
-          this.safeLogProgress(`Progress: ${batchProcessed} / ${batchTotal} files`);
+        if (this.progress.totalFiles > 1) {
+          this.safeLogProgress(`Progress: ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
         }
       }
 
@@ -273,16 +269,15 @@ export class IndexPipeline implements IIndexPipeline {
       this.progress.currentFile = undefined;
       this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
 
-      batchProcessed = Math.max(0, this.progress.processedFiles - cumulativeStartProcessed);
       this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
 
-      if (batchTotal > 1) {
+      if (this.progress.totalFiles > 1) {
         if (completedSuccessfully) {
-          this.safeLogProgress(`Completed ${batchProcessed} / ${batchTotal} files`);
+          this.safeLogProgress(`Completed ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
         } else if (this.abortController.signal.aborted) {
-          this.safeLogProgress(`Cancelled after ${batchProcessed} / ${batchTotal} files`);
+          this.safeLogProgress(`Cancelled after ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
         } else {
-          this.safeLogProgress(`Failed after ${batchProcessed} / ${batchTotal} files`);
+          this.safeLogProgress(`Failed after ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
         }
       }
     }
