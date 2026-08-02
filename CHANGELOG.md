@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.31.3](https://github.com/yohi/nexus/compare/v1.31.2...v1.31.3) (2026-08-02)
+
+
+### Bug Fixes
+
+* trackProgress無効時に共有progress状態を汚染しないようcurrentFile/lastError書き込みをゲート ([1539c5c](https://github.com/yohi/nexus/commit/1539c5c4d5378e6d237823d64c79c1ea06f7bc3c))
+* 監視イベント処理で進捗カウンタを更新しないようtrackProgressオプションを追加 ([9e91275](https://github.com/yohi/nexus/commit/9e91275b2d5c0bc14b7f536584d2148976066717))
+* 監視イベント処理で進捗カウンタを更新しないようtrackProgressオプションを追加 ([ee11866](https://github.com/yohi/nexus/commit/ee11866c0debf17a6e93509705ea9e513c5a4a30))
+
 ## [1.31.2](https://github.com/yohi/nexus/compare/v1.31.1...v1.31.2) (2026-08-02)
 
 
