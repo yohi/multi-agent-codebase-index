@@ -230,8 +230,8 @@ export class IndexPipeline implements IIndexPipeline {
         }
       }
 
-      if (trackProgress) {
-        this.progress.totalFiles = events.length;
+      if (trackProgress && consumedEvents.size > 0) {
+        this.progress.totalFiles = Math.max(0, this.progress.totalFiles - consumedEvents.size);
       }
 
       const pending: IndexEvent[] = [];
