@@ -125,4 +125,32 @@ describe('IndexPipeline progress metrics', () => {
     expect(onIndexingProgress).not.toHaveBeenCalled();
     expect(pipeline.getProgress().totalFiles).toBe(1); // still from first call
   });
+
+  it('does not update indexing progress when trackProgress is false', async () => {
+    const { pipeline, onIndexingProgress } = await createPipelineWithProgressSpy();
+
+    // First, set up progress state as if a full scan is running.
+    await pipeline.processEvents([
+      { type: 'deleted', filePath: 'src/a.ts', detectedAt: new Date().toISOString() },
+      { type: 'deleted', filePath: 'src/b.ts', detectedAt: new Date().toISOString() },
+      { type: 'deleted', filePath: 'src/c.ts', detectedAt: new Date().toISOString() },
+    ]);
+    onIndexingProgress.mockClear();
+    const progressBefore = pipeline.getProgress();
+    expect(progressBefore.totalFiles).toBeGreaterThan(0);
+    expect(progressBefore.processedFiles).toBeGreaterThan(0);
+
+    // Processing a single event without progress tracking must not reset counters.
+    await pipeline.processEvents(
+      [{ type: 'deleted', filePath: 'src/d.ts', detectedAt: new Date().toISOString() }],
+      undefined,
+      { trackProgress: false },
+    );
+
+    expect(onIndexingProgress).not.toHaveBeenCalled();
+    const progressAfter = pipeline.getProgress();
+    expect(progressAfter.totalFiles).toBe(progressBefore.totalFiles);
+    expect(progressAfter.processedFiles).toBe(progressBefore.processedFiles);
+  });
+
 });

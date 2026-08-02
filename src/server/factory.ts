@@ -255,7 +255,7 @@ class EventProcessingManager {
           if (event.type === "reindex") {
             await this.triggerFullScan();
           } else {
-            await this.pipeline.processEvents([event], this.loadFileContent);
+            await this.pipeline.processEvents([event], this.loadFileContent, { trackProgress: false });
           }
         });
       } catch (error) {
