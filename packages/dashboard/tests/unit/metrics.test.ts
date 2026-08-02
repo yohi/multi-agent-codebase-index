@@ -98,3 +98,19 @@ describe("calculateAvgDuration", () => {
     expect(calculateAvgDuration(samples, baseName)).toBe("100ms");
   });
 });
+describe("formatIndexingProgress", () => {
+  it("shows processed/total when total is known", () => {
+    expect(formatIndexingProgress(50, 100)).toBe("Indexing: 50 / 100 files");
+  });
+
+  it("falls back to processed-only when total is 0", () => {
+    expect(formatIndexingProgress(4857, 0)).toBe("Indexing: 4857 files");
+  });
+
+  it("falls back to processed-only when processed exceeds total", () => {
+    expect(formatIndexingProgress(100, 50)).toBe("Indexing: 100 files");
+  });
+});
+
+import { formatIndexingProgress } from "../../src/utils/metrics.js";
+

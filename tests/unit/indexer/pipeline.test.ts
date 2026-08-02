@@ -634,4 +634,93 @@ describe('IndexPipeline', () => {
     const stats2 = await vectorStore2.getStats();
     expect(stats2.totalChunks).toBe(result1.chunksIndexed);
   });
+
+  it('reports processedFiles=2 for two-event batch via onIndexingProgress', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const progressCalls: Array<{ processed: number; total: number; active: boolean }> = [];
+
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+      metricsHooks: {
+        onIndexingProgress(processed, total, active) {
+          progressCalls.push({ processed, total, active });
+        },
+        onChunksIndexed() {},
+        onReindexComplete() {},
+        onDlqSnapshot() {},
+        onRecoverySweepComplete() {},
+      },
+    });
+
+    const content = await readFile(fixturePath, 'utf8');
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: 'src/file1.ts',
+          contentHash: 'hash1',
+          detectedAt: new Date().toISOString(),
+        },
+        {
+          type: 'added',
+          filePath: 'src/file2.ts',
+          contentHash: 'hash2',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    const finalCalls = progressCalls.filter((c) => !c.active);
+    expect(finalCalls.length).toBeGreaterThanOrEqual(1);
+    const finalCall = finalCalls[finalCalls.length - 1];
+    expect(finalCall.processed).toBe(2);
+    expect(finalCall.total).toBe(2);
+  });
+
+  it('logs cancelled state when aborted before processing', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const logs: string[] = [];
+
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+      onProgress: (msg) => logs.push(msg),
+    });
+
+    // Abort before calling processEvents so the loop breaks immediately
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (pipeline as any).abortController.abort();
+
+    const result = await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: 'src/file1.ts',
+          contentHash: 'hash1',
+          detectedAt: new Date().toISOString(),
+        },
+        {
+          type: 'added',
+          filePath: 'src/file2.ts',
+          contentHash: 'hash2',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => 'content',
+    );
+
+    expect(result.chunksIndexed).toBe(0);
+    const cancelledLog = logs.find((l) => l.includes('Cancelled'));
+    expect(cancelledLog).toBeDefined();
+  });
+
 });

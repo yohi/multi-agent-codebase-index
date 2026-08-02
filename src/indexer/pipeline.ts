@@ -198,17 +198,21 @@ export class IndexPipeline implements IIndexPipeline {
     events: IndexEvent[],
     loadContent?: ContentLoader,
   ): Promise<ProcessEventsResult> {
+    if (events.length === 0) {
+      return { chunksIndexed: 0 };
+    }
+
     if (!this.isTreeLoaded) {
       await this.merkleTree.load();
       this.isTreeLoaded = true;
     }
 
-    // For direct calls (incremental events from the drain loop), totalFiles may
-    // still be 0 from initialization. Set it to the current batch size so the
-    // dashboard can show meaningful progress instead of "N / 0 files".
     this.progress.totalFiles = events.length;
+    this.progress.processedFiles = 0;
 
     let chunksIndexed = 0;
+    let completedSuccessfully = false;
+
     try {
       const renameCandidates = MerkleTree.detectRenameCandidates(events);
       const consumedEvents = new Set<IndexEvent>();
@@ -224,7 +228,6 @@ export class IndexPipeline implements IIndexPipeline {
 
       if (consumedEvents.size > 0) {
         this.progress.totalFiles = Math.max(0, this.progress.totalFiles - consumedEvents.size);
-        this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
       }
 
       const pending: IndexEvent[] = [];
@@ -255,16 +258,30 @@ export class IndexPipeline implements IIndexPipeline {
         const window = pending.slice(windowStart, windowStart + this.embedBatchWindowSize);
         chunksIndexed += await this.processEventWindow(window, loadContent as ContentLoader);
         this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
+        if (this.progress.totalFiles > 1) {
+          this.safeLogProgress(`Progress: ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
+        }
       }
 
+      completedSuccessfully = !this.abortController.signal.aborted;
       return { chunksIndexed };
     } finally {
       this.progress.currentFile = undefined;
       this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
+
       this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
+
+      if (this.progress.totalFiles > 1) {
+        if (completedSuccessfully) {
+          this.safeLogProgress(`Completed ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
+        } else if (this.abortController.signal.aborted) {
+          this.safeLogProgress(`Cancelled after ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
+        } else {
+          this.safeLogProgress(`Failed after ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
+        }
+      }
     }
   }
-
   private async readAndChunkFile(
     event: IndexEvent,
     loadContent: ContentLoader,
@@ -496,11 +513,11 @@ export class IndexPipeline implements IIndexPipeline {
         this.progress.lastError = undefined;
         this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, 0, true); });
 
-        this.safeLogProgress(`Starting reindex (fullRebuild: ${!!fullRebuild})`);
         try {
           const events = await run({ fullScan: fullRebuild, reason: 'manual' });
           this.progress.totalFiles = events.length;
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, events.length, true); });
+          this.safeLogProgress(`Starting reindex of ${events.length} files (fullRebuild: ${!!fullRebuild})`);
 
           const { chunksIndexed } = await this.processEvents(events, loadContent);
 

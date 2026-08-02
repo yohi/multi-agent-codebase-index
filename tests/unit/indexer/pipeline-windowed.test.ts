@@ -275,6 +275,39 @@ describe('IndexPipeline – windowed batching', () => {
     const stats = await vectorStore.getStats();
     expect(stats.totalFiles).toBe(3);
   });
+
+  it('resets progress counters per processEvents call so processedFiles never exceeds totalFiles', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+      embedBatchWindowSize: 16,
+    });
+
+    const content = tsFunctions(1, 'progress');
+
+    await pipeline.processEvents(
+      [addEvent('src/first.ts', 'h1'), addEvent('src/second.ts', 'h2'), addEvent('src/third.ts', 'h3')],
+      async () => content,
+    );
+    expect(pipeline.getProgress()).toMatchObject({
+      processedFiles: 3,
+      totalFiles: 3,
+      status: 'idle',
+    });
+
+    await pipeline.processEvents([addEvent('src/fourth.ts', 'h4')], async () => content);
+    const progress = pipeline.getProgress();
+    expect(progress.processedFiles).toBeLessThanOrEqual(progress.totalFiles);
+    expect(progress).toMatchObject({
+      processedFiles: 1,
+      totalFiles: 1,
+      status: 'idle',
+    });
+  });
 });
 
 describe('IndexPipeline – chunk embedding cache', () => {
