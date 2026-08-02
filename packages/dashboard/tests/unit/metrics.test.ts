@@ -104,7 +104,7 @@ describe("formatIndexingProgress", () => {
   });
 
   it("falls back to processed-only when total is 0", () => {
-    expect(formatIndexingProgress(4857, 0)).toBe("Indexing: 4857 files");
+    expect(formatIndexingProgress(4857, 0)).toBe("Indexing: 4857 files (total unknown)");
   });
 
   it("falls back to processed-only when processed exceeds total", () => {
