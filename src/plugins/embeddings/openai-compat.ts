@@ -36,11 +36,21 @@ export class EmbedError extends Error {
   }
 }
 
+class EmbeddingCountMismatchError extends EmbedError {
+  constructor(
+    public readonly expected: number,
+    public readonly actual: number,
+    status?: number,
+  ) {
+    super(`OpenAI-compatible API returned ${actual} embeddings for ${expected} inputs`, status, false);
+    this.name = 'EmbeddingCountMismatchError';
+  }
+}
+
 export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
   readonly dimensions: number;
 
   private readonly limit;
-  private readonly requestLimit;
 
   constructor(
     private readonly config: Pick<
@@ -61,12 +71,11 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
     super();
     this.dimensions = config.dimensions;
     this.limit = pLimit(config.maxConcurrency);
-    this.requestLimit = pLimit(config.maxConcurrency);
   }
 
   async embed(texts: string[]): Promise<number[][]> {
     const batches = this.chunkTexts(texts, this.config.batchSize);
-    const promises = batches.map((batch) => this.limit(() => this.embedBatchWithRetry(batch)));
+    const promises = batches.map((batch) => this.embedBatchWithRetry(batch));
     const results = await Promise.all(promises);
 
     return results.flat();
@@ -128,12 +137,21 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        return await this.requestEmbeddings(batch);
+        return await this.limit(() => this.requestEmbeddings(batch));
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
 
         // Non-retriable errors should be thrown immediately
         if (error instanceof DimensionMismatchError) {
+          throw error;
+        }
+        if (error instanceof EmbeddingCountMismatchError) {
+          if (batch.length > 1) {
+            const individualResults = await Promise.all(
+              batch.map((text) => this.limit(() => this.requestEmbeddings([text]))),
+            );
+            return individualResults.flat();
+          }
           throw error;
         }
         if (error instanceof EmbedError && !error.retriable) {
@@ -195,17 +213,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
       }
 
       if (data.length !== batch.length) {
-        if (batch.length > 1) {
-          const individualResults = await Promise.all(
-            batch.map((text) => this.requestLimit(() => this.requestEmbeddings([text]))),
-          );
-          return individualResults.flat();
-        }
-        throw new EmbedError(
-          `OpenAI-compatible API returned ${data.length} embeddings for ${batch.length} inputs`,
-          response.status,
-          false,
-        );
+        throw new EmbeddingCountMismatchError(batch.length, data.length, response.status);
       }
 
       const embeddings: number[][] = [];

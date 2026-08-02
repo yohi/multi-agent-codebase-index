@@ -381,4 +381,46 @@ describe('OpenAICompatEmbeddingProvider', () => {
 
     expect(maxConcurrentObserved).toBe(1);
   });
+
+  it('shares maxConcurrency between batch requests and individual fallback requests', async () => {
+    let concurrentRequests = 0;
+    let maxConcurrentObserved = 0;
+
+    const mockFetch = vi.fn().mockImplementation(async (_url, options) => {
+      concurrentRequests++;
+      maxConcurrentObserved = Math.max(maxConcurrentObserved, concurrentRequests);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      const body = JSON.parse(options.body as string);
+      if (body.input.length > 1) {
+        concurrentRequests--;
+        return {
+          ok: true,
+          json: async () => ({ data: [{ embedding: [0.1, 0.2] }] }),
+        };
+      }
+
+      concurrentRequests--;
+      const vector = body.input[0] === 'text1' || body.input[0] === 'text3' ? [0.1, 0.2] : [0.3, 0.4];
+      return {
+        ok: true,
+        json: async () => ({ data: [{ embedding: vector }] }),
+      };
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(
+      { ...mockConfig, maxConcurrency: 2, batchSize: 2 },
+      { fetch: mockFetch, sleep: vi.fn() },
+    );
+
+    const result = await provider.embed(['text1', 'text2', 'text3', 'text4']);
+
+    expect(result).toEqual([
+      [0.1, 0.2],
+      [0.3, 0.4],
+      [0.1, 0.2],
+      [0.3, 0.4],
+    ]);
+    expect(maxConcurrentObserved).toBeLessThanOrEqual(2);
+  });
 });
