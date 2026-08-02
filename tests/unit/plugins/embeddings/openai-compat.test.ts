@@ -309,4 +309,76 @@ describe('OpenAICompatEmbeddingProvider', () => {
     const isHealthy = await provider.healthCheck();
     expect(isHealthy).toBe(false);
   });
+
+  it('governs fallback requests with request-level concurrency limiter', async () => {
+    let concurrentRequests = 0;
+    let maxConcurrentObserved = 0;
+
+    const mockFetch = vi.fn().mockImplementation(async (_url, options) => {
+      const body = JSON.parse(options.body as string);
+
+      concurrentRequests++;
+      maxConcurrentObserved = Math.max(maxConcurrentObserved, concurrentRequests);
+
+      // Simulate async work so concurrentRequests can stack if ungoverned
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      if (body.input.length > 1) {
+        concurrentRequests--;
+        return {
+          ok: true,
+          json: async () => ({ data: [{ embedding: [0.1, 0.2] }] }),
+        };
+      }
+
+      concurrentRequests--;
+      const vector = body.input[0] === 'text1' ? [0.1, 0.2] : [0.3, 0.4];
+      return {
+        ok: true,
+        json: async () => ({ data: [{ embedding: vector }] }),
+      };
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(
+      { ...mockConfig, maxConcurrency: 1, batchSize: 2 },
+      { fetch: mockFetch, sleep: vi.fn() },
+    );
+
+    const result = await provider.embed(['text1', 'text2']);
+
+    expect(result).toEqual([
+      [0.1, 0.2],
+      [0.3, 0.4],
+    ]);
+    expect(maxConcurrentObserved).toBe(1);
+  });
+
+  it('limits request concurrency during concurrent batch execution', async () => {
+    let concurrentRequests = 0;
+    let maxConcurrentObserved = 0;
+
+    const mockFetch = vi.fn().mockImplementation(async (_url, options) => {
+      concurrentRequests++;
+      maxConcurrentObserved = Math.max(maxConcurrentObserved, concurrentRequests);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      concurrentRequests--;
+
+      const body = JSON.parse(options.body as string);
+      return {
+        ok: true,
+        json: async () => ({
+          data: body.input.map(() => ({ embedding: [0.1, 0.2] })),
+        }),
+      };
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(
+      { ...mockConfig, maxConcurrency: 1, batchSize: 1 },
+      { fetch: mockFetch, sleep: vi.fn() },
+    );
+
+    await provider.embed(['text1', 'text2', 'text3']);
+
+    expect(maxConcurrentObserved).toBe(1);
+  });
 });

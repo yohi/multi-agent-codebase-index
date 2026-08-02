@@ -40,6 +40,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
   readonly dimensions: number;
 
   private readonly limit;
+  private readonly requestLimit;
 
   constructor(
     private readonly config: Pick<
@@ -60,6 +61,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
     super();
     this.dimensions = config.dimensions;
     this.limit = pLimit(config.maxConcurrency);
+    this.requestLimit = pLimit(config.maxConcurrency);
   }
 
   async embed(texts: string[]): Promise<number[][]> {
@@ -195,7 +197,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
       if (data.length !== batch.length) {
         if (batch.length > 1) {
           const individualResults = await Promise.all(
-            batch.map((text) => this.requestEmbeddings([text])),
+            batch.map((text) => this.requestLimit(() => this.requestEmbeddings([text]))),
           );
           return individualResults.flat();
         }
