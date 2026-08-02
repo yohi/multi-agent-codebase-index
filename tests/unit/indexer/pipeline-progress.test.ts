@@ -137,6 +137,8 @@ describe('IndexPipeline progress metrics', () => {
     ]);
     onIndexingProgress.mockClear();
     const progressBefore = pipeline.getProgress();
+    expect(progressBefore.totalFiles).toBeGreaterThan(0);
+    expect(progressBefore.processedFiles).toBeGreaterThan(0);
 
     // Processing a single event without progress tracking must not reset counters.
     await pipeline.processEvents(

@@ -241,7 +241,9 @@ export class IndexPipeline implements IIndexPipeline {
         }
 
         if (event.type === 'deleted') {
-          this.progress.currentFile = event.filePath;
+          if (trackProgress) {
+            this.progress.currentFile = event.filePath;
+          }
           await this.handleDeleteEvent(event.filePath);
           if (trackProgress) {
             this.progress.processedFiles++;
@@ -274,7 +276,9 @@ export class IndexPipeline implements IIndexPipeline {
       completedSuccessfully = !this.abortController.signal.aborted;
       return { chunksIndexed };
     } finally {
-      this.progress.currentFile = undefined;
+      if (trackProgress) {
+        this.progress.currentFile = undefined;
+      }
       this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
 
       if (trackProgress) {
@@ -389,7 +393,9 @@ export class IndexPipeline implements IIndexPipeline {
         const freshEmbeddings = await this.options.embeddingProvider.embed(missTexts);
         if (freshEmbeddings.length !== missTexts.length) {
           const msg = `Embedding count mismatch: expected ${missTexts.length}, got ${freshEmbeddings.length}`;
-          this.progress.lastError = msg;
+          if (trackProgress) {
+            this.progress.lastError = msg;
+          }
           throw new Error(msg);
         }
         // Write fresh embeddings back into resolvedEmbeddings and both caches.
@@ -417,7 +423,9 @@ export class IndexPipeline implements IIndexPipeline {
           }
         } else {
           // DimensionMismatchError and any other unexpected error abort the pipeline.
-          this.progress.lastError = error instanceof Error ? error.message : String(error);
+          if (trackProgress) {
+            this.progress.lastError = error instanceof Error ? error.message : String(error);
+          }
           throw error;
         }
       }
@@ -433,17 +441,21 @@ export class IndexPipeline implements IIndexPipeline {
       if (this.abortController.signal.aborted) {
         break;
       }
-      this.progress.currentFile = work.event.filePath;
+      if (trackProgress) {
+        this.progress.currentFile = work.event.filePath;
+      }
 
       // Extract embeddings and advance offset regardless of skip or DLQ-routing status to keep aligned
       const embeddings = allEmbeddings.slice(embeddingOffset, embeddingOffset + work.chunks.length);
       embeddingOffset += work.chunks.length;
 
       if (work.skipped) {
-        this.safeLogProgress(
-          `Skipping (${work.skipReason ?? 'file skipped'}): ${work.event.filePath}`,
-          work.event.filePath,
-        );
+        if (trackProgress) {
+          this.safeLogProgress(
+            `Skipping (${work.skipReason ?? 'file skipped'}): ${work.event.filePath}`,
+            work.event.filePath,
+          );
+        }
         this.skippedFiles.set(work.event.filePath, work.skipReason ?? 'file skipped');
         await this.options.vectorStore.deleteByFilePath(work.event.filePath);
         await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
