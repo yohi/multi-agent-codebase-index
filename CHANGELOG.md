@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.31.2](https://github.com/yohi/nexus/compare/v1.31.1...v1.31.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* OpenAI互換APIのバッチ応答件数不一致時に個別リクエストへフォールバック ([c79c36c](https://github.com/yohi/nexus/commit/c79c36cf5f8644d70227f29bf929b3c2421e22a7))
+* OpenAI互換APIのフォールバックにリクエストレベルの同時実行制限を追加 ([80c3772](https://github.com/yohi/nexus/commit/80c3772f247307545c8d4eea211fba0898b02aee))
+* OpenAI互換APIの同時実行制限を単一リミッターに統一しフォールバック時の並列超過を防止 ([77fd940](https://github.com/yohi/nexus/commit/77fd9402369b03c52c5e96132a94c24ade133396))
+* processEventsの進捗メトリクスで累積処理数とtotalFilesを正しく報告 ([31f6ad1](https://github.com/yohi/nexus/commit/31f6ad154622f73a6ad416b58ce4b03aad50c432))
+* インデックス進捗の可視化とOpenAI互換APIのフォールバック改善 ([8f13f91](https://github.com/yohi/nexus/commit/8f13f917c16d223512c2145b074d8ee3a28673d1))
+* インデックス進捗の可視化とtotalFilesの誤上書き防止 ([3dae994](https://github.com/yohi/nexus/commit/3dae99421775b224cfb71e43949970f4fce0ae0a))
+* インデックス進捗ログをバッチ単位に分離しキャンセル/失敗状態を出力 ([97b0129](https://github.com/yohi/nexus/commit/97b01292a0d8b3bed4ea5e79ba87d4c5dad32f84))
+* 進捗カウンタをprocessEvents呼び出し単位でリセットしtotalFiles超過を防止 ([18b8b07](https://github.com/yohi/nexus/commit/18b8b07cafcda3a47257cd914ef9ec0b415f5f3b))
+
 ## [1.31.1](https://github.com/yohi/nexus/compare/v1.31.0...v1.31.1) (2026-08-01)
 
 
