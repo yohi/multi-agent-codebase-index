@@ -208,6 +208,7 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     const batchTotal = events.length;
+    this.progress.totalFiles = batchTotal;
     let batchProcessed = 0;
 
     let chunksIndexed = 0;
@@ -242,7 +243,7 @@ export class IndexPipeline implements IIndexPipeline {
           await this.handleDeleteEvent(event.filePath);
           this.progress.processedFiles++;
           batchProcessed = Math.max(0, this.progress.processedFiles - cumulativeStartProcessed);
-          this.safeNotifyMetrics((h) => { h.onIndexingProgress(batchProcessed, batchTotal, true); });
+          this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
           continue;
         }
 
@@ -260,7 +261,7 @@ export class IndexPipeline implements IIndexPipeline {
         const window = pending.slice(windowStart, windowStart + this.embedBatchWindowSize);
         chunksIndexed += await this.processEventWindow(window, loadContent as ContentLoader);
         batchProcessed = Math.max(0, this.progress.processedFiles - cumulativeStartProcessed);
-        this.safeNotifyMetrics((h) => { h.onIndexingProgress(batchProcessed, batchTotal, true); });
+        this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
         if (batchTotal > 1) {
           this.safeLogProgress(`Progress: ${batchProcessed} / ${batchTotal} files`);
         }
@@ -273,7 +274,7 @@ export class IndexPipeline implements IIndexPipeline {
       this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
 
       batchProcessed = Math.max(0, this.progress.processedFiles - cumulativeStartProcessed);
-      this.safeNotifyMetrics((h) => { h.onIndexingProgress(batchProcessed, batchTotal, false); });
+      this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
 
       if (batchTotal > 1) {
         if (completedSuccessfully) {
