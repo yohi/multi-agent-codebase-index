@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { MetricsCollector } from '../../../src/observability/metrics-collector.js';
 
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
 import { createPipeline } from '../../shared/test-helpers.js';
@@ -83,5 +84,45 @@ describe('IndexPipeline progress metrics', () => {
     const activeFlags = onIndexingProgress.mock.calls.map((call) => call[2]);
     expect(activeFlags.at(-1)).toBe(false);
     expect(pipeline.getProgress().currentFile).toBeUndefined();
+  });
+  it('publishes metrics to MetricsCollector registry', async () => {
+    const metricsCollector = new MetricsCollector({ projectName: 'test-proj' });
+    const deps = await createPipeline();
+    const pipeline = new IndexPipeline({
+      metadataStore: deps.metadataStore,
+      vectorStore: deps.vectorStore,
+      chunker: deps.chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: deps.registry,
+      metricsHooks: metricsCollector,
+    });
+
+    await pipeline.processEvents([
+      { type: 'deleted', filePath: 'src/a.ts', detectedAt: new Date().toISOString() },
+      { type: 'deleted', filePath: 'src/b.ts', detectedAt: new Date().toISOString() },
+    ]);
+
+    const metrics = await metricsCollector.registry.getMetricsAsJSON();
+    const totalFiles = metrics.find((m) => m.name === 'nexus_indexing_total_files')?.values[0]?.value;
+    const processedFiles = metrics.find((m) => m.name === 'nexus_indexing_processed_files')?.values[0]?.value;
+    const active = metrics.find((m) => m.name === 'nexus_indexing_active')?.values[0]?.value;
+
+    expect(totalFiles).toBe(2);
+    expect(active).toBe(0);
+  });
+  it('does not overwrite totalFiles when processing an empty array', async () => {
+    const { pipeline, onIndexingProgress } = await createPipelineWithProgressSpy();
+
+    // First, process some events to set a non-zero total.
+    await pipeline.processEvents([
+      { type: 'deleted', filePath: 'src/a.ts', detectedAt: new Date().toISOString() },
+    ]);
+    onIndexingProgress.mockClear();
+
+    // Processing an empty array should be a no-op and not touch totalFiles.
+    const result = await pipeline.processEvents([]);
+    expect(result.chunksIndexed).toBe(0);
+    expect(onIndexingProgress).not.toHaveBeenCalled();
+    expect(pipeline.getProgress().totalFiles).toBe(1); // still from first call
   });
 });
