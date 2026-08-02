@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.31.4](https://github.com/yohi/nexus/compare/v1.31.3...v1.31.4) (2026-08-02)
+
+
+### Bug Fixes
+
+* renameイベントをprocessedFilesに計上し、冗長なtotalFiles代入を削除 ([132071c](https://github.com/yohi/nexus/commit/132071ccb843aa4d70569f11cd41cac0ce325a2d))
+* ダッシュボードのIndexing進捗で分母(total)が表示されない問題を修正 ([77f8d21](https://github.com/yohi/nexus/commit/77f8d21b14702b5548f0724e9b8147b9e818e344))
+* ダッシュボードのIndexing進捗で分母(total)が表示されない問題を修正 ([313b022](https://github.com/yohi/nexus/commit/313b022c7c6d05892ee1f84f883c9a3997e66266))
+* ダッシュボードのIndexing進捗で分母(total)が表示されない問題を修正 ([4132e5f](https://github.com/yohi/nexus/commit/4132e5f2f4bc870514c760a8469f3c3c44101d8b))
+
+
+### Reverts
+
+* ダッシュボードのIndexing進捗の分母修正を取り消し ([652190f](https://github.com/yohi/nexus/commit/652190fe4cf8d01fe11d67cfc1f1e576e0fcd0bc))
+
 ## [1.31.3](https://github.com/yohi/nexus/compare/v1.31.2...v1.31.3) (2026-08-02)
 
 
