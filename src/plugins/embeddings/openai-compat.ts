@@ -193,6 +193,12 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
       }
 
       if (data.length !== batch.length) {
+        if (batch.length > 1) {
+          const individualResults = await Promise.all(
+            batch.map((text) => this.requestEmbeddings([text])),
+          );
+          return individualResults.flat();
+        }
         throw new EmbedError(
           `OpenAI-compatible API returned ${data.length} embeddings for ${batch.length} inputs`,
           response.status,

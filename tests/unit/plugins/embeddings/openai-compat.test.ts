@@ -235,11 +235,42 @@ describe('OpenAICompatEmbeddingProvider', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1); // No retry
   });
 
-  it('throws EmbedError immediately if returned embedding count does not match input count', async () => {
+  it('falls back to requesting embeddings per item if returned count does not match input count', async () => {
+    const mockFetch = vi.fn().mockImplementation(async (_url, options) => {
+      const body = JSON.parse(options.body as string);
+      if (body.input.length > 1) {
+        // Simulates an unbatched OpenAI-compatible API returning only 1 embedding when batched
+        return {
+          ok: true,
+          json: async () => ({ data: [{ embedding: [0.1, 0.2] }] }),
+        };
+      }
+      // Single item requests return their respective vector
+      const vector = body.input[0] === 'text1' ? [0.1, 0.2] : [0.3, 0.4];
+      return {
+        ok: true,
+        json: async () => ({ data: [{ embedding: vector }] }),
+      };
+    });
+
+    const provider = new OpenAICompatEmbeddingProvider(mockConfig, {
+      fetch: mockFetch,
+      sleep: vi.fn(),
+    });
+
+    const result = await provider.embed(['text1', 'text2']);
+    expect(result).toEqual([
+      [0.1, 0.2],
+      [0.3, 0.4],
+    ]);
+    expect(mockFetch).toHaveBeenCalledTimes(3); // 1 initial batched call + 2 fallback calls
+  });
+
+  it('throws EmbedError immediately if returned embedding count does not match single input count', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        data: [{ embedding: [0.1, 0.2] }], // Only 1 embedding for 2 inputs
+        data: [], // 0 embeddings for 1 input
       }),
     });
 
@@ -248,9 +279,9 @@ describe('OpenAICompatEmbeddingProvider', () => {
       sleep: vi.fn(),
     });
 
-    const promise = provider.embed(['text1', 'text2']);
+    const promise = provider.embed(['text1']);
     await expect(promise).rejects.toThrow(EmbedError);
-    await expect(promise).rejects.toThrow(/returned 1 embeddings for 2 inputs/);
+    await expect(promise).rejects.toThrow(/returned 0 embeddings for 1 inputs/);
     expect(mockFetch).toHaveBeenCalledTimes(1); // No retry
   });
 
