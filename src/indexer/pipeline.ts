@@ -220,6 +220,7 @@ export class IndexPipeline implements IIndexPipeline {
     try {
       const renameCandidates = MerkleTree.detectRenameCandidates(events);
       const consumedEvents = new Set<IndexEvent>();
+      let renamedEventCount = 0;
 
       for (const candidate of renameCandidates) {
         const affected = await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
@@ -227,11 +228,12 @@ export class IndexPipeline implements IIndexPipeline {
           await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
           consumedEvents.add(candidate.oldEvent);
           consumedEvents.add(candidate.newEvent);
+          renamedEventCount += 2;
         }
       }
 
       if (trackProgress) {
-        this.progress.totalFiles = events.length;
+        this.progress.processedFiles += renamedEventCount;
       }
 
       const pending: IndexEvent[] = [];

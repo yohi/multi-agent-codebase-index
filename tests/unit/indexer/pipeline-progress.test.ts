@@ -153,4 +153,30 @@ describe('IndexPipeline progress metrics', () => {
     expect(progressAfter.processedFiles).toBe(progressBefore.processedFiles);
   });
 
+  it('counts renamed events toward processedFiles', async () => {
+    const { pipeline, onIndexingProgress } = await createPipelineWithProgressSpy();
+    const content = 'export const test = 1;';
+    const hash = 'hash-rename-progress';
+
+    // Seed the index so the old path exists for rename detection.
+    await pipeline.processEvents(
+      [{ type: 'added', filePath: 'src/old.ts', contentHash: hash, detectedAt: new Date().toISOString() }],
+      async () => content,
+    );
+    onIndexingProgress.mockClear();
+
+    // Rename should consume both the deleted and added events.
+    await pipeline.processEvents(
+      [
+        { type: 'deleted', filePath: 'src/old.ts', contentHash: hash, detectedAt: new Date().toISOString() },
+        { type: 'added', filePath: 'src/new.ts', contentHash: hash, detectedAt: new Date().toISOString() },
+      ],
+      async () => content,
+    );
+
+    const lastCall = onIndexingProgress.mock.calls.at(-1);
+    expect(lastCall).toEqual([2, 2, false]);
+    expect(pipeline.getProgress().processedFiles).toBe(2);
+  });
 });
+
