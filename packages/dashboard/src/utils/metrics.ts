@@ -79,6 +79,9 @@ export function calculateAvgDuration(
 }
 
 export function formatIndexingProgress(processed: number, total: number): string {
+  if (total === 0 && processed > 0) {
+    return `Indexing: ${processed} files (total unknown)`;
+  }
   if (total === 0 || processed > total) {
     return `Indexing: ${processed} files`;
   }
