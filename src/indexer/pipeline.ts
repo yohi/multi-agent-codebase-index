@@ -197,6 +197,7 @@ export class IndexPipeline implements IIndexPipeline {
   async processEvents(
     events: IndexEvent[],
     loadContent?: ContentLoader,
+    options: { trackProgress?: boolean } = {},
   ): Promise<ProcessEventsResult> {
     if (events.length === 0) {
       return { chunksIndexed: 0 };
@@ -207,8 +208,11 @@ export class IndexPipeline implements IIndexPipeline {
       this.isTreeLoaded = true;
     }
 
-    this.progress.totalFiles = events.length;
-    this.progress.processedFiles = 0;
+    const trackProgress = options.trackProgress ?? true;
+    if (trackProgress) {
+      this.progress.totalFiles = events.length;
+      this.progress.processedFiles = 0;
+    }
 
     let chunksIndexed = 0;
     let completedSuccessfully = false;
@@ -226,7 +230,7 @@ export class IndexPipeline implements IIndexPipeline {
         }
       }
 
-      if (consumedEvents.size > 0) {
+      if (trackProgress && consumedEvents.size > 0) {
         this.progress.totalFiles = Math.max(0, this.progress.totalFiles - consumedEvents.size);
       }
 
@@ -239,8 +243,10 @@ export class IndexPipeline implements IIndexPipeline {
         if (event.type === 'deleted') {
           this.progress.currentFile = event.filePath;
           await this.handleDeleteEvent(event.filePath);
-          this.progress.processedFiles++;
-          this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
+          if (trackProgress) {
+            this.progress.processedFiles++;
+            this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
+          }
           continue;
         }
 
@@ -256,9 +262,11 @@ export class IndexPipeline implements IIndexPipeline {
           break;
         }
         const window = pending.slice(windowStart, windowStart + this.embedBatchWindowSize);
-        chunksIndexed += await this.processEventWindow(window, loadContent as ContentLoader);
-        this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
-        if (this.progress.totalFiles > 1) {
+        chunksIndexed += await this.processEventWindow(window, loadContent as ContentLoader, trackProgress);
+        if (trackProgress) {
+          this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
+        }
+        if (trackProgress && this.progress.totalFiles > 1) {
           this.safeLogProgress(`Progress: ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
         }
       }
@@ -269,9 +277,11 @@ export class IndexPipeline implements IIndexPipeline {
       this.progress.currentFile = undefined;
       this.safeNotifyMetrics((h) => { h.onChunksIndexed(chunksIndexed); });
 
-      this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
+      if (trackProgress) {
+        this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
+      }
 
-      if (this.progress.totalFiles > 1) {
+      if (trackProgress && this.progress.totalFiles > 1) {
         if (completedSuccessfully) {
           this.safeLogProgress(`Completed ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
         } else if (this.abortController.signal.aborted) {
@@ -323,6 +333,7 @@ export class IndexPipeline implements IIndexPipeline {
   private async processEventWindow(
     window: IndexEvent[],
     loadContent: ContentLoader,
+    trackProgress: boolean,
   ): Promise<number> {
     // Stage 1: bounded-concurrency read + chunk (no Merkle/vector writes here).
     const limit = pLimit(this.chunkConcurrency);
@@ -436,7 +447,9 @@ export class IndexPipeline implements IIndexPipeline {
         this.skippedFiles.set(work.event.filePath, work.skipReason ?? 'file skipped');
         await this.options.vectorStore.deleteByFilePath(work.event.filePath);
         await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
-        this.progress.processedFiles++;
+        if (trackProgress) {
+          this.progress.processedFiles++;
+        }
         continue;
       }
 
@@ -445,7 +458,9 @@ export class IndexPipeline implements IIndexPipeline {
         await this.options.vectorStore.deleteByFilePath(work.event.filePath);
         await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
         this.skippedFiles.delete(work.event.filePath);
-        this.progress.processedFiles++;
+        if (trackProgress) {
+          this.progress.processedFiles++;
+        }
         continue;
       }
 
@@ -458,7 +473,9 @@ export class IndexPipeline implements IIndexPipeline {
           errorMessage: embedError!.message,
           attempts: embedError!.attempts,
         });
-        this.progress.processedFiles++;
+        if (trackProgress) {
+          this.progress.processedFiles++;
+        }
         continue;
       }
 
@@ -466,7 +483,9 @@ export class IndexPipeline implements IIndexPipeline {
       await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
       this.skippedFiles.delete(work.event.filePath);
       chunksIndexed += work.chunks.length;
-      this.progress.processedFiles++;
+      if (trackProgress) {
+        this.progress.processedFiles++;
+      }
     }
 
     return chunksIndexed;
@@ -519,7 +538,7 @@ export class IndexPipeline implements IIndexPipeline {
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, events.length, true); });
           this.safeLogProgress(`Starting reindex of ${events.length} files (fullRebuild: ${!!fullRebuild})`);
 
-          const { chunksIndexed } = await this.processEvents(events, loadContent);
+          const { chunksIndexed } = await this.processEvents(events, loadContent, { trackProgress: true });
 
           const finishedAt = new Date().toISOString();
           const durationMs = Date.now() - startTime;
