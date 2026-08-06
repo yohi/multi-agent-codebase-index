@@ -49,6 +49,33 @@ describe('OpenAICompatEmbeddingProvider', () => {
     });
   });
 
+  it('uses full path as target URL when baseUrl contains a pathname', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ embedding: [0.1, 0.2] }],
+      }),
+    });
+
+    // Test with full path https://xxx.com/v1/embeddings
+    const providerV1Embeddings = new OpenAICompatEmbeddingProvider(
+      { ...mockConfig, baseUrl: 'https://xxx.com/v1/embeddings' },
+      { fetch: mockFetch, sleep: vi.fn() },
+    );
+    await providerV1Embeddings.embed(['test']);
+    expect(mockFetch.mock.calls[0][0]).toBe('https://xxx.com/v1/embeddings');
+
+    mockFetch.mockClear();
+
+    // Test with full path https://xxx.com/embeddings (e.g. TrueFoundry)
+    const providerEmbeddings = new OpenAICompatEmbeddingProvider(
+      { ...mockConfig, baseUrl: 'https://gateway.truefoundry.ai/embeddings' },
+      { fetch: mockFetch, sleep: vi.fn() },
+    );
+    await providerEmbeddings.embed(['test']);
+    expect(mockFetch.mock.calls[0][0]).toBe('https://gateway.truefoundry.ai/embeddings');
+  });
+
   it('sends custom headers if configured', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,

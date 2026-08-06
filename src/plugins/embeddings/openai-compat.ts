@@ -123,8 +123,15 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
   }
 
   private buildUrl(path: string): string {
-    const baseUrl = this.config.baseUrl || 'https://api.openai.com';
-    const url = new URL(baseUrl);
+    const baseUrl = this.config.baseUrl;
+    if (baseUrl) {
+      const url = new URL(baseUrl);
+      if (url.pathname !== '/' && url.pathname !== '') {
+        return url.toString();
+      }
+    }
+    const base = baseUrl || 'https://api.openai.com';
+    const url = new URL(base);
     const trimmedPath = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
     url.pathname = `${trimmedPath}${path}`;
     return url.toString();
