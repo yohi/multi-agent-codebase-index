@@ -51,6 +51,14 @@ Nexus はローカル MCP サーバーとして AST チャンキング、ベク�
 | 4 | **スキーマは SDK 中立で定義し、アダプタで変換** | zod v4 移行を局所化。v1 アダプタで zod v3、v2 アダプタで zod v4 へ変換する。 |
 | 5 | **実装はボトムアップ段階移行（Phase 1a → 1b → 2a → 2b）** | 各段階でテストが通る中間状態を確保し、失敗時の切り戻しを容易にする。 |
 
+### 4.1 移行対象の整理
+
+| 経路 | 使用パッケージ | `/mcp` 接続先 | 移行フェーズ | 備考 |
+|---|---|---|---|---|
+| Legacy stdio | `@modelcontextprotocol/sdk` v1 | 該当なし | 変更なし | 最も利用されている経路の回帰リスクをゼロにする |
+| `nexus http-bridge` | `@modelcontextprotocol/sdk` v1 | 既存 managed HTTP server `/mcp` | 変更なし | 既存 UX を維持。v2 化は新 `serve` に委ねる |
+| `nexus serve` | `@modelcontextprotocol/server` v2 | SDK v2 `createMcpHandler` `/mcp` | Phase 2 | 新規 loopback HTTP 経路 |
+
 ## 5. 前提となる検証済み事実
 
 外部ドキュメント調査により以下が確認されている。
@@ -162,10 +170,14 @@ interface ContentStore {
   get(contentHash: string): Promise<Uint8Array | null>;
   delete(contentHash: string): Promise<void>;
   exists(contentHash: string): Promise<boolean>;
+  readRange(path: string, startLine: number, endLine: number): Promise<string>;
 }
 ```
 
-Phase 2 では `LocalContentStore` のみ実装。`get_context` 等は `loadFileContent` の代わりに `ContentStore` 経由に切り替える。`put/delete` は Phase 4（Sync Agent）まで未実装としてもよい（Local 検索では読み取り専用で足りる）。
+Phase 2 では `LocalContentStore` のみ実装。
+`get_context` 等は `loadFileContent` の代わりに `ContentStore.readRange(path, startLine, endLine)` 経由に切り替える。
+`readRange` は PathSanitizer 検証後、必要に応じて Merkle Tree（`MetadataStore`）で `path` → `contentHash` を解決し、`get` でバイト列を取得して行範囲を抽出する。
+`put/delete` は Phase 4（Sync Agent）まで未実装としてもよい（Local 検索では読み取り専用で足りる）。
 
 ### 7.4 変更: `src/bin/`（Phase 2）
 

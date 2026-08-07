@@ -448,6 +448,8 @@ interface ContentStore {
   put(contentHash: string, content: Uint8Array): Promise<void>;
   get(contentHash: string): Promise<Uint8Array | null>;
   delete(contentHash: string): Promise<void>;
+  exists(contentHash: string): Promise<boolean>;
+  readRange(path: string, startLine: number, endLine: number): Promise<string>;
 }
 ```
 
@@ -1190,7 +1192,8 @@ CoreおよびTool Handlerから、D1、Vectorize、R2、SQLite、LanceDBを直�
 
 `nexus http-bridge`を維持する。
 
-HTTP BridgeはMCP v2 `/mcp`へ接続するよう変更する。
+`nexus serve` は MCP v2 `/mcp` を提供する。
+`nexus http-bridge` は現行 SDK v1 のまま維持し、既存の managed HTTP server `/mcp` へ接続する。
 
 managed serverの起動・停止は、`Mcp-Session-Id`やプロトコルセッション数では管理しない。
 
