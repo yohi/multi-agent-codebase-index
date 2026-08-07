@@ -27,7 +27,7 @@ Nexus はローカル MCP サーバーとして AST チャンキング、ベク�
 - Phase 1b: MetadataStore / VectorStore インターフェースの整理、ContentStore の新設
 - Phase 2a: MCP SDK v2 への移行、`Mcp-Session-Id` およびセッション Map の廃止
 - Phase 2b: `/mcp` エンドポイント、`server/discover`、ヘッダー検証、`/health`・`/ready` の実装
-- Phase 2c: 新規 `nexus serve` サブコマンド（loopback デフォルト）
+- Phase 2c: 新規 `nexus serve` サブコマンド（loopback デフォルト、非 loopback host 指定時は fail-closed）
 
 ### 3.2 含まない範囲（将来の設計に委譲）
 
@@ -36,6 +36,8 @@ Nexus はローカル MCP サーバーとして AST チャンキング、ベク�
 - Phase 5: Cloud Storage Adapter（D1 / Vectorize / R2 / S3 / Supabase 等）
 - Phase 6: Cloud MCP Worker / Cloudflare デプロイ
 - Phase 7: 正式移行と stdio の Legacy 明示化
+
+なお、Phase 2 の `nexus serve` は `--allow-network` および認証を含まないため、loopback インターフェース以外での bind は起動時に拒否する。`--host 127.0.0.1`（または `--host localhost` などの loopback）のみ許可する。`--allow-network` 自体は Phase 3 で導入する。
 
 ## 4. 確定した設計判断
 
@@ -99,6 +101,17 @@ Nexus はローカル MCP サーバーとして AST チャンキング、ベク�
 - **ツール登録の抽象化**: ツール定義を SDK 非依存の中立 DSL で保持し、v1 / v2 用アダプタでそれぞれの SDK へ変換する。
 - **共有リソースのクロージャ注入**: `createMcpHandler` はリクエストごとに `McpServer` を生成するが、SQLite / LanceDB / Watcher / Embedding Provider は serve プロセス起動時に1つ構築し、ファクトリクロージャで共有する。これにより要件 §4.1「MCP クライアント接続単位で SQLite 等を生成しない」を満たす。
 - **Origin/Host 検証の自前実装**: SDK v2 側が行わないため、`serve` 側に薄いミドルウェアを挟む。
+
+#### Local HTTP v2 の local-only 契約
+
+Local HTTP v2 では、ソースコード・インデックス・Embedding 処理を一切外部に送信しない。これを保証するため:
+
+- `storage-profile: local`（または専用の local-only 設定）では、外部 Embedding Provider（`openai-compat` / `bedrock` 等）を `loadConfig` 時に拒否し、fail-fast とする。
+- ローカル実装（`LocalContentStore` / SQLite / LanceDB / `ollama` 等のローカル Embedding）が強制される。
+- 外部ネットワーク接続なしで `index` / `search` / `get_context` が成功することを検証するテストを追加する。
+- remote provider 設定（`openai-compat` / `bedrock`）が local-only モードで拒否されることを検証するテストを追加する。
+
+Package Mode（`NEXUS_PACKAGE_MODE=1`）は既存の bedrock 固定動作を維持するが、Local HTTP v2 の local-only 契約とは区別して扱う。
 
 ## 7. モジュール分割
 
@@ -181,9 +194,17 @@ Storage Adapters
 ```
 
 禁止事項:
+
 - Transport 層から Storage Adapter 層への直接 import
-- `v2-adapter.ts` 以外での `@modelcontextprotocol/server` import
+- `v2-adapter.ts` および `server-factory.ts` 以外での `@modelcontextprotocol/server` import
 - `entry.ts` 以外での `toNodeHandler` 使用
+
+責務:
+
+- `server-factory.ts` は `@modelcontextprotocol/server` から `createMcpHandler` を import し、ファクトリ関数を組み立てる。
+- `v2-adapter.ts` は `server-factory.ts` から渡された `McpServer`（v2）インスタンスにツールを登録する。
+- `transport.ts` は `toNodeHandler()` の変換のみを責務とし、`entry.ts` から呼び出される。`entry.ts` 以外からの使用は禁止する。
+- 上記を除く `@modelcontextprotocol/server` / `toNodeHandler` の使用は、設計書の改訂なしには追加しない。
 
 ## 8. データフロー
 
@@ -195,10 +216,11 @@ Storage Adapters
     → loadConfig()
     → NexusRuntime 構築（SQLite / LanceDB / Watcher / Pipeline を1つだけ生成）
     → runtime.initialize()（既存 stdio と同じ遅延初期化パターン）
-    → createMcpHandler(factory) を構築
+    → createMcpHandler(factory, { legacy: "reject" }) を構築（2025-era リクエストは拒否）
     → /health, /ready ルート登録
     → 127.0.0.1:9200 で listen
 
+`createMcpHandler` の `legacy` オプションは `"accept"` / `"reject"` を取る。Phase 2 では `2026-07-28` のみをサポートするため `"reject"` とし、2025-era のリクエストは SDK 側で 400 または 406 を返す。将来両世代を受け付ける場合は、`legacy: "accept"` に変更し、リクエストの `MCP-Protocol-Version` ヘッダーに応じて v1 / v2 のハンドラを切り替えるルーティング方針を別途設計する。
 リクエストごと（POST /mcp）:
   1. headers.ts: Origin / Host 検証 → 失敗時 403
   2. createMcpHandler: Content-Type / Accept / MCP-Protocol-Version /
@@ -304,10 +326,16 @@ GET /ready
 | 統合 | `/mcp` 以外への POST で 404 | 同上 |
 | 統合 | レスポンスに `Mcp-Session-Id` が含まれないこと | 同上 |
 | E2E | `npx tsx` または `node dist/bin/nexus.js serve` を実プロセス起動し SDK v2 クライアントで接続 | `tests/e2e/`（`NEXUS_E2E=1` ゲート） |
+| 統合 | 非 loopback host（`0.0.0.0` 等）指定で `nexus serve` が起動失敗すること | `tests/integration/http-v2/` |
+| 統合 | loopback host（`127.0.0.1` / `localhost`）指定で `nexus serve` が正常起動すること | 同上 |
+| 統合 | local-only 設定で外部 Embedding Provider（`openai-compat` / `bedrock`）が拒否されること | `tests/integration/config/` |
+| 統合 | 外部ネットワークなしで `index` / `search` / `get_context` が成功すること | `tests/integration/http-v2/` |
 
 ### 10.3 リソース制御の追加
 
-現状 `maxResults` / `topK` は無制限のため、中立 DSL に `maximum` を追加し両アダプタで `.max()` に落とす。初期上限は `topK ≤ 100`、`maxResults ≤ 1000` とし、`.nexus.json` または環境変数で上書き可能にする。既存クライアントの無指定動作は不変。
+v2 経路でのみ `maxResults` / `topK` に上限を設ける。v1 経路（`src/server/index.ts`、既存 `nexus` / `nexus http-bridge`）の入力契約は変更せず、`topK` / `maxResults` は引き続き任意の正の整数を受け付ける。v2 経路は中立 DSL に追加した `maximum` を zod v4 の `.max()` に落とし、初期上限を `topK ≤ 100`、`maxResults ≤ 1000` とする。`.nexus.json` または環境変数で上書き可能にする。既存クライアントの無指定動作は不変。
+
+実装方針: v2 アダプタ（`v2-adapter.ts`）でスキーマ変換時に `.max()` を適用する。実行層（`execute*`）は引き続き値域クランプを行わず、入力検証層で拒否する。
 
 ## 11. Phase 3 以降への接続点
 
@@ -317,7 +345,7 @@ Phase 2 の実装は、Phase 3 以降を見据えた構造にする。
 |---|---|
 | http-bridge lease + heartbeat | Phase 3 で設計。Phase 2 では serve の起動・停止フックを1箇所に集約し、将来的に外部 lease エンドポイントを受け入れ可能にしておく |
 | `--allow-network` + 認証 | `serve.ts` に認証ミドルウェアを差し込むインターフェースを準備（Phase 2 では未使用） |
-| `.nexus.json` の `transport` 設定 | `loadConfig` 側で読み込み可能な型を拡張（Phase 2 では CLI 引数のみ） |
+| `.nexus.json` の `transport` 設定 | `loadConfig` 側で読み込み可能な型を拡張（Phase 2 では CLI 引数を優先し、未指定時は `.nexus.json` / 環境変数 / デフォルトを参照）。`NEXUS_HTTP_*` 系環境変数も Phase 2 からサポートする。 |
 | Cloud Storage Adapter | `src/storage/interfaces/` に D1 / Vectorize / R2 受け入れ可能な形状を整備 |
 | ワークスペース・テナント概念 | 既存 `projectRoot` を `workspace_id` にマッピングする箇所を1箇所に集約しておく |
 
@@ -327,7 +355,7 @@ Phase 2 の実装は、Phase 3 以降を見据えた構造にする。
 |---|---|
 | §20.1 MCP v2 `/mcp` 接続 | Phase 2a/b で実装 |
 | §20.1 `Mcp-Session-Id` 不使用・セッション Map 不在 | `createMcpHandler` の使用 + テストでレスポンスヘッダー確認 |
-| §20.1 `server/discover` 成功 | SDK v2 標準 + `serverInfo` カスタマイズ |
+| §20.1 `server/discover` 成功 | SDK v2 `createMcpHandler` 標準の挙動。server identity は `_meta["io.modelcontextprotocol/serverInfo"]`（`SERVER_INFO_META_KEY`）に返却され、`McpServer` コンストラクタの `name` / `version` が使用される。レスポンス例を 12.1 に記載。 |
 | §20.1 必要ヘッダー検証 | SDK v2 自動 + Origin/Host 自前 |
 | §20.2 従来 `nexus` stdio 利用 | 変更なし、既存テスト全件パスで担保 |
 | §20.2 `nexus http-bridge` 利用 | 変更なし |
@@ -335,6 +363,31 @@ Phase 2 の実装は、Phase 3 以降を見据えた構造にする。
 | §20.4 Local HTTP loopback デフォルト | `serve` は `127.0.0.1` のみ bind |
 | §20.4 外部ネットワーク不要 | LocalContentStore / SQLite / LanceDB のみ使用 |
 | §16.5 `topK` 上限 | Phase 2 で追加 |
+
+### 12.1 `server/discover` レスポンス例
+
+SDK v2 `createMcpHandler` により、`McpServer({ name: "nexus", version: "0.1.0" })` で構築した場合、以下のようなレスポンスが返る。
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2026-07-28",
+    "capabilities": {
+      "tools": { "listChanged": true }
+    },
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "nexus",
+        "version": "0.1.0"
+      }
+    }
+  }
+}
+```
+
+なお、`serverInfo` のカスタマイズは SDK v2 の `McpServer` コンストラクタ引数で行う。`createMcpHandler` 側で独自の `serverInfo` を注入するわけではない。
 
 ## 13. リスクと前提
 
