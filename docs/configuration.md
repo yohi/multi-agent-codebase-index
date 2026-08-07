@@ -82,7 +82,7 @@ Dashboard CLI では `--aggregator-port` が `aggregatorPort` と `NEXUS_AGGREGA
 | `embedding.provider`         | `ollama \| openai-compat \| bedrock \| test` | `ollama`                            | `NEXUS_EMBEDDING_PROVIDER`            | 有効化する embedding backend。`bedrock` は AWS Bedrock Runtime (`InvokeModelCommand`) を直接呼び出します            |
 | `embedding.model`            | string                                       | `nomic-embed-text`                  | `NEXUS_EMBEDDING_MODEL`               | embedding provider へ渡す model 名                                                                                  |
 | `embedding.dimensions`       | positive integer                             | `768`                               | `NEXUS_EMBEDDING_DIMENSIONS`          | 期待する embedding 次元数                                                                                           |
-| `embedding.baseUrl`          | string                                       | `http://127.0.0.1:11434`            | `NEXUS_EMBEDDING_BASE_URL`            | HTTP ベース provider の base URL                                                                                    |
+| `embedding.baseUrl`          | string                                       | `http://127.0.0.1:11434`            | `NEXUS_EMBEDDING_BASE_URL`            | HTTP ベース provider の base URL。`openai-compat` プロバイダーでは `https://api.openai.com/v1/embeddings` や `https://gateway.truefoundry.ai/embeddings` のように完全なエンドポイント URL パスを指定します                                                                                    |
 | `embedding.apiKey`           | string                                       | unset                               | `NEXUS_EMBEDDING_API_KEY`             | 認証が必要な provider 用の任意 API key                                                                              |
 | `embedding.region`           | string                                       | unset（フォールバック `us-east-1`） | `NEXUS_EMBEDDING_REGION`              | `bedrock` provider 用の AWS リージョン。未設定時はプロバイダ側で `us-east-1` にフォールバックし警告ログを出力します |
 | `embedding.profile`          | string                                       | unset                               | `NEXUS_EMBEDDING_PROFILE`             | `bedrock` provider が `fromIni({ profile })` で名前付き AWS プロファイルの認証情報を使う場合に指定する任意項目      |
@@ -92,6 +92,22 @@ Dashboard CLI では `--aggregator-port` が `aggregatorPort` と `NEXUS_AGGREGA
 | `embedding.retryBaseDelayMs` | positive integer                             | `250`                               | `NEXUS_EMBEDDING_RETRY_BASE_DELAY_MS` | retry backoff の基準待機時間（ミリ秒）                                                                              |
 | `embedding.timeoutMs`        | positive integer                             | `120000`                            | `NEXUS_EMBEDDING_TIMEOUT_MS`          | embedding HTTP リクエスト 1 回あたりのタイムアウト（ミリ秒）                                                        |
 | `embedding.ollamaNumThread`  | integer `1`〜`16`                            | `2`                                 | `NEXUS_OLLAMA_NUM_THREAD`             | Ollama `/api/embed` リクエストに渡す `options.num_thread`。無効な値は `2` にフォールバックします。                  |
+
+## OpenAI 互換プロバイダー (`openai-compat`) の設定
+
+`embedding.provider` に `openai-compat` を指定する場合、`embedding.baseUrl` にはリクエスト先となる完全な URL パス（`/v1/embeddings` や `/embeddings` など）を指定します。パス付きの URL が指定された場合は、パスを書き換えずにそのままリクエストを送信します。
+
+```json
+{
+  "embedding": {
+    "provider": "openai-compat",
+    "model": "embedding/gemini-embedding",
+    "dimensions": 768,
+    "baseUrl": "https://gateway.truefoundry.ai/embeddings",
+    "apiKey": "tfy_pat_..."
+  }
+}
+```
 
 ## Package Mode
 
