@@ -337,6 +337,51 @@ describe('OpenAICompatEmbeddingProvider', () => {
     expect(isHealthy).toBe(false);
   });
 
+  it('healthCheck preserves baseUrl path without hitting the embeddings endpoint', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    const provider = new OpenAICompatEmbeddingProvider(
+      { ...mockConfig, baseUrl: 'https://xxx.com/v1/embeddings' },
+      { fetch: mockFetch, sleep: vi.fn() },
+    );
+
+    const isHealthy = await provider.healthCheck();
+    expect(isHealthy).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith('https://xxx.com/v1/embeddings/v1/models', expect.objectContaining({
+      method: 'GET',
+      headers: { authorization: 'Bearer sk-test-key' },
+    }));
+  });
+
+  it('healthCheck preserves baseUrl path for TrueFoundry-style endpoint', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    const provider = new OpenAICompatEmbeddingProvider(
+      { ...mockConfig, baseUrl: 'https://gateway.truefoundry.ai/embeddings' },
+      { fetch: mockFetch, sleep: vi.fn() },
+    );
+
+    const isHealthy = await provider.healthCheck();
+    expect(isHealthy).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith('https://gateway.truefoundry.ai/embeddings/v1/models', expect.objectContaining({
+      method: 'GET',
+      headers: { authorization: 'Bearer sk-test-key' },
+    }));
+  });
+
+  it('healthCheck appends v1/models when baseUrl has no pathname', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    const provider = new OpenAICompatEmbeddingProvider(
+      { ...mockConfig, baseUrl: 'https://api.openai.com' },
+      { fetch: mockFetch, sleep: vi.fn() },
+    );
+
+    const isHealthy = await provider.healthCheck();
+    expect(isHealthy).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith('https://api.openai.com/v1/models', expect.objectContaining({
+      method: 'GET',
+      headers: { authorization: 'Bearer sk-test-key' },
+    }));
+  });
+
   it('governs fallback requests with request-level concurrency limiter', async () => {
     let concurrentRequests = 0;
     let maxConcurrentObserved = 0;

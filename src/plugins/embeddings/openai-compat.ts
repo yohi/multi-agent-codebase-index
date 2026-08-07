@@ -89,7 +89,7 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
     }, timeoutMs);
 
     try {
-      const url = this.buildUrl('v1/models');
+      const url = this.buildHealthCheckUrl();
       const headers = this.buildHeaders();
       const response = await this.dependencies.fetch(url, {
         method: 'GET',
@@ -134,6 +134,14 @@ export class OpenAICompatEmbeddingProvider extends BaseEmbeddingProvider {
     const url = new URL(base);
     const trimmedPath = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
     url.pathname = `${trimmedPath}${path}`;
+    return url.toString();
+  }
+
+  private buildHealthCheckUrl(): string {
+    const baseUrl = this.config.baseUrl || 'https://api.openai.com';
+    const url = new URL(baseUrl);
+    const trimmedPath = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
+    url.pathname = `${trimmedPath}v1/models`;
     return url.toString();
   }
 
