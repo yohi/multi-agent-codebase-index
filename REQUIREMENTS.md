@@ -451,7 +451,17 @@ interface ContentStore {
   exists(contentHash: string): Promise<boolean>;
   readRange(path: string, startLine: number, endLine: number): Promise<string>;
 }
+
+interface ContentStoreFactory {
+  getStore(workspaceId: string, revisionId: string): ContentStore;
+}
 ```
+
+`ContentStore` instances are always bound to a single `(workspaceId, revisionId)` pair.
+`ContentStoreFactory.getStore(workspaceId, revisionId)` returns a store scoped to that workspace/revision.
+`put` / `get` / `delete` / `exists` operate on content hashes, which are globally unique across all workspaces and revisions.
+`readRange` resolves `path` to a `contentHash` through the scoped `MetadataStore` and returns the requested line range.
+This binding removes ambiguity when the same `path` exists in multiple workspaces or revisions.
 
 ## 7.2 ローカル実装
 
@@ -1390,7 +1400,7 @@ Tool名の衝突を避ける必要がある場合は、Portal側で別名を設�
 * 既存SQLite／LanceDBをAdapter化する。
 * 既存テストを維持する。
 
-## Phase 2：MCP SDK v2移行
+## Phase 2：MCP SDK v2移行 + Local HTTP v2 コア
 
 * `@modelcontextprotocol/sdk` v1系からv2パッケージへ移行する。
 * MCP `2026-07-28`を有効化する。
@@ -1398,13 +1408,14 @@ Tool名の衝突を避ける必要がある場合は、Portal側で別名を設�
 * セッションMapを削除する。
 * `/mcp`エンドポイントを実装する。
 * `server/discover`を実装する。
+* `nexus serve`を追加する。
+* loopbackデフォルト・非loopback fail-closedを実装する。
+* `/health`と`/ready`を追加する。
 * v2統合テストを追加する。
 
-## Phase 3：Local HTTP v2
+## Phase 3：Local HTTP v2 完全機能化
 
-* `nexus serve`を追加する。
-* loopbackデフォルトを実装する。
-* `/health`と`/ready`を追加する。
+* `--allow-network`オプションを追加する。
 * 認証オプションを追加する。
 * systemd運用を検証する。
 * HTTP Bridgeをv2化する。

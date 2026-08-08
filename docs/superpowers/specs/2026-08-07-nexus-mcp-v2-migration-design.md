@@ -172,7 +172,16 @@ interface ContentStore {
   exists(contentHash: string): Promise<boolean>;
   readRange(path: string, startLine: number, endLine: number): Promise<string>;
 }
+
+interface ContentStoreFactory {
+  getStore(workspaceId: string, revisionId: string): ContentStore;
+}
 ```
+
+`ContentStore` は `(workspaceId, revisionId)` 単位で束縛される。
+`ContentStoreFactory.getStore(workspaceId, revisionId)` は、指定された workspace/revision にスコープされた `ContentStore` インスタンスを返す。
+`readRange` は束縛されたスコープ内で `path` → `contentHash` を `MetadataStore` で解決し、`get` したバイト列から行範囲を抽出する。
+同じ `path` が複数の workspace や revision に存在する場合でも、スコープによって一意に解決できる。
 
 Phase 2 では `LocalContentStore` のみ実装。
 `get_context` 等は `loadFileContent` の代わりに `ContentStore.readRange(path, startLine, endLine)` 経由に切り替える。
@@ -232,7 +241,7 @@ Storage Adapters
     → /health, /ready ルート登録
     → 127.0.0.1:9200 で listen
 
-`createMcpHandler` の `legacy` オプションは `"accept"` / `"reject"` を取る。Phase 2 では `2026-07-28` のみをサポートするため `"reject"` とし、2025-era のリクエストは SDK 側で 400 または 406 を返す。将来両世代を受け付ける場合は、`legacy: "accept"` に変更し、リクエストの `MCP-Protocol-Version` ヘッダーに応じて v1 / v2 のハンドラを切り替えるルーティング方針を別途設計する。
+`createMcpHandler` の `legacy` オプションは `"stateless"` / `"reject"` を取る。Phase 2 では `2026-07-28` のみをサポートするため `"reject"` とし、2025-era のリクエストは SDK 側で 400 または 406 を返す。将来両世代を受け付ける場合は、`legacy: "stateless"` に変更し、リクエストの `MCP-Protocol-Version` ヘッダーに応じて v1 / v2 のハンドラを切り替えるルーティング方針を別途設計する。
 リクエストごと（POST /mcp）:
   1. headers.ts: Origin / Host 検証 → 失敗時 403
   2. createMcpHandler: Content-Type / Accept / MCP-Protocol-Version /
@@ -265,9 +274,10 @@ schemas-neutral.ts（SDK 非依存）
 
 Phase 1b 以降:
   同ハンドラ
-    → ContentStore.readRange(path, startLine, endLine)
-         └─ LocalContentStore
-              → PathSanitizer 検証後に FS 読み出し
+    → ContentStoreFactory.getStore(workspaceId, revisionId)
+         → ContentStore.readRange(path, startLine, endLine)
+              └─ LocalContentStore
+                   → PathSanitizer 検証後に FS 読み出し
 ```
 
 ## 9. エラーハンドリング
@@ -357,7 +367,7 @@ Phase 2 の実装は、Phase 3 以降を見据えた構造にする。
 |---|---|
 | http-bridge lease + heartbeat | Phase 3 で設計。Phase 2 では serve の起動・停止フックを1箇所に集約し、将来的に外部 lease エンドポイントを受け入れ可能にしておく |
 | `--allow-network` + 認証 | `serve.ts` に認証ミドルウェアを差し込むインターフェースを準備（Phase 2 では未使用） |
-| `.nexus.json` の `transport` 設定 | `loadConfig` 側で読み込み可能な型を拡張（Phase 2 では CLI 引数を優先し、未指定時は `.nexus.json` / 環境変数 / デフォルトを参照）。`NEXUS_HTTP_*` 系環境変数も Phase 2 からサポートする。 |
+| `.nexus.json` の `transport` 設定 | `loadConfig` 側で読み込み可能な型を拡張（Phase 2 では CLI 引数を最優先とし、未指定時は 環境変数 / `.nexus.json` / デフォルト値 の順に参照）。`NEXUS_HTTP_*` 系環境変数も Phase 2 からサポートする。 |
 | Cloud Storage Adapter | `src/storage/interfaces/` に D1 / Vectorize / R2 受け入れ可能な形状を整備 |
 | ワークスペース・テナント概念 | 既存 `projectRoot` を `workspace_id` にマッピングする箇所を1箇所に集約しておく |
 
