@@ -33,6 +33,8 @@ export interface AcquireGlobalLockOptions {
   retries?: number;
   minTimeoutMs?: number;
   maxTimeoutMs?: number;
+  retryMode?: 'finite' | 'unlimited';
+  signal?: AbortSignal;
 }
 
 export const acquireGlobalLock = async (
@@ -41,18 +43,10 @@ export const acquireGlobalLock = async (
 ): Promise<GlobalLockHandle> => {
   // ... validation unchanged ...
 
-  const retries = options.retries ?? GLOBAL_LOCK_RETRIES;
-  const minTimeout = options.minTimeoutMs ?? GLOBAL_LOCK_RETRY_MIN_TIMEOUT_MS;
-  const maxTimeout = options.maxTimeoutMs ?? GLOBAL_LOCK_RETRY_MAX_TIMEOUT_MS;
-
-  // ...
-
+  // proper-lockfile is always called with retries: 0. Application-level retry
+  // logic handles only ELOCKED and observes options.signal between attempts.
   const release = await lockfile.lock(lockfilePath, {
-    retries: {
-      retries,
-      minTimeout,
-      maxTimeout,
-    },
+    retries: 0,
     stale: GLOBAL_LOCK_STALE_MS,
   });
 
@@ -73,34 +67,36 @@ Default behavior is unchanged:
 
 ```typescript
 const lock = await acquireGlobalLock('ollama', {
-  retries: Infinity,
+  retryMode: 'unlimited',
   maxTimeoutMs: 5_000,
+  signal,
 });
 ```
 
 Rationale:
 
-- `retries: Infinity` lets callers wait until the lock is released, matching the issue's expected "wait/queue gracefully" behavior.
+- `retryMode: 'unlimited'` lets callers wait until the lock is released without passing `Infinity` to proper-lockfile. The application-level loop retries only ELOCKED failures and observes `signal` while waiting.
 - `maxTimeoutMs: 5_000` spaces retry attempts up to 5 seconds, reducing lock-file polling overhead while still allowing quick acquisition when the lock is released.
 - The `stale: 60_000` option in `proper-lockfile` already recovers from stale locks, so an infinite wait will not hang forever if the holding process dies.
 - Lock scope remains the entire `embed()` call (all batches). Keeping the lock coarse keeps Ollama's local model queue efficient and avoids per-batch lock thrashing.
 
 ### 3. Tests
 
-- `tests/unit/utils/global-lock.test.ts`: add cases verifying that custom `retries`, `minTimeoutMs`, and `maxTimeoutMs` are forwarded to `proper-lockfile` and that defaults remain unchanged when no options are provided.
-- `tests/unit/plugins/embeddings/ollama.test.ts`: add a case where `acquireGlobalLock` is delayed and then resolves, proving `OllamaEmbeddingProvider.embed` waits rather than throwing immediately.
+- `tests/unit/utils/global-lock.test.ts`: verify real ELOCKED retry acquisition after release, stale-lock recovery, cancellation of unlimited waits, and unchanged propagation of non-lock errors.
+- `tests/unit/plugins/embeddings/ollama.test.ts`: verify delayed lock acquisition, signal propagation, release after post-acquisition cancellation, and cancellation of an in-flight request.
 
 ## Error Handling
 
 - Non-lock errors from `proper-lockfile` continue to propagate unchanged.
-- When the lock is genuinely held by another live process, the Ollama provider now waits instead of throwing `GlobalLockHeldError`.
+- When the lock is genuinely held by another live process, the Ollama provider retries only the lock-held error instead of throwing `GlobalLockHeldError` immediately.
+- Cancellation aborts the lock wait and propagates through `embed()` and indexing/shutdown. If cancellation is observed immediately after acquisition, the provider releases the lock before propagating the cancellation.
 - If the holding process crashes without releasing the lock, `proper-lockfile`'s `stale` mechanism releases the lock after `GLOBAL_LOCK_STALE_MS` (60 seconds), allowing waiters to proceed.
 
 ## Risks and Trade-offs
 
 | Concern | Mitigation |
 | --- | --- |
-| Infinite wait could appear to hang | Expected behavior per the issue: queue until available. Existing stale-lock recovery prevents permanent hangs from dead holders. |
+| Unlimited wait could appear to hang | Expected behavior per the issue: queue until available. Existing stale-lock recovery prevents permanent hangs from dead holders, and AbortSignal cancels shutdown waits. |
 | Coarse lock keeps Ollama serialized | Intentional: Ollama runs a single local model; serializing embedding work is more efficient than interleaving small batches from multiple processes. |
 | Other global-resource consumers keep short timeout | Options object preserves default behavior for all non-Ollama callers. |
 

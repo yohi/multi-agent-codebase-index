@@ -4,12 +4,119 @@ import { RetryExhaustedError } from '../../../../src/types/index.js';
 import { OllamaEmbeddingProvider } from '../../../../src/plugins/embeddings/ollama.js';
 import { TestEmbeddingProvider } from './test-embedding-provider.js';
 
+const { acquireGlobalLockMock } = vi.hoisted(() => ({
+  acquireGlobalLockMock: vi.fn().mockResolvedValue({ release: vi.fn().mockResolvedValue(undefined) }),
+}));
+
 vi.mock('../../../../src/utils/global-lock.js', () => ({
-  acquireGlobalLock: vi.fn().mockResolvedValue({ release: vi.fn().mockResolvedValue(undefined) }),
+  acquireGlobalLock: acquireGlobalLockMock,
 }));
 describe('OllamaEmbeddingProvider', () => {
   afterEach(() => {
     vi.useRealTimers();
+    acquireGlobalLockMock.mockClear();
+  });
+
+  it('waits for the global lock and passes the cancellation signal', async () => {
+    let releaseLock: (() => void) | undefined;
+    acquireGlobalLockMock.mockImplementationOnce(
+      (_name: string, options: { signal?: AbortSignal }) =>
+        new Promise((resolve, reject) => {
+          releaseLock = () => resolve({ release: vi.fn().mockResolvedValue(undefined) });
+          options.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+        }),
+    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ embeddings: [[1, 2, 3, 4]] }),
+    });
+    const controller = new AbortController();
+    const provider = new OllamaEmbeddingProvider(
+      {
+        baseUrl: 'http://localhost:11434',
+        model: 'nomic-embed-text',
+        dimensions: 4,
+        maxConcurrency: 1,
+        batchSize: 1,
+        retryCount: 0,
+        retryBaseDelayMs: 1,
+        ollamaNumThread: 2,
+      },
+      { fetch: fetchMock, sleep: async () => {} },
+    );
+
+    const pending = provider.embed(['alpha'], controller.signal);
+    await vi.waitFor(() => expect(acquireGlobalLockMock).toHaveBeenCalledOnce());
+    expect(acquireGlobalLockMock.mock.calls[0]?.[1]).toMatchObject({
+      retryMode: 'unlimited',
+      signal: controller.signal,
+    });
+
+    releaseLock?.();
+    await pending;
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('releases the lock before propagating cancellation detected after acquisition', async () => {
+    const release = vi.fn().mockResolvedValue(undefined);
+    acquireGlobalLockMock.mockResolvedValueOnce({ release });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ embeddings: [[1, 2, 3, 4]] }),
+    });
+    const controller = new AbortController();
+    const provider = new OllamaEmbeddingProvider(
+      {
+        baseUrl: 'http://localhost:11434',
+        model: 'nomic-embed-text',
+        dimensions: 4,
+        maxConcurrency: 1,
+        batchSize: 1,
+        retryCount: 0,
+        retryBaseDelayMs: 1,
+        ollamaNumThread: 2,
+      },
+      { fetch: fetchMock, sleep: async () => {} },
+    );
+
+    const pending = provider.embed(['alpha'], controller.signal);
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(release).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates cancellation to an in-flight Ollama request', async () => {
+    const release = vi.fn().mockResolvedValue(undefined);
+    acquireGlobalLockMock.mockResolvedValueOnce({ release });
+    const controller = new AbortController();
+    const fetchMock = vi.fn().mockImplementation(
+      (_url: unknown, options: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+        }),
+    );
+    const provider = new OllamaEmbeddingProvider(
+      {
+        baseUrl: 'http://localhost:11434',
+        model: 'nomic-embed-text',
+        dimensions: 4,
+        maxConcurrency: 1,
+        batchSize: 1,
+        retryCount: 0,
+        retryBaseDelayMs: 1,
+        ollamaNumThread: 2,
+      },
+      { fetch: fetchMock, sleep: async () => {} },
+    );
+
+    const pending = provider.embed(['alpha'], controller.signal);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('returns vectors with the configured dimensions for batched embedding', async () => {

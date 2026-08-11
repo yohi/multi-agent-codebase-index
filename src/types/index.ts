@@ -239,7 +239,7 @@ export interface EmbeddingProvider {
    * Other fatal errors (e.g. {@link DimensionMismatchError}) may be thrown
    * directly and will propagate as unrecoverable failures.
    */
-  embed(texts: string[]): Promise<number[][]>;
+  embed(texts: string[], signal?: AbortSignal): Promise<number[][]>;
   healthCheck(): Promise<boolean>;
 }
 
