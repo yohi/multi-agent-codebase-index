@@ -16,10 +16,10 @@ export class InstrumentedEmbeddingProvider implements EmbeddingProvider {
     return this.inner.healthCheck();
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[], signal?: AbortSignal): Promise<number[][]> {
     const start = performance.now();
     try {
-      const result = await this.inner.embed(texts);
+      const result = await (signal === undefined ? this.inner.embed(texts) : this.inner.embed(texts, signal));
       this.hooks.onEmbeddingRequest(
         this.providerName,
         'success',

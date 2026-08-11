@@ -35,9 +35,54 @@ export interface GlobalLockHandle {
   release: () => Promise<void>;
 }
 
-export const acquireGlobalLock = async (name: string): Promise<GlobalLockHandle> => {
+export interface AcquireGlobalLockOptions {
+  retries?: number;
+  minTimeoutMs?: number;
+  maxTimeoutMs?: number;
+  retryMode?: 'finite' | 'unlimited';
+  signal?: AbortSignal;
+}
+
+const abortError = (signal: AbortSignal): Error => {
+  if (signal.reason instanceof Error) {
+    return signal.reason;
+  }
+  return new DOMException('The operation was aborted.', 'AbortError');
+};
+
+const waitForRetry = async (ms: number, signal?: AbortSignal): Promise<void> => {
+  if (signal?.aborted) {
+    throw abortError(signal);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(abortError(signal as AbortSignal));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+};
+
+export const acquireGlobalLock = async (
+  name: string,
+  options: AcquireGlobalLockOptions = {},
+): Promise<GlobalLockHandle> => {
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
     throw new Error(`Invalid global lock name: "${name}". Only alphanumeric characters, underscores, and hyphens are allowed.`);
+  }
+
+  const retries = options.retries ?? GLOBAL_LOCK_RETRIES;
+  const minTimeout = options.minTimeoutMs ?? GLOBAL_LOCK_RETRY_MIN_TIMEOUT_MS;
+  const maxTimeout = options.maxTimeoutMs ?? GLOBAL_LOCK_RETRY_MAX_TIMEOUT_MS;
+  const unlimited = options.retryMode === 'unlimited';
+  if (!Number.isSafeInteger(retries) || retries < 0) {
+    throw new RangeError('Global lock retries must be a finite, non-negative integer');
   }
 
   const lockfilePath = join(tmpdir(), `nexus-global-${name}.lock`);
@@ -46,21 +91,34 @@ export const acquireGlobalLock = async (name: string): Promise<GlobalLockHandle>
     // Ignore only if file already exists
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
   });
-  try {
-    const release = await lockfile.lock(lockfilePath, {
-      retries: {
-        retries: GLOBAL_LOCK_RETRIES,
-        minTimeout: GLOBAL_LOCK_RETRY_MIN_TIMEOUT_MS,
-        maxTimeout: GLOBAL_LOCK_RETRY_MAX_TIMEOUT_MS,
-      },
-      stale: GLOBAL_LOCK_STALE_MS,
-    });
-    return { release };
-  } catch (error: unknown) {
-    if (isLockHeldError(error)) {
-      throw new GlobalLockHeldError(name);
+  let retryCount = 0;
+
+  while (true) {
+    if (options.signal?.aborted) {
+      throw abortError(options.signal);
     }
-    throw error;
+
+    try {
+      const release = await lockfile.lock(lockfilePath, {
+        retries: 0,
+        stale: GLOBAL_LOCK_STALE_MS,
+      });
+      if (options.signal?.aborted) {
+        await release().catch(() => {});
+        throw abortError(options.signal);
+      }
+      return { release };
+    } catch (error: unknown) {
+      if (!isLockHeldError(error)) {
+        throw error;
+      }
+      if (!unlimited && retryCount >= retries) {
+        throw new GlobalLockHeldError(name);
+      }
+      retryCount += 1;
+      const timeout = Math.min(maxTimeout, Math.max(minTimeout, minTimeout * 2 ** Math.min(retryCount - 1, 10)));
+      await waitForRetry(timeout, options.signal);
+    }
   }
 };
 

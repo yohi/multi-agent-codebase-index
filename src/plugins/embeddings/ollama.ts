@@ -42,12 +42,19 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
     this.limit = pLimit(config.maxConcurrency);
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[], signal?: AbortSignal): Promise<number[][]> {
     const batches = this.chunkTexts(texts, this.config.batchSize);
-    const lock = await acquireGlobalLock('ollama');
+    const lock = await acquireGlobalLock('ollama', {
+      retryMode: 'unlimited',
+      maxTimeoutMs: 5_000,
+      signal,
+    });
 
     try {
-      const promises = batches.map(async (batch) => this.limit(async () => this.embedBatchWithRetry(batch)));
+      if (signal?.aborted) {
+        throw signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+      }
+      const promises = batches.map(async (batch) => this.limit(async () => this.embedBatchWithRetry(batch, signal)));
       const results = await Promise.all(promises);
 
       return results.flat();
@@ -67,16 +74,20 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
     }
   }
 
-  private async embedBatchWithRetry(batch: string[]): Promise<number[][]> {
+  private async embedBatchWithRetry(batch: string[], signal?: AbortSignal): Promise<number[][]> {
     let attempt = 0;
     let lastError: Error | undefined;
 
     // attempt=0 is the first try, so we allow up to retryCount retries (total attempts: retryCount + 1)
     while (attempt <= this.config.retryCount) {
       try {
-        return await this.requestEmbeddings(batch);
+        return await this.requestEmbeddings(batch, signal);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (signal?.aborted) {
+          throw signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+        }
 
         if (error instanceof DimensionMismatchError) {
           throw error;
@@ -94,6 +105,9 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
 
         attempt += 1;
         await this.dependencies.sleep(this.config.retryBaseDelayMs * 2 ** (attempt - 1));
+        if (signal?.aborted) {
+          throw signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+        }
       }
     }
 
@@ -102,7 +116,7 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
     });
   }
 
-  private async requestEmbeddings(batch: string[]): Promise<number[][]> {
+  private async requestEmbeddings(batch: string[], signal?: AbortSignal): Promise<number[][]> {
     const timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -114,6 +128,7 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
     }
 
     try {
+      const requestSignal = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]);
       const response = await this.dependencies.fetch(new URL('/api/embed', this.config.baseUrl).toString(), {
         method: 'POST',
         headers: {
@@ -127,7 +142,7 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
             num_thread: this.config.ollamaNumThread,
           },
         }),
-        signal: controller.signal,
+        signal: requestSignal,
       });
 
       if (!response.ok) {

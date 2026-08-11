@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import lockfile from 'proper-lockfile';
 import {
   acquireGlobalLock,
   GlobalLockHeldError,
@@ -29,6 +30,73 @@ describe('global-lock', () => {
       expect((error as GlobalLockHeldError).lockName).toBe(name);
     } finally {
       await lock.release();
+    }
+  });
+
+  it('retries ELOCKED acquisition until the held lock is released', async () => {
+    const name = `test-${randomUUID()}`;
+    const heldLock = await acquireGlobalLock(name);
+
+    const waitingLock = acquireGlobalLock(name, {
+      retries: 10,
+      minTimeoutMs: 10,
+      maxTimeoutMs: 10,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await heldLock.release();
+
+    const acquiredLock = await waitingLock;
+    await acquiredLock.release();
+  });
+
+  it('recovers a stale global lock', async () => {
+    const name = `test-${randomUUID()}`;
+    const lockfilePath = join(tmpdir(), `nexus-global-${name}.lock`);
+    const heldLock = await acquireGlobalLock(name);
+
+    try {
+      const staleTime = new Date(Date.now() - GLOBAL_LOCK_STALE_MS - 1000);
+      await utimes(`${lockfilePath}.lock`, staleTime, staleTime);
+
+      const recoveredLock = await acquireGlobalLock(name, {
+        retries: 0,
+      });
+      await recoveredLock.release();
+    } finally {
+      await heldLock.release().catch(() => {});
+    }
+  });
+
+  it('cancels an unlimited lock wait without acquiring the lock', async () => {
+    const name = `test-${randomUUID()}`;
+    const heldLock = await acquireGlobalLock(name);
+    const controller = new AbortController();
+
+    try {
+      const waitingLock = acquireGlobalLock(name, {
+        retryMode: 'unlimited',
+        minTimeoutMs: 10,
+        maxTimeoutMs: 10,
+        signal: controller.signal,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      controller.abort();
+
+      await expect(waitingLock).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      await heldLock.release();
+    }
+  });
+
+  it('propagates non-lock acquisition errors unchanged', async () => {
+    const name = `test-${randomUUID()}`;
+    const expected = new Error('permission denied');
+    const lockSpy = vi.spyOn(lockfile, 'lock').mockRejectedValueOnce(expected);
+
+    try {
+      await expect(acquireGlobalLock(name)).rejects.toBe(expected);
+    } finally {
+      lockSpy.mockRestore();
     }
   });
 

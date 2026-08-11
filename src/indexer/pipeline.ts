@@ -392,7 +392,7 @@ export class IndexPipeline implements IIndexPipeline {
     if (trueMisses.length > 0) {
       try {
         const missTexts = trueMisses.map((m) => m.text);
-        const freshEmbeddings = await this.options.embeddingProvider.embed(missTexts);
+        const freshEmbeddings = await this.options.embeddingProvider.embed(missTexts, this.abortController.signal);
         if (freshEmbeddings.length !== missTexts.length) {
           const msg = `Embedding count mismatch: expected ${missTexts.length}, got ${freshEmbeddings.length}`;
           if (trackProgress) {
@@ -643,7 +643,7 @@ export class IndexPipeline implements IIndexPipeline {
       },
     ]);
 
-    const embeddings = await this.options.embeddingProvider.embed(chunks.map((chunk) => chunk.content));
+    const embeddings = await this.options.embeddingProvider.embed(chunks.map((chunk) => chunk.content), this.abortController.signal);
     await this.options.vectorStore.upsertChunks(chunks, embeddings, [filePath]);
     await this.merkleTree.update(filePath, contentHash);
     this.skippedFiles.delete(filePath);
