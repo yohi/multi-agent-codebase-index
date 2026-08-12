@@ -23,7 +23,6 @@ class FakeTransport implements Transport {
   readonly sent: JSONRPCMessage[] = [];
   startCalls = 0;
   closeCalls = 0;
-  terminateCalls = 0;
   callbacksInstalledAtStart = false;
   protocolVersion: string | undefined;
   startError: Error | undefined;
@@ -63,10 +62,6 @@ class FakeTransport implements Transport {
     if (this.closeError !== undefined) {
       throw this.closeError;
     }
-  }
-
-  async terminateSession(): Promise<void> {
-    this.terminateCalls += 1;
   }
 
   emitMessage(message: JSONRPCMessage): void {
@@ -305,20 +300,6 @@ describe("http bridge", () => {
         expect(transport.closeCalls).toBe(1);
       },
     );
-
-    it("does not terminate the managed MCP session when SIGTERM is emitted", async () => {
-      const input = new PassThrough();
-      const transport = new FakeTransport();
-      const harness = createBridgeHarness(input, transport);
-      transport.onStart = () => {
-        harness.signalSource.emit("SIGTERM");
-      };
-
-      await runHttpBridgeWithSignalSource(harness.options);
-
-      expect(transport.terminateCalls).toBe(0);
-      expect(transport.closeCalls).toBe(1);
-    });
 
     it("propagates a start failure", async () => {
       const transport = new FakeTransport();

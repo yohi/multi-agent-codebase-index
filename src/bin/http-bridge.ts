@@ -129,15 +129,14 @@ export async function runHttpBridgeWithSignalSource(
   absorbEpipe(options.output);
   absorbEpipe(options.errorOutput);
 
-  const shutdown = (terminateSession = true): Promise<void> => {
+  const shutdown = (): Promise<void> => {
     shutdownPromise ??= (async () => {
       lines.close();
-      options.signalSource.removeListener("SIGINT", handleSigint);
-      options.signalSource.removeListener("SIGTERM", handleSigterm);
+      options.signalSource.removeListener("SIGINT", handleSignal);
+      options.signalSource.removeListener("SIGTERM", handleSignal);
 
       if (!transportClosed) {
         if (
-          terminateSession &&
           typeof transport === "object" &&
           transport !== null &&
           "terminateSession" in transport &&
@@ -152,11 +151,8 @@ export async function runHttpBridgeWithSignalSource(
     return shutdownPromise;
   };
 
-  const handleSigint = (): void => {
+  const handleSignal = (): void => {
     void shutdown().catch(() => undefined);
-  };
-  const handleSigterm = (): void => {
-    void shutdown(false).catch(() => undefined);
   };
 
   transport.onmessage = (message) => {
@@ -177,8 +173,8 @@ export async function runHttpBridgeWithSignalSource(
     lines.close();
   };
 
-  options.signalSource.once("SIGINT", handleSigint);
-  options.signalSource.once("SIGTERM", handleSigterm);
+  options.signalSource.once("SIGINT", handleSignal);
+  options.signalSource.once("SIGTERM", handleSignal);
 
   try {
     await transport.start();
