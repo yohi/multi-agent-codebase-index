@@ -262,8 +262,9 @@ AI エージェントに公開される MCP ツールとそれぞれの設計役
 - 同一マシン上で複数の Nexus プロセスが Ollama に同時にアクセスし、CPU を奪い合うのを防止します。
 - `/tmp/nexus-global-ollama.lock` をシステム全体で共有し、`embed` の実行をプロセス間で直列化します。
 - 同一プロセス内の並列度（`p-limit`）は維持され、インタープロセス間のみ排他制御が働きます。
-- **Bounded Retry / Stale Policy**: グローバルロックは `proper-lockfile` のファイルベースロックを使用します。stale lock の検出タイムアウトは `60_000ms`、ロック獲得の retry 回数は `10` 回、retry 間隔は最低 `100ms`・最高 `1000ms` に制限されています。これにより、クラッシュしたプロセスの stale lock は自動回復しつつ、後続プロセスが無限待ちになることを防ぎます。
-- **Error Safety**: `embed()` 呼び出しは `try { ... } finally { lock.release() }` で囲まれており、成功・失敗・例外のいずれでもロック解放が試行されます。解放失敗は元のエラーを隠蔽しません。
+- **Unlimited Queuing & Stale Policy**: グローバルロックは `proper-lockfile` のファイルベースロックを使用します。`acquireGlobalLock` は `AcquireGlobalLockOptions`（`retries`, `minTimeoutMs`, `maxTimeoutMs`, `retryMode`, `signal`）を受け取り、デフォルトでは有限リトライ（10回、最大1000ms間隔）を行いますが、Ollama 埋め込み（`OllamaEmbeddingProvider.embed`）では `retryMode: 'unlimited'`、`maxTimeoutMs: 5_000`、および `AbortSignal` を指定します。これにより並行インデックスや複数 Nexus プロセスからの Ollama リクエストは `GlobalLockHeldError` で短時間に失敗（タイムアウト）することなく、先行プロセスの完了まで無制限に安全に順番待ち（キューイング）されます。待機中は `ELOCKED` エラーのみをアプリ層で再試行し、`AbortSignal` を常時監視してキャンセル時は即座に中断します。また、ロック保持プロセスがクラッシュした場合は `proper-lockfile` の `stale: 60_000ms` 機構により自動回復します。
+- **Error Safety**: `embed()` 呼び出しは `try { ... } finally { lock.release() }` で囲まれており、成功・失敗・例外・キャンセルのいずれでも確実にロック解放が試行されます。ロック取得直後にキャンセルが検知された場合も、ロックを解放してから `AbortError` を伝播します。解放失敗は元のエラーを隠蔽しません。
+- **Coarse Lock Scope**: ロック範囲は `embed()` 全体（全バッチ）であり、バッチ単位には分割しません。Ollama は単一ローカルモデルを直列実行するため、バッチごとのロック取得・解放（lock thrashing）より、`embed()` 全体で排他する方が Ollama のローカルモデルキューを効率化できます。ロック粒度をバッチ単位に下げることや、Ollama 専用の共有プロセスキューの導入は非目標（Non-Goals）です。
 
 ## 9. Observability (可視化)
 

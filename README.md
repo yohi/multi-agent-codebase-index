@@ -17,7 +17,7 @@ Semantic search、Exact grep search、File context 取得を 1 つのローカ�
 - **自律的メンテナンス**: ファイル監視 (Watcher) とデッドレターキュー (DLQ) による自動的なインデックス更新とリカバリ。
 - **アプリケーション層 Observability**: MCP ツール利用状況、検索ヒット数、取得コンテキスト行数、Embedding API レイテンシを Prometheus メトリクスとして公開。
 - **Telemetry Aggregator**: `nexus dashboard` が複数 Nexus プロセスのメトリクスを自動登録・集約し、Grafana から `localhost:9470/metrics` をスクレイプできます。
-- **プロセス間排他制御・CPU負荷抑制**: `proper-lockfile` によるファイルベースのロックで同一プロジェクトへの複数プロセス同時起動や Ollama の CPU 奪い合いを防止。さらに、Ollama への埋め込みリクエスト単位でスレッド数を制限（デフォルト 2、範囲 1〜16）し、ホストマシンのレスポンシブネスを維持します。
+- **プロセス間排他制御・CPU負荷抑制**: `proper-lockfile` によるファイルベースのロックで同一プロジェクトへの複数プロセス同時起動や Ollama の CPU 奪い合いを防止（Ollama リクエストは `AbortSignal` 対応の無制限キューイングで安全に順番待ち）。さらに、Ollama への埋め込みリクエスト単位でスレッド数を制限（デフォルト 2、範囲 1〜16）し、ホストマシンのレスポンシブネスを維持します。
 - **プロジェクト単位の自動コネクター**: `nexus http-bridge` はプロジェクトごとに 1 つの loopback HTTP プロセスを自動的に発見・起動し、複数の MCP クライアントが同時に接続できます。最後のクライアントが切断すると自動的に停止するため、ポート番号や PID を手動管理する必要はありません。
 - **CLI 手動リインデックス**: `nexus --reindex` で即座に 1 回だけインデックスを再構築し、`--full` を付けると clean full rebuild で実行します。
 - **マルチ Embedding プロバイダ対応**: ローカルの `ollama`、OpenAI 互換 API (`openai-compat`) に加え、AWS Bedrock (Titan v2) を追加の代理サービスなしで直接呼び出せます。`NEXUS_PACKAGE_MODE=1` で provider を `bedrock` に固定する業務配布用の制限プロファイルも備えています。
