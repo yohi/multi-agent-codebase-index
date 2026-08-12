@@ -32,6 +32,7 @@ Thumbs.db
 # Project specific
 .nexus/
 .omo/
+.justice/
 .worktrees/
 
 # Local agent settings
