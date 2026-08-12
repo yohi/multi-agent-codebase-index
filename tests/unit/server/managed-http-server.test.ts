@@ -107,13 +107,7 @@ describe('managed-http-server', () => {
   it('closes the runtime and removes the descriptor after the final session closes', async () => {
     const server = await trackServer({
       ...options,
-      // The explicit DELETE in connectAndCloseClient fires onSessionClose
-      // synchronously, which schedules auto-shutdown after idleShutdownMs. A
-      // small non-zero grace lets the DELETE's 200 response flush before
-      // close() calls httpServer.closeAllConnections(); idleShutdownMs: 0 races
-      // the teardown against the in-flight DELETE response and resets it.
-      // Shutdown is thus driven by the explicit close, not sessionIdleTimeoutMs.
-      idleShutdownMs: 50,
+      idleShutdownMs: 0,
     });
     await connectAndCloseClient(server.url);
 
