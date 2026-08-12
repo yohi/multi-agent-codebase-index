@@ -1,52 +1,21 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
-
-import { errorResult, toolResult } from './tools/tool-support.js';
 
 import type { SearchOrchestrator } from "../search/orchestrator.js";
-import type { ISemanticSearch } from "../search/semantic.js";
-import type { PluginRegistry } from "../plugins/registry.js";
 import type {
-  IMetadataStore,
-  IVectorStore,
-  IGrepEngine,
-  IndexEvent,
   IFileWatcher,
-  ReindexOptions,
-  IIndexPipeline,
 } from "../types/index.js";
 import { type PathSanitizer } from "./path-sanitizer.js";
-import { executeGetContext } from "./tools/get-context.js";
-import { getContextInputSchema } from "./tools/get-context-schema.js";
-import { executeGrepSearch, type GrepSearchToolArgs } from "./tools/grep-search.js";
-import { executeHybridSearch, type HybridSearchToolArgs } from "./tools/hybrid-search.js";
-import { executeIndexStatus } from "./tools/index-status.js";
-import { executeReindex } from "./tools/reindex.js";
-import { executeSemanticSearch, type SemanticSearchToolArgs } from "./tools/semantic-search.js";
 import { MetricsHttpServer } from "../observability/metrics-server.js";
 import type { Registry } from "prom-client";
 import { writeMetricsPort, removeMetricsPort } from "./metrics-port.js";
-import { withToolMetrics } from "./tool-instrumentation.js";
-import type { MetricsHooks } from "../observability/types.js";
 import { RegistrationClient } from "../observability/registration-client.js";
+import { registerV1Tools } from './tools/registry/adapters/v1-adapter.js';
+import { buildToolHandlers } from './tools/tool-support.js';
+import type { NexusServerOptions } from './tools/types.js';
 
 export { errorResult, toolResult } from './tools/tool-support.js';
 
-export interface NexusServerOptions {
-  projectRoot: string;
-  sanitizer: PathSanitizer;
-  semanticSearch: ISemanticSearch;
-  grepEngine: IGrepEngine;
-  orchestrator: SearchOrchestrator;
-  vectorStore: IVectorStore;
-  metadataStore: IMetadataStore;
-  pipeline: IIndexPipeline;
-  pluginRegistry: PluginRegistry;
-  runReindex: (options?: ReindexOptions) => Promise<IndexEvent[]>;
-  loadFileContent: (filePath: string) => Promise<string>;
-  metricsHooks?: MetricsHooks;
-  packageMode?: boolean;
-}
+export type { NexusServerOptions } from './tools/types.js';
 
 export interface NexusRuntimeOptions extends NexusServerOptions {
   watcher: IFileWatcher;
@@ -128,197 +97,7 @@ export const createNexusServer = (
     },
   );
 
-  server.registerTool(
-    "semantic_search",
-    {
-      description: "Vector-only semantic search; prefer hybrid_search for most tasks.",
-      inputSchema: {
-        query: z.string(),
-        topK: z.number().int().positive().optional(),
-        filePattern: z.string().optional(),
-        filePatterns: z.array(z.string()).optional(),
-        language: z.string().optional(),
-      },
-    },
-    withToolMetrics(
-      "semantic_search",
-      options.metricsHooks,
-      async (args, extra) => {
-        if (awaitInitialize) await awaitInitialize();
-        try {
-          const result = await executeSemanticSearch(
-            options.semanticSearch,
-            options.sanitizer,
-            args as SemanticSearchToolArgs & { filePattern?: string },
-            extra?.signal,
-          );
-          options.metricsHooks?.onSearchResults('semantic', result.results.length);
-          return toolResult(result);
-        } catch (error) {
-          return errorResult(error);
-        }
-      },
-    )
-  );
-
-  server.registerTool(
-    "grep_search",
-    {
-      description: "Exact string search for symbols, errors, or code fragments.",
-      inputSchema: {
-        pattern: z.string(),
-        filePattern: z.string().optional(),
-        filePatterns: z.array(z.string()).optional(),
-        caseSensitive: z.boolean().optional(),
-        maxResults: z.number().int().positive().optional(),
-      },
-    },
-    withToolMetrics(
-      "grep_search",
-      options.metricsHooks,
-      async (args, extra) => {
-        if (awaitInitialize) await awaitInitialize();
-        try {
-          const result = await executeGrepSearch(
-            options.grepEngine,
-            options.projectRoot,
-            options.sanitizer,
-            args as GrepSearchToolArgs,
-            extra?.signal,
-          );
-          options.metricsHooks?.onSearchResults('grep', result.matches.length);
-          return toolResult(result);
-        } catch (error) {
-          return errorResult(error);
-        }
-      },
-    )
-  );
-
-  server.registerTool(
-    "hybrid_search",
-    {
-      description: "Semantic + grep hybrid search for vague or conceptual queries.",
-      inputSchema: {
-        query: z.string(),
-        topK: z.number().int().positive().optional(),
-        filePattern: z.string().optional(),
-        filePatterns: z.array(z.string()).optional(),
-        language: z.string().optional(),
-        grepPattern: z.string().optional(),
-        includeSnippet: z.boolean().optional(),
-        contextLines: z.number().int().positive().optional().describe(
-          "Lines of context to include before and after each match when includeSnippet is true. Maximum 20; values above are clamped.",
-        ),
-      },
-    },
-    withToolMetrics(
-      "hybrid_search",
-      options.metricsHooks,
-      async (args, extra) => {
-        if (awaitInitialize) await awaitInitialize();
-        try {
-          const result = await executeHybridSearch(
-            options.orchestrator,
-            options.sanitizer,
-            options.loadFileContent,
-            args as HybridSearchToolArgs & { filePattern?: string },
-            extra?.signal,
-            options.metricsHooks,
-          );
-          options.metricsHooks?.onSearchResults('hybrid', result.results.length);
-          return toolResult(result);
-        } catch (error) {
-          return errorResult(error);
-        }
-      },
-    )
-  );
-
-  server.registerTool(
-    "get_context",
-    {
-      description: "Return a specific line range from a file; prefer partial reads.",
-      inputSchema: getContextInputSchema,
-    },
-    withToolMetrics(
-      "get_context",
-      options.metricsHooks,
-      async (args) => {
-        if (awaitInitialize) await awaitInitialize();
-        try {
-          const result = await executeGetContext(
-            options.loadFileContent,
-            options.sanitizer,
-            args,
-          );
-          const lineCount = 'mode' in result
-            ? result.previewEndLine - result.previewStartLine + 1
-            : result.endLine - result.startLine + 1;
-          options.metricsHooks?.onContextLinesFetched('get_context', lineCount);
-          return toolResult(result);
-        } catch (error) {
-          return errorResult(error);
-        }
-      },
-    )
-  );
-
-  server.registerTool(
-    "index_status",
-    {
-      description: "Check indexing progress and statistics before searching.",
-      inputSchema: {},
-    },
-    withToolMetrics(
-      "index_status",
-      options.metricsHooks,
-      async () => {
-        if (awaitInitialize) await awaitInitialize();
-        try {
-          return toolResult(
-            await executeIndexStatus(
-              options.metadataStore,
-              options.vectorStore,
-              options.pluginRegistry,
-              options.pipeline,
-            ),
-          );
-        } catch (error) {
-          return errorResult(error);
-        }
-      },
-    )
-  );
-
-  server.registerTool(
-    "reindex",
-    {
-      description: "Manually rebuild the local search index.",
-      inputSchema: {
-        fullRebuild: z.boolean().optional(),
-      },
-    },
-    withToolMetrics(
-      "reindex",
-      options.metricsHooks,
-      async (args) => {
-        if (awaitInitialize) await awaitInitialize();
-        try {
-          return toolResult(
-            await executeReindex(
-              options.pipeline,
-              options.runReindex,
-              options.loadFileContent,
-              args,
-            ),
-          );
-        } catch (error) {
-          return errorResult(error);
-        }
-      },
-    )
-  );
+  registerV1Tools(server, buildToolHandlers(options, awaitInitialize));
 
   return server;
 };
