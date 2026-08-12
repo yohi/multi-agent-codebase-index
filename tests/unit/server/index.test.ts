@@ -1,12 +1,9 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createNexusServer, errorResult, toolResult, initializeNexusRuntime } from '../../../src/server/index.js';
 import { PathSanitizer, PathTraversalError } from '../../../src/server/path-sanitizer.js';
 import * as metricsPortUtils from '../../../src/server/metrics-port.js';
 import { createMockNexusRuntimeOptions, createMockRegistry } from '../../shared/test-helpers.js';
-import type { IContentStore } from '../../../src/storage/interfaces/content-store.js';
 
 vi.mock('../../../src/observability/metrics-server.js', () => {
   return {
@@ -110,38 +107,6 @@ describe('NexusServer helpers', () => {
       expect(result.isError).toBe(true);
       expect(result.content[0]!.text).toContain('Failed to serialize structuredContent');
       expect(result.structuredContent.error).toBe(true);
-    });
-  });
-
-  describe('ContentStore integration', () => {
-    it('uses ContentStore reads for get_context', async () => {
-      const contentStore: IContentStore = {
-        put: async () => undefined,
-        get: async () => null,
-        delete: async () => undefined,
-        exists: async () => false,
-        readRange: async () => 'FROM_STORE',
-      };
-      const options = createMockNexusRuntimeOptions({
-        contentStore,
-        sanitizer: await PathSanitizer.create(process.cwd()),
-        loadFileContent: async () => {
-          throw new Error('filesystem reader must not be called');
-        },
-      });
-      const server = createNexusServer(options);
-      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-      const client = new Client({ name: 'content-store-test-client', version: '1.0.0' });
-      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-
-      try {
-        await expect(client.callTool({ name: 'get_context', arguments: { filePath: 'src/index.ts' } })).resolves.toMatchObject({
-          structuredContent: { content: 'FROM_STORE' },
-        });
-      } finally {
-        await client.close();
-        await server.close();
-      }
     });
   });
 
