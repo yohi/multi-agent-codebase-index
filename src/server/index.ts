@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import { errorResult, toolResult } from './tools/tool-support.js';
+
 import type { SearchOrchestrator } from "../search/orchestrator.js";
 import type { ISemanticSearch } from "../search/semantic.js";
 import type { PluginRegistry } from "../plugins/registry.js";
@@ -13,9 +15,7 @@ import type {
   ReindexOptions,
   IIndexPipeline,
 } from "../types/index.js";
-import type { IContentStore } from "../storage/interfaces/content-store.js";
 import { type PathSanitizer } from "./path-sanitizer.js";
-import { sanitizeErrorMessage } from "../utils/error-utils.js";
 import { executeGetContext } from "./tools/get-context.js";
 import { getContextInputSchema } from "./tools/get-context-schema.js";
 import { executeGrepSearch, type GrepSearchToolArgs } from "./tools/grep-search.js";
@@ -30,6 +30,8 @@ import { withToolMetrics } from "./tool-instrumentation.js";
 import type { MetricsHooks } from "../observability/types.js";
 import { RegistrationClient } from "../observability/registration-client.js";
 
+export { errorResult, toolResult } from './tools/tool-support.js';
+
 export interface NexusServerOptions {
   projectRoot: string;
   sanitizer: PathSanitizer;
@@ -42,7 +44,6 @@ export interface NexusServerOptions {
   pluginRegistry: PluginRegistry;
   runReindex: (options?: ReindexOptions) => Promise<IndexEvent[]>;
   loadFileContent: (filePath: string) => Promise<string>;
-  contentStore?: IContentStore;
   metricsHooks?: MetricsHooks;
   packageMode?: boolean;
 }
@@ -114,7 +115,6 @@ export const createNexusServer = (
   options: NexusServerOptions,
   awaitInitialize?: () => Promise<void>,
 ): McpServer => {
-  const readContent = createContentReader(options.contentStore, options.loadFileContent);
   const server = new McpServer(
     {
       name: "nexus",
@@ -221,7 +221,7 @@ export const createNexusServer = (
           const result = await executeHybridSearch(
             options.orchestrator,
             options.sanitizer,
-            readContent,
+            options.loadFileContent,
             args as HybridSearchToolArgs & { filePattern?: string },
             extra?.signal,
             options.metricsHooks,
@@ -248,7 +248,7 @@ export const createNexusServer = (
         if (awaitInitialize) await awaitInitialize();
         try {
           const result = await executeGetContext(
-            readContent,
+            options.loadFileContent,
             options.sanitizer,
             args,
           );
@@ -494,78 +494,4 @@ export const initializeNexusRuntime = async (
   const runtime = buildNexusRuntime(options);
   await runtime.initialize();
   return runtime;
-};
-
-const createContentReader = (
-  contentStore: IContentStore | undefined,
-  fallback: (filePath: string) => Promise<string>,
-): ((filePath: string) => Promise<string>) => {
-  if (contentStore === undefined) {
-    return fallback;
-  }
-  return async (filePath: string): Promise<string> => {
-    try {
-      return await contentStore.readRange(filePath, 1, Number.MAX_SAFE_INTEGER);
-    } catch (error) {
-      console.warn('[Nexus] ContentStore readRange failed; falling back to filesystem read:', error);
-      return fallback(filePath);
-    }
-  };
-};
-
-export const errorResult = (error: unknown) => {
-  const errorMessage = sanitizeErrorMessage(error);
-  // Log the original error for server-side debugging
-  console.error("[Nexus Server Error]", error);
-
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: `Error: ${errorMessage}`,
-      },
-    ],
-    isError: true,
-    structuredContent: { error: true, message: errorMessage },
-  };
-};
-
-export const toolResult = <T extends object>(structuredContent: T) => {
-  try {
-    // Produce a JSON-safe copy by converting BigInt values to strings
-    const normalized: unknown = JSON.parse(
-      JSON.stringify(structuredContent, (_key: string, value: unknown): unknown =>
-        typeof value === "bigint" ? value.toString() : value,
-      ),
-    );
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(normalized, null, 2),
-        },
-      ],
-      structuredContent: normalized as Record<string, unknown>,
-    };
-  } catch (error) {
-    const errorMessage = sanitizeErrorMessage(error);
-    // Log the original error for server-side debugging
-    console.error("[Nexus Serialization Error]", error);
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Failed to serialize structuredContent: ${errorMessage}`,
-        },
-      ],
-      isError: true,
-      structuredContent: {
-        error: true,
-        message: errorMessage,
-        originalType: typeof structuredContent,
-      },
-    };
-  }
 };
