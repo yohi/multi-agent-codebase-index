@@ -6,8 +6,9 @@ import { parseArgs } from 'node:util';
 import { isLoopbackHost, loadConfig } from '../../config/index.js';
 import { startHttpV2Server } from '../../server/http-v2/entry.js';
 import { createV2McpHandler } from '../../server/http-v2/server-factory.js';
+import { createV1RuntimeToolBridge, type V1RuntimeToolBridge } from '../../server/http-v2/v1-runtime-bridge.js';
 import { NexusServerFactory } from '../../server/factory.js';
-import { buildNexusRuntime, type NexusRuntime, type NexusRuntimeOptions } from '../../server/index.js';
+import type { NexusRuntime } from '../../server/index.js';
 import type { Config } from '../../types/index.js';
 
 const DEFAULT_HOST = '127.0.0.1';
@@ -26,8 +27,8 @@ export interface ServeCliDependencies {
   readonly exit: (code: number) => void;
   readonly signalSource: EventEmitter;
   readonly loadConfig?: typeof loadConfig;
-  readonly buildRuntimeOptions?: (config: Config) => Promise<NexusRuntimeOptions>;
-  readonly buildRuntime?: (options: NexusRuntimeOptions) => NexusRuntime;
+  readonly createRuntime?: (config: Config) => Promise<NexusRuntime>;
+  readonly createToolBridge?: typeof createV1RuntimeToolBridge;
   readonly createMcpHandler?: typeof createV2McpHandler;
   readonly startServer?: typeof startHttpV2Server;
 }
@@ -112,11 +113,12 @@ export const runServeCli = async (
 
   const projectRoot = path.resolve(cli.projectRoot ?? env.NEXUS_PROJECT_ROOT ?? process.cwd());
   const load = dependencies.loadConfig ?? loadConfig;
-  const buildOptions = dependencies.buildRuntimeOptions ?? ((config: Config) => NexusServerFactory.buildRuntimeOptions(config));
-  const buildRuntime = dependencies.buildRuntime ?? buildNexusRuntime;
+  const createRuntime = dependencies.createRuntime ?? ((config: Config) => NexusServerFactory.createRuntime(config));
+  const createToolBridge = dependencies.createToolBridge ?? createV1RuntimeToolBridge;
   const createHandler = dependencies.createMcpHandler ?? createV2McpHandler;
   const startServer = dependencies.startServer ?? startHttpV2Server;
   let runtime: NexusRuntime | undefined;
+  let toolBridge: V1RuntimeToolBridge | undefined;
 
   try {
     const config = await load({ projectRoot, env, transportMode: 'v2-http' });
@@ -126,15 +128,14 @@ export const runServeCli = async (
       throw new Error('Local HTTP v2 requires HTTP configuration.');
     }
 
-    const runtimeOptions = await buildOptions(config);
-    runtime = buildRuntime(runtimeOptions);
+    const initializedRuntime = await createRuntime(config);
+    runtime = initializedRuntime;
     let ready = false;
-    const initialization = runtime.initialize().then(() => {
-      ready = true;
-    });
+    await initializedRuntime.initialize();
+    ready = true;
+    toolBridge = await createToolBridge(initializedRuntime.createServer());
     const handler = createHandler({
-      options: runtimeOptions,
-      awaitInitialize: () => initialization,
+      handlers: toolBridge.handlers,
       limits: { topK: http.maxTopK, maxResults: http.maxResultsLimit },
     });
     const server = await startServer({
@@ -149,6 +150,7 @@ export const runServeCli = async (
     const shutdown = (): void => {
       void (async () => {
         await server.close();
+        await toolBridge?.close();
         await runtime?.close();
         dependencies.exit(0);
       })().catch((error: unknown) => {
@@ -158,14 +160,8 @@ export const runServeCli = async (
     };
     dependencies.signalSource.once('SIGINT', shutdown);
     dependencies.signalSource.once('SIGTERM', shutdown);
-
-    void initialization.catch(async (error: unknown) => {
-      await server.close();
-      await runtime?.close();
-      dependencies.errorOutput.write(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
-      dependencies.exit(1);
-    });
   } catch (error) {
+    await toolBridge?.close();
     await runtime?.close();
     dependencies.errorOutput.write(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
     dependencies.exit(1);

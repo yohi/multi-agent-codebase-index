@@ -7,7 +7,7 @@ import { finished } from "node:stream/promises";
 import picomatch from "picomatch";
 
 import { normalizeIgnorePaths } from "../utils/path-normalization.js";
-import { buildNexusRuntime, type NexusRuntime, type NexusRuntimeOptions } from "./index.js";
+import { buildNexusRuntime, type NexusRuntime } from "./index.js";
 import { PathSanitizer } from "./path-sanitizer.js";
 import { acquireProjectLock, type ProjectLockHandle } from "../utils/project-lock.js";
 import { SemanticSearch } from "../search/semantic.js";
@@ -297,10 +297,6 @@ export class NexusServerFactory {
    * Creates and initializes a NexusRuntime based on the provided configuration.
    */
   static async createRuntime(config: Config): Promise<NexusRuntime> {
-    return buildNexusRuntime(await this.buildRuntimeOptions(config));
-  }
-
-  static async buildRuntimeOptions(config: Config): Promise<NexusRuntimeOptions> {
     const { projectRoot } = config;
     await StorageManager.ensureDirectories(config);
 
@@ -488,7 +484,7 @@ export class NexusServerFactory {
     const { watcher, onClose } = eventManager.setup();
 
     try {
-      return {
+      return buildNexusRuntime({
         projectRoot,
         sanitizer: await PathSanitizer.create(projectRoot),
         semanticSearch,
@@ -525,7 +521,7 @@ export class NexusServerFactory {
             ignorePaths,
             onLog,
           ),
-      };
+      });
     } catch (error) {
       await onClose();
       if (drainListener) {

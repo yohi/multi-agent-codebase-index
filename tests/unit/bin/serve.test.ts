@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
 import { PassThrough } from 'node:stream';
 
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../../src/config/index.js';
@@ -10,6 +12,9 @@ import {
   runServeCli,
   type ServeCliDependencies,
 } from '../../../src/bin/commands/serve.js';
+import type { NexusRuntime } from '../../../src/server/index.js';
+import type { HttpV2ServerHandle } from '../../../src/server/http-v2/entry.js';
+import { createTestNexusOptions } from '../../shared/create-test-nexus-options.js';
 
 const collectOutput = (): { readonly stream: PassThrough; readonly text: () => string } => {
   const stream = new PassThrough();
@@ -27,6 +32,22 @@ const createDependencies = (
   exit: vi.fn(),
   signalSource: new EventEmitter(),
 });
+
+const createRuntimeFixture = async (
+  initialize: () => Promise<void>,
+  close: () => Promise<void>,
+): Promise<NexusRuntime> => {
+  const { options } = await createTestNexusOptions();
+  return {
+    createServer: () => new McpServer({ name: 'serve-test', version: '1.0.0' }),
+    orchestrator: options.orchestrator,
+    sanitizer: options.sanitizer,
+    initialize,
+    close,
+    reindex: async () => {},
+    registrationClient: null,
+  };
+};
 
 describe('parseServeArgs', () => {
   it('parses serve flags', () => {
@@ -90,5 +111,65 @@ describe('runServeCli', () => {
 
     expect(errorOutput.text()).toMatch(/loopback/);
     expect(failureDependencies.exit).toHaveBeenCalledWith(1);
+  });
+
+  it('waits for runtime initialization before listening and only reports ready afterward', async () => {
+    const config = await loadConfig({ projectRoot: process.cwd(), env: {}, transportMode: 'v2-http' });
+    let resolveInitialization: (() => void) | undefined;
+    const initialization = new Promise<void>((resolve) => {
+      resolveInitialization = resolve;
+    });
+    const initialize = vi.fn(() => initialization);
+    const close = vi.fn(async () => {});
+    const runtime = await createRuntimeFixture(initialize, close);
+    let readyAtListen: boolean | undefined;
+    const startServer = vi.fn(async (deps): Promise<HttpV2ServerHandle> => {
+      readyAtListen = deps.isReady();
+      return {
+        server: createServer(),
+        close: async () => {},
+        port: () => 9210,
+      };
+    });
+    const dependencies: ServeCliDependencies = {
+      ...createDependencies(new PassThrough(), new PassThrough()),
+      loadConfig: async () => config,
+      createRuntime: async () => runtime,
+      startServer,
+    };
+
+    const serving = runServeCli([], {}, dependencies);
+    await vi.waitFor(() => expect(initialize).toHaveBeenCalledOnce());
+    expect(startServer).not.toHaveBeenCalled();
+
+    if (resolveInitialization === undefined) {
+      throw new Error('initialization was not started');
+    }
+    resolveInitialization();
+    await serving;
+
+    expect(startServer).toHaveBeenCalledOnce();
+    expect(readyAtListen).toBe(true);
+  });
+
+  it('does not listen and closes the runtime when initialization fails', async () => {
+    const config = await loadConfig({ projectRoot: process.cwd(), env: {}, transportMode: 'v2-http' });
+    const close = vi.fn(async () => {});
+    const runtime = await createRuntimeFixture(async () => {
+      throw new Error('initialization failed');
+    }, close);
+    const startServer = vi.fn();
+    const dependencies: ServeCliDependencies = {
+      ...createDependencies(new PassThrough(), new PassThrough()),
+      loadConfig: async () => config,
+      createRuntime: async () => runtime,
+      startServer,
+    };
+
+    await runServeCli([], {}, dependencies);
+
+    expect(startServer).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+    expect(dependencies.exit).toHaveBeenCalledWith(1);
   });
 });
