@@ -3,7 +3,11 @@ import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 
 import { isAllowedHostHeader, isAllowedOriginHeader } from '../../../../src/server/http-v2/net.js';
-import { applySecurityHeaders, validateRequestHeaders } from '../../../../src/server/http-v2/headers.js';
+import {
+  applySecurityHeaders,
+  validateMcpAcceptHeader,
+  validateRequestHeaders,
+} from '../../../../src/server/http-v2/headers.js';
 
 const listen = async (server: Server): Promise<number> =>
   new Promise((resolve, reject) => {
@@ -77,6 +81,22 @@ describe('validateRequestHeaders', () => {
 
   it('rejects a non-loopback origin', () => {
     expect(validateRequestHeaders('127.0.0.1:9200', 'https://evil.example').ok).toBe(false);
+  });
+});
+
+describe('validateMcpAcceptHeader', () => {
+  it.each([
+    ['application/json, text/event-stream', true],
+    ['text/event-stream; q=0.5, application/json; q=1', true],
+    [undefined, false],
+    ['application/json', false],
+    ['text/event-stream', false],
+    ['application/json; q=0, text/event-stream', false],
+    ['application/json, text/event-stream; q=0', false],
+    ['application/jsonish, text/event-stream', false],
+    ['application/json, text/event-stream; q=invalid', false],
+  ])('accepts %p: %p', (accept, expected) => {
+    expect(validateMcpAcceptHeader(accept).ok).toBe(expected);
   });
 });
 

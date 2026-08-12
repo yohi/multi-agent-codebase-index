@@ -90,4 +90,34 @@ describe('loadConfig transportMode="v2-http"', () => {
       ).rejects.toThrow(/local-only/);
     }
   });
+
+  it('rejects Ollama base URLs outside the loopback interface in v2-http mode', async () => {
+    const root = await freshProjectRoot();
+    for (const baseUrl of ['http://ollama.example:11434', 'https://127.0.0.1.evil.example:11434']) {
+      await expect(
+        loadConfig({
+          projectRoot: root,
+          env: {
+            NEXUS_EMBEDDING_PROVIDER: 'ollama',
+            NEXUS_EMBEDDING_BASE_URL: baseUrl,
+          },
+          transportMode: 'v2-http',
+        }),
+      ).rejects.toThrow(/Ollama.*loopback/);
+    }
+  });
+
+  it('accepts an Ollama base URL on a loopback interface in v2-http mode', async () => {
+    const root = await freshProjectRoot();
+    await expect(
+      loadConfig({
+        projectRoot: root,
+        env: {
+          NEXUS_EMBEDDING_PROVIDER: 'ollama',
+          NEXUS_EMBEDDING_BASE_URL: 'http://[::1]:11434',
+        },
+        transportMode: 'v2-http',
+      }),
+    ).resolves.toMatchObject({ embedding: { baseUrl: 'http://[::1]:11434' } });
+  });
 });

@@ -4,10 +4,11 @@ import { z as z3 } from 'zod';
 import { TOOL_DEFINITIONS } from '../../../../../../src/server/tools/registry/definitions.js';
 import { toZodV3Shape } from '../../../../../../src/server/tools/registry/adapters/v1-adapter.js';
 import {
-  toV2JsonSchema,
+  registerV2Tools,
   toZodV4Object,
   withErrorCode,
 } from '../../../../../../src/server/tools/registry/adapters/v2-adapter.js';
+import type { ToolHandler } from '../../../../../../src/server/tools/types.js';
 
 describe('v1/v2 schema parity', () => {
   const validArgs: Record<string, Record<string, unknown>> = {
@@ -49,20 +50,6 @@ describe('v1/v2 schema parity', () => {
     expect(schema.safeParse({ query: 'auth', topK: 26 }).success).toBe(false);
   });
 
-  it('converts neutral schemas to SDK-compatible JSON Schema', () => {
-    const hybrid = TOOL_DEFINITIONS.find((definition) => definition.name === 'hybrid_search');
-    if (hybrid === undefined) {
-      throw new Error('hybrid_search definition is missing');
-    }
-    expect(toV2JsonSchema(hybrid.input, { topK: 25, maxResults: 100 })).toMatchObject({
-      type: 'object',
-      required: ['query'],
-      properties: {
-        query: { type: 'string' },
-        topK: { type: 'integer', minimum: 1, maximum: 25 },
-      },
-    });
-  });
 });
 
 describe('withErrorCode', () => {
@@ -120,6 +107,43 @@ describe('v2 adapter over InMemoryTransport', () => {
       const result = await client.callTool({ name: 'grep_search', arguments: { pattern: 'authenticate' } });
       expect(result.isError).toBeUndefined();
       expect(result.structuredContent).toMatchObject({ matches: [{ filePath: expect.any(String) }] });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('applies neutral defaults and caps through the registered zod v4 schemas', async () => {
+    const { Client } = await import('@modelcontextprotocol/client');
+    const { InMemoryTransport, McpServer } = await import('@modelcontextprotocol/server');
+    const receivedArgs: unknown[] = [];
+    const handlers: Record<string, ToolHandler> = {};
+    for (const definition of TOOL_DEFINITIONS) {
+      handlers[definition.name] = async (args) => {
+        receivedArgs.push(args);
+        return { content: [{ type: 'text', text: '{}' }] };
+      };
+    }
+
+    const server = new McpServer({ name: 'nexus', version: '0.1.0' });
+    registerV2Tools(server, handlers);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'v2-schema-test-client', version: '0.1.0' });
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const list = await client.listTools();
+      const getContext = list.tools.find((tool) => tool.name === 'get_context');
+      const hybrid = list.tools.find((tool) => tool.name === 'hybrid_search');
+
+      expect(getContext?.inputSchema).toMatchObject({
+        properties: { mode: { default: 'eager' } },
+      });
+      expect(hybrid?.inputSchema).toMatchObject({
+        properties: { topK: { maximum: 100 }, contextLines: { maximum: 20 } },
+      });
+
+      await client.callTool({ name: 'get_context', arguments: { filePath: 'src/a.ts' } });
+      expect(receivedArgs).toContainEqual({ filePath: 'src/a.ts', mode: 'eager' });
     } finally {
       await client.close();
       await server.close();

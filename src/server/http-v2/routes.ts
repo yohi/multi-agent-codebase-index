@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { applySecurityHeaders, validateRequestHeaders } from './headers.js';
+import { applySecurityHeaders, validateMcpAcceptHeader, validateRequestHeaders } from './headers.js';
 
 export type RouteName = 'health' | 'ready' | 'mcp' | null;
 
@@ -47,6 +47,12 @@ export const createRequestListener = (deps: RoutesDeps) =>
         );
         if (!verdict.ok) {
           sendJson(res, 403, { error: verdict.reason });
+          return;
+        }
+        const accept = req.headers.accept;
+        const acceptVerdict = validateMcpAcceptHeader(typeof accept === 'string' ? accept : undefined);
+        if (!acceptVerdict.ok) {
+          sendJson(res, 406, { error: acceptVerdict.reason });
           return;
         }
         void deps.mcpHandler(req, res);

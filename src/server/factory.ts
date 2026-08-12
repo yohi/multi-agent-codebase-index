@@ -24,7 +24,6 @@ import { OpenAICompatEmbeddingProvider } from "../plugins/embeddings/openai-comp
 import { BedrockEmbeddingProvider } from "../plugins/embeddings/bedrock.js";
 import { SqliteMetadataStore } from "../storage/metadata-store.js";
 import { LanceVectorStore } from "../storage/vector-store.js";
-import { LocalContentStoreFactory } from "../storage/local/local-content-store.js";
 import { RipgrepEngine } from "../search/grep.js";
 import { FileWatcher } from "../indexer/watcher.js";
 import { EventQueue } from "../indexer/event-queue.js";
@@ -483,17 +482,11 @@ export class NexusServerFactory {
       metricsCollector,
     );
     const { watcher, onClose } = eventManager.setup();
-    const sanitizer = await PathSanitizer.create(projectRoot);
-    const workspaceId = config.projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? 'unknown';
-    const contentStore = new LocalContentStoreFactory({
-      projectRoot,
-      sanitize: (filePath) => sanitizer.sanitize(filePath),
-    }).getStore(workspaceId, 'local');
 
     try {
       return buildNexusRuntime({
         projectRoot,
-        sanitizer,
+        sanitizer: await PathSanitizer.create(projectRoot),
         semanticSearch,
         grepEngine,
         orchestrator,
@@ -503,7 +496,6 @@ export class NexusServerFactory {
         pluginRegistry,
         watcher,
         loadFileContent,
-        contentStore,
         metricsCollectorRegistry: metricsCollector.registry,
         metricsPort: config.metricsPort,
         storageDir: config.storage.rootDir,
