@@ -287,6 +287,16 @@ export interface IndexingConfig {
   embedBatchWindowSize: number;
 }
 
+/** Local HTTP v2 (`nexus serve`) settings. Present only in v2-http transport mode. */
+export interface HttpConfig {
+  host: string;
+  port?: number | undefined;
+  /** v2 経路の topK 上限（設計書 §10.3、既定 100）。 */
+  maxTopK: number;
+  /** v2 経路の maxResults 上限（設計書 §10.3、既定 1000）。 */
+  maxResultsLimit: number;
+}
+
 export interface Config {
   projectRoot: string;
   projectName?: string;
@@ -294,6 +304,8 @@ export interface Config {
   watcher: WatcherConfig;
   embedding: EmbeddingConfig;
   indexing: IndexingConfig;
+  /** Present only when the config was loaded with transportMode="v2-http". */
+  http?: HttpConfig | undefined;
   metricsPort?: number;
   aggregatorPort?: number;
   packageMode: boolean;

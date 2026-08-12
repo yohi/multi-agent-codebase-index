@@ -55,7 +55,9 @@
     "@aws-sdk/client-bedrock-runtime": "^3.1081.0",
     "@aws-sdk/credential-providers": "^3.1081.0",
     "@lancedb/lancedb": "^0.18.2",
+    "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.18.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@smithy/node-http-handler": "^4.9.4",
     "async-mutex": "^0.5.0",
     "better-sqlite3": "^12.10.0",
@@ -79,6 +81,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",
+    "@modelcontextprotocol/client": "^2.0.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.7.0",
     "@types/picomatch": "^4.0.3",
