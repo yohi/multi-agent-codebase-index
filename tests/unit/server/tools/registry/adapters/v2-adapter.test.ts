@@ -1,0 +1,128 @@
+import { describe, expect, it } from 'vitest';
+import { z as z3 } from 'zod';
+
+import { TOOL_DEFINITIONS } from '../../../../../../src/server/tools/registry/definitions.js';
+import { toZodV3Shape } from '../../../../../../src/server/tools/registry/adapters/v1-adapter.js';
+import {
+  toV2JsonSchema,
+  toZodV4Object,
+  withErrorCode,
+} from '../../../../../../src/server/tools/registry/adapters/v2-adapter.js';
+
+describe('v1/v2 schema parity', () => {
+  const validArgs: Record<string, Record<string, unknown>> = {
+    semantic_search: { query: 'auth', topK: 5 },
+    grep_search: { pattern: 'foo', maxResults: 10, caseSensitive: true },
+    hybrid_search: { query: 'auth', topK: 5, contextLines: 3 },
+    get_context: { filePath: 'src/a.ts', startLine: 1, endLine: 5 },
+    index_status: {},
+    reindex: { fullRebuild: true },
+  };
+
+  it('accepts the same valid inputs in v3 and v4', () => {
+    for (const definition of TOOL_DEFINITIONS) {
+      expect(z3.object(toZodV3Shape(definition.input)).safeParse(validArgs[definition.name]).success).toBe(true);
+      expect(toZodV4Object(definition.input).safeParse(validArgs[definition.name]).success).toBe(true);
+    }
+  });
+
+  it('rejects over-limit integers only in v4', () => {
+    const hybrid = TOOL_DEFINITIONS.find((definition) => definition.name === 'hybrid_search');
+    const grep = TOOL_DEFINITIONS.find((definition) => definition.name === 'grep_search');
+    if (hybrid === undefined || grep === undefined) {
+      throw new Error('expected definitions are missing');
+    }
+    expect(z3.object(toZodV3Shape(hybrid.input)).safeParse({ query: 'auth', topK: 101 }).success).toBe(true);
+    expect(toZodV4Object(hybrid.input).safeParse({ query: 'auth', topK: 101 }).success).toBe(false);
+    expect(toZodV4Object(hybrid.input).safeParse({ query: 'auth', contextLines: 21 }).success).toBe(false);
+    expect(z3.object(toZodV3Shape(grep.input)).safeParse({ pattern: 'x', maxResults: 1001 }).success).toBe(true);
+    expect(toZodV4Object(grep.input).safeParse({ pattern: 'x', maxResults: 1001 }).success).toBe(false);
+  });
+
+  it('honours config-driven limit overrides', () => {
+    const hybrid = TOOL_DEFINITIONS.find((definition) => definition.name === 'hybrid_search');
+    if (hybrid === undefined) {
+      throw new Error('hybrid_search definition is missing');
+    }
+    const schema = toZodV4Object(hybrid.input, { topK: 25, maxResults: 100 });
+    expect(schema.safeParse({ query: 'auth', topK: 25 }).success).toBe(true);
+    expect(schema.safeParse({ query: 'auth', topK: 26 }).success).toBe(false);
+  });
+
+  it('converts neutral schemas to SDK-compatible JSON Schema', () => {
+    const hybrid = TOOL_DEFINITIONS.find((definition) => definition.name === 'hybrid_search');
+    if (hybrid === undefined) {
+      throw new Error('hybrid_search definition is missing');
+    }
+    expect(toV2JsonSchema(hybrid.input, { topK: 25, maxResults: 100 })).toMatchObject({
+      type: 'object',
+      required: ['query'],
+      properties: {
+        query: { type: 'string' },
+        topK: { type: 'integer', minimum: 1, maximum: 25 },
+      },
+    });
+  });
+});
+
+describe('withErrorCode', () => {
+  it('adds NEXUS_CONTENT_NOT_FOUND to classified error results', () => {
+    const result = withErrorCode({
+      content: [{ type: 'text', text: 'Error: ENOENT' }],
+      isError: true,
+      structuredContent: { error: true, message: 'ENOENT: no such file or directory' },
+    });
+    expect(result.structuredContent).toEqual({
+      error: true,
+      message: 'ENOENT: no such file or directory',
+      code: 'NEXUS_CONTENT_NOT_FOUND',
+    });
+  });
+
+  it('preserves non-error and unclassified error results by identity', () => {
+    const ok = { content: [{ type: 'text' as const, text: '{}' }], structuredContent: { results: [] } };
+    const unknownError = {
+      content: [{ type: 'text' as const, text: 'Error: boom' }],
+      isError: true,
+      structuredContent: { error: true, message: 'boom' },
+    };
+    expect(withErrorCode(ok)).toBe(ok);
+    expect(withErrorCode(unknownError)).toBe(unknownError);
+  });
+});
+
+describe('v2 adapter over InMemoryTransport', () => {
+  it('lists all tools and executes grep_search', async () => {
+    const { Client } = await import('@modelcontextprotocol/client');
+    const { InMemoryTransport, McpServer } = await import('@modelcontextprotocol/server');
+    const { buildToolHandlers } = await import('../../../../../../src/server/tools/tool-support.js');
+    const { registerV2Tools } = await import('../../../../../../src/server/tools/registry/adapters/v2-adapter.js');
+    const { createTestNexusOptions } = await import('../../../../../shared/create-test-nexus-options.js');
+
+    const { options } = await createTestNexusOptions();
+    const server = new McpServer({ name: 'nexus', version: '0.1.0' });
+    registerV2Tools(server, buildToolHandlers(options));
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'v2-adapter-test-client', version: '0.1.0' });
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const list = await client.listTools();
+      expect(list.tools.map((tool) => tool.name)).toEqual([
+        'semantic_search',
+        'grep_search',
+        'hybrid_search',
+        'get_context',
+        'index_status',
+        'reindex',
+      ]);
+
+      const result = await client.callTool({ name: 'grep_search', arguments: { pattern: 'authenticate' } });
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({ matches: [{ filePath: expect.any(String) }] });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
