@@ -192,6 +192,7 @@ describe("nexus CLI shutdown", () => {
     expect(output).toContain("dashboard");
     expect(output).toContain("aggregator");
     expect(output).toContain("http-bridge");
+    expect(output).toContain("serve");
   });
 
   it("does not mutate process.argv when dispatching a subcommand", async () => {
@@ -240,6 +241,7 @@ describe("nexus CLI shutdown", () => {
     expect(output).toContain("dashboard");
     expect(output).toContain("aggregator");
     expect(output).toContain("http-bridge");
+    expect(output).toContain("serve");
     expect(mocks.createRuntime).not.toHaveBeenCalled();
   });
 });
