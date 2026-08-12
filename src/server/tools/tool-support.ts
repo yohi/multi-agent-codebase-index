@@ -69,124 +69,124 @@ export const buildToolHandlers = (
   const readContent = createContentReader(options.contentStore, options.loadFileContent);
 
   return {
-  semantic_search: withToolMetrics(
-    'semantic_search',
-    options.metricsHooks,
-    async (args: unknown, extra?: { signal?: AbortSignal }) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        const result = await executeSemanticSearch(
-          options.semanticSearch,
-          options.sanitizer,
-          args as SemanticSearchToolArgs & { filePattern?: string },
-          extra?.signal,
-        );
-        options.metricsHooks?.onSearchResults('semantic', result.results.length);
-        return toolResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
-  ),
-  grep_search: withToolMetrics(
-    'grep_search',
-    options.metricsHooks,
-    async (args: unknown, extra?: { signal?: AbortSignal }) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        const result = await executeGrepSearch(
-          options.grepEngine,
-          options.projectRoot,
-          options.sanitizer,
-          args as GrepSearchToolArgs,
-          extra?.signal,
-        );
-        options.metricsHooks?.onSearchResults('grep', result.matches.length);
-        return toolResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
-  ),
-  hybrid_search: withToolMetrics(
-    'hybrid_search',
-    options.metricsHooks,
-    async (args: unknown, extra?: { signal?: AbortSignal }) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
+    semantic_search: withToolMetrics(
+      'semantic_search',
+      options.metricsHooks,
+      async (args: unknown, extra?: { signal?: AbortSignal }) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          const result = await executeSemanticSearch(
+            options.semanticSearch,
+            options.sanitizer,
+            args as SemanticSearchToolArgs & { filePattern?: string },
+            extra?.signal,
+          );
+          options.metricsHooks?.onSearchResults('semantic', result.results.length);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    ),
+    grep_search: withToolMetrics(
+      'grep_search',
+      options.metricsHooks,
+      async (args: unknown, extra?: { signal?: AbortSignal }) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          const result = await executeGrepSearch(
+            options.grepEngine,
+            options.projectRoot,
+            options.sanitizer,
+            args as GrepSearchToolArgs,
+            extra?.signal,
+          );
+          options.metricsHooks?.onSearchResults('grep', result.matches.length);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    ),
+    hybrid_search: withToolMetrics(
+      'hybrid_search',
+      options.metricsHooks,
+      async (args: unknown, extra?: { signal?: AbortSignal }) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
           const result = await executeHybridSearch(
             options.orchestrator,
             options.sanitizer,
             readContent,
-          args as HybridSearchToolArgs & { filePattern?: string },
-          extra?.signal,
-          options.metricsHooks,
-        );
-        options.metricsHooks?.onSearchResults('hybrid', result.results.length);
-        return toolResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
-  ),
-  get_context: withToolMetrics(
-    'get_context',
-    options.metricsHooks,
-    async (args: unknown) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
+            args as HybridSearchToolArgs & { filePattern?: string },
+            extra?.signal,
+            options.metricsHooks,
+          );
+          options.metricsHooks?.onSearchResults('hybrid', result.results.length);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    ),
+    get_context: withToolMetrics(
+      'get_context',
+      options.metricsHooks,
+      async (args: unknown) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
           const result = await executeGetContext(
             readContent,
-          options.sanitizer,
-          args as GetContextToolArgs,
-        );
-        const lineCount = 'mode' in result
-          ? result.previewEndLine - result.previewStartLine + 1
-          : result.endLine - result.startLine + 1;
-        options.metricsHooks?.onContextLinesFetched('get_context', lineCount);
-        return toolResult(result);
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
-  ),
-  index_status: withToolMetrics(
-    'index_status',
-    options.metricsHooks,
-    async () => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeIndexStatus(
-            options.metadataStore,
-            options.vectorStore,
-            options.pluginRegistry,
-            options.pipeline,
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
-  ),
-  reindex: withToolMetrics(
-    'reindex',
-    options.metricsHooks,
-    async (args: unknown) => {
-      if (awaitInitialize) await awaitInitialize();
-      try {
-        return toolResult(
-          await executeReindex(
-            options.pipeline,
-            options.runReindex,
-            options.loadFileContent,
-            args as Parameters<typeof executeReindex>[3],
-          ),
-        );
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
-  ),
+            options.sanitizer,
+            args as GetContextToolArgs,
+          );
+          const lineCount = 'mode' in result
+            ? result.previewEndLine - result.previewStartLine + 1
+            : result.endLine - result.startLine + 1;
+          options.metricsHooks?.onContextLinesFetched('get_context', lineCount);
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    ),
+    index_status: withToolMetrics(
+      'index_status',
+      options.metricsHooks,
+      async () => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          return toolResult(
+            await executeIndexStatus(
+              options.metadataStore,
+              options.vectorStore,
+              options.pluginRegistry,
+              options.pipeline,
+            ),
+          );
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    ),
+    reindex: withToolMetrics(
+      'reindex',
+      options.metricsHooks,
+      async (args: unknown) => {
+        if (awaitInitialize) await awaitInitialize();
+        try {
+          return toolResult(
+            await executeReindex(
+              options.pipeline,
+              options.runReindex,
+              options.loadFileContent,
+              args as Parameters<typeof executeReindex>[3],
+            ),
+          );
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    ),
   };
 };
