@@ -31,6 +31,7 @@ export interface NexusServerOptions {
 }
 
 export interface NexusToolCallResult {
+  readonly [key: string]: unknown;
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
   structuredContent?: Record<string, unknown>;
