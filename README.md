@@ -145,6 +145,17 @@ stdio-only の MCP クライアント（OpenCode など）から使う場合は�
 
 プロジェクトルートを明示的に指定したい場合は `--project-root <path>` 引数または `NEXUS_PROJECT_ROOT` 環境変数を使用します（未指定時はカレントディレクトリ）。
 
+#### MCP v2 HTTP サーバーを直接起動する
+
+`nexus serve` は、MCP プロトコル `2026-07-28` 準拠のローカルHTTPサーバーを起動します。既定の待受先は loopback の `127.0.0.1:9200` であり、外部ネットワーク向けのホストは指定できません。
+
+```bash
+nexus serve
+nexus serve --host 127.0.0.1 --port 9200
+```
+
+`.nexus.json` の `http` ブロック、または `NEXUS_HTTP_HOST` / `NEXUS_HTTP_PORT` で待受先を設定できます。local-only モードのため、`openai-compat` と `bedrock` の埋め込みプロバイダーは使用できません。
+
 </details>
 
 ## 📖 使い方
