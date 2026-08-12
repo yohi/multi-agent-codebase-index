@@ -49,6 +49,7 @@ describe('OllamaEmbeddingProvider', () => {
     await vi.waitFor(() => expect(acquireGlobalLockMock).toHaveBeenCalledOnce());
     expect(acquireGlobalLockMock.mock.calls[0]?.[1]).toMatchObject({
       retryMode: 'unlimited',
+      maxTimeoutMs: 5_000,
       signal: controller.signal,
     });
 
@@ -83,6 +84,35 @@ describe('OllamaEmbeddingProvider', () => {
     controller.abort();
 
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(release).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('releases the lock if cancelled after acquisition before any batch starts', async () => {
+    const release = vi.fn().mockResolvedValue(undefined);
+    acquireGlobalLockMock.mockResolvedValueOnce({ release });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ embeddings: [[1, 2, 3, 4]] }),
+    });
+    const controller = new AbortController();
+    const provider = new OllamaEmbeddingProvider(
+      {
+        baseUrl: 'http://localhost:11434',
+        model: 'nomic-embed-text',
+        dimensions: 4,
+        maxConcurrency: 1,
+        batchSize: 1,
+        retryCount: 0,
+        retryBaseDelayMs: 1,
+        ollamaNumThread: 2,
+      },
+      { fetch: fetchMock, sleep: async () => {} },
+    );
+
+    queueMicrotask(() => controller.abort());
+
+    await expect(provider.embed(['alpha'], controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
     expect(release).toHaveBeenCalledOnce();
     expect(fetchMock).not.toHaveBeenCalled();
   });
