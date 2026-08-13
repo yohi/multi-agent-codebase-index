@@ -115,4 +115,17 @@ describe('createContentReader', () => {
       results: expect.arrayContaining([expect.objectContaining({ snippet: 'FROM_STORE' })]),
     });
   });
+
+  it('applies the requested line range when falling back from ContentStore', async () => {
+    const reader = createContentReader(
+      createStore({
+        readRange: async () => {
+          throw new Error('store unavailable');
+        },
+      }),
+      async () => ['line1', 'line2', 'line3', 'line4', 'line5'].join('\n'),
+    );
+
+    await expect(reader('src/index.ts', 2, 4)).resolves.toBe('line2\nline3\nline4');
+  });
 });

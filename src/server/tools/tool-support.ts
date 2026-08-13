@@ -66,7 +66,14 @@ export const createContentReader = (
       return await contentStore.readRange(filePath, startLine, endLine, signal);
     } catch (error) {
       console.warn('[Nexus] ContentStore readRange failed; falling back to filesystem read:', error);
-      return fallback(filePath, signal);
+      const content = await fallback(filePath, signal);
+      const lines = content.split('\n');
+      const clampedStart = Math.max(1, Math.min(startLine, lines.length));
+      const clampedEnd = Math.max(1, Math.min(endLine, lines.length));
+      if (clampedStart > clampedEnd) {
+        throw new Error(`Invalid line range: startLine (${clampedStart}) is greater than endLine (${clampedEnd})`);
+      }
+      return lines.slice(clampedStart - 1, clampedEnd).join('\n');
     }
   };
 };
