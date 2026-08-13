@@ -8,7 +8,7 @@ describe('executeGetContext', () => {
       sanitize: async (filePath: string) => `/sandbox/${filePath}`,
     };
     const result = await executeGetContext(
-      async () => 'line1\nline2\nline3\nline4',
+      async (_path, startLine, endLine) => ['line1', 'line2', 'line3', 'line4'].slice(startLine - 1, endLine).join('\n'),
       sanitizer as never,
       {
         filePath: 'src/auth.ts',
@@ -54,7 +54,7 @@ describe('executeGetContext', () => {
 
     await expect(
       executeGetContext(
-        async () => 'line1\nline2\nline3\nline4',
+        async (_path, startLine, endLine) => ['line1', 'line2', 'line3', 'line4'].slice(startLine - 1, endLine).join('\n'),
         sanitizer as never,
         {
           filePath: 'src/auth.ts',
@@ -73,7 +73,7 @@ describe('executeGetContext', () => {
 
     await expect(
       executeGetContext(
-        async () => 'line1\nline2\nline3\nline4\nline5',
+        async (_path, startLine, endLine) => ['line1', 'line2', 'line3', 'line4', 'line5'].slice(startLine - 1, endLine).join('\n'),
         sanitizer as never,
         {
           filePath: 'src/auth.ts',

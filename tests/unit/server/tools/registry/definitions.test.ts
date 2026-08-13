@@ -34,4 +34,10 @@ describe('tool definitions', () => {
     expect(hybrid?.input.topK).toMatchObject({ kind: 'integer', maximum: 100 });
     expect(grep?.input.maxResults).toMatchObject({ kind: 'integer', maximum: 1000 });
   });
+
+  it('describes contextLines values above 20 as rejected', () => {
+    const hybrid = TOOL_DEFINITIONS.find((definition) => definition.name === 'hybrid_search');
+    expect(hybrid?.input.contextLines?.description).toContain('rejected');
+    expect(hybrid?.input.contextLines?.description).not.toContain('clamped');
+  });
 });
