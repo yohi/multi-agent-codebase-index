@@ -89,10 +89,7 @@ export const registerV2Tools = (
         description: definition.description,
         inputSchema: toZodV4Object(definition.input, limits),
       },
-      async (args, extra) => {
-        const normalizedArgs = toZodV4Object(definition.input, limits).parse(args);
-        return withErrorCode(await handler(normalizedArgs, { signal: extra.mcpReq.signal }));
-      },
+      async (args, extra) => withErrorCode(await handler(args, { signal: extra.mcpReq.signal })),
     );
   }
 };

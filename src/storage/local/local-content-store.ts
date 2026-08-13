@@ -29,14 +29,9 @@ export class LocalContentStore implements IContentStore {
     return false;
   }
 
-  async readRange(
-    filePath: string,
-    startLine: number,
-    endLine: number,
-    signal?: AbortSignal,
-  ): Promise<string> {
+  async readRange(filePath: string, startLine: number, endLine: number): Promise<string> {
     const sanitizedPath = await this.deps.sanitize(filePath);
-    const content = await readFile(resolve(this.deps.projectRoot, sanitizedPath), { encoding: 'utf8', signal });
+    const content = await readFile(resolve(this.deps.projectRoot, sanitizedPath), 'utf8');
     const lines = content.split('\n');
     const totalLines = lines.length;
     const clampedStart = clampLine(startLine, totalLines);

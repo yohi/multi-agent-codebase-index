@@ -33,7 +33,7 @@ export interface IContentStore {
    * retrieve the bytes, and return the requested inclusive line range as a
    * string.
    */
-  readRange(path: string, startLine: number, endLine: number, signal?: AbortSignal): Promise<string>;
+  readRange(path: string, startLine: number, endLine: number): Promise<string>;
 }
 
 /**
