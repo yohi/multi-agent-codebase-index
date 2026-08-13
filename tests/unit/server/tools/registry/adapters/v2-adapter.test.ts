@@ -173,4 +173,49 @@ describe('v2 adapter over InMemoryTransport', () => {
       await server.close();
     }
   });
+
+  it('normalizes omitted mode to eager before invoking the handler', async () => {
+    const { Client } = await import('@modelcontextprotocol/client');
+    const { InMemoryTransport, McpServer } = await import('@modelcontextprotocol/server');
+    const { registerV2Tools } = await import('../../../../../../src/server/tools/registry/adapters/v2-adapter.js');
+    const { TOOL_DEFINITIONS } = await import('../../../../../../src/server/tools/registry/definitions.js');
+
+    const receivedModes: (string | undefined)[] = [];
+    const handlers = Object.fromEntries(
+      TOOL_DEFINITIONS.map((definition) => [
+        definition.name,
+        async () => ({
+          content: [{ type: 'text' as const, text: '' }],
+          structuredContent: {},
+        }),
+      ]),
+    );
+    handlers.get_context = async (args: unknown) => {
+      const parsed = args as { mode: string };
+      receivedModes.push(parsed.mode);
+      return {
+        content: [{ type: 'text' as const, text: 'ok' }],
+        structuredContent: { mode: parsed.mode },
+      };
+    };
+
+    const server = new McpServer({ name: 'nexus', version: '0.1.0' });
+    registerV2Tools(server, handlers);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'v2-adapter-test-client', version: '0.1.0' });
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const result = await client.callTool({
+        name: 'get_context',
+        arguments: { filePath: 'src/auth.ts', startLine: 1, endLine: 1 },
+      });
+      expect(result.isError).toBeUndefined();
+      expect(receivedModes).toEqual(['eager']);
+      expect(result.structuredContent).toEqual({ mode: 'eager' });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });
