@@ -76,111 +76,21 @@ export interface ParsedSourceFile {
   declarations: ParsedDeclaration[];
 }
 
-export interface VectorFilter {
-  filePathPrefix?: string;
-  language?: string;
-  symbolKind?: SymbolKind;
-}
-
-export interface VectorSearchResult {
-  chunk: CodeChunk;
-  score: number;
-}
-
-export interface VectorStoreStats {
-  totalChunks: number;
-  totalFiles: number;
-  dimensions: number;
-  fragmentationRatio: number;
-  lastCompactedAt?: string;
-}
-
-export interface CompactionResult {
-  compacted: boolean;
-  fragmentationRatioBefore: number;
-  fragmentationRatioAfter: number;
-  chunksRemoved: number;
-}
-
-export interface CompactionConfig {
-  fragmentationThreshold: number;
-  minStaleChunks: number;
-  idleDelayMs: number;
-}
-
-export interface CompactionMutex {
-  waitForUnlock(abortSignal?: AbortSignal): Promise<void>;
-}
-
-export interface IVectorStore {
-  initialize(): Promise<void>;
-  upsertChunks(chunks: CodeChunk[], embeddings?: number[][], affectedFilePaths?: string[]): Promise<void>;
-  deleteByFilePath(filePath: string): Promise<number>;
-  deleteByPathPrefix(pathPrefix: string): Promise<number>;
-  renameFilePath(oldPath: string, newPath: string): Promise<number>;
-  search(queryVector: number[], topK: number, filter?: VectorFilter): Promise<VectorSearchResult[]>;
-  compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult>;
-  compactAfterReindex(config?: Partial<CompactionConfig>): Promise<CompactionResult>;
-  scheduleIdleCompaction(
-    runCompaction: () => Promise<void>,
-    delayMs?: number,
-    mutex?: CompactionMutex,
-    abortSignal?: AbortSignal,
-    mutexTimeoutMs?: number,
-  ): NodeJS.Timeout;
-  getStats(): Promise<VectorStoreStats>;
-  close(timeoutMs?: number): Promise<void>;
-}
-
-export interface MerkleNodeRow {
-  path: string;
-  hash: string;
-  parentPath: string | null;
-  isDirectory: boolean;
-}
-
-export interface IndexStatsRow {
-  id: 'primary';
-  totalFiles: number;
-  totalChunks: number;
-  lastIndexedAt: string | null;
-  lastFullScanAt: string | null;
-  overflowCount: number;
-}
-
-export interface EmbeddingCacheEntry {
-  hash: string;
-  vector: number[];
-}
-
-
-export interface IMetadataStore {
-  initialize(): Promise<void>;
-  bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void>;
-  bulkDeleteMerkleNodes(paths: string[]): Promise<void>;
-  bulkDeleteSubtrees(paths: string[]): Promise<number>;
-  deleteSubtree(pathPrefix: string): Promise<number>;
-  getSubtreePaths(pathPrefix: string): Promise<string[]>;
-  pruneEmptyParents(path: string, pathExists: (targetPath: string) => Promise<boolean>): Promise<void>;
-  renamePath(oldPath: string, newPath: string, hash: string): Promise<void>;
-  getMerkleNode(path: string): Promise<MerkleNodeRow | null>;
-  getChildren(path: string | null): Promise<MerkleNodeRow[]>;
-  hasChildren(path: string | null): Promise<boolean>;
-  getAllNodes(): Promise<MerkleNodeRow[]>;
-  getAllFileNodes(): Promise<MerkleNodeRow[]>;
-  getAllPaths(): Promise<string[]>;
-  getIndexStats(): Promise<IndexStatsRow | null>;
-  setIndexStats(stats: IndexStatsRow): Promise<void>;
-  upsertDeadLetterEntries(entries: DeadLetterEntry[]): Promise<void>;
-  removeDeadLetterEntries(ids: string[]): Promise<void>;
-  getDeadLetterEntries(): Promise<DeadLetterEntry[]>;
-  getEmbeddings(hashes: string[]): Promise<Map<string, number[]>>;
-  setEmbeddings(entries: EmbeddingCacheEntry[]): Promise<void>;
-  deleteEmbeddings(hashes: string[]): Promise<void>;
-  clearEmbeddings(): Promise<void>;
-  pruneEmbeddings(maxAgeDays: number): Promise<number>;
-
-}
+export type {
+  IMetadataStore,
+  MerkleNodeRow,
+  IndexStatsRow,
+  EmbeddingCacheEntry,
+} from '../storage/interfaces/metadata-store.js';
+export type {
+  IVectorStore,
+  CompactionConfig,
+  CompactionMutex,
+  CompactionResult,
+  VectorFilter,
+  VectorSearchResult,
+  VectorStoreStats,
+} from '../storage/interfaces/vector-store.js';
 
 export interface GrepParams {
   query: string;
@@ -287,6 +197,16 @@ export interface IndexingConfig {
   embedBatchWindowSize: number;
 }
 
+/** Local HTTP v2 (`nexus serve`) settings. Present only in v2-http transport mode. */
+export interface HttpConfig {
+  host: string;
+  port?: number | undefined;
+  /** v2 経路の topK 上限（設計書 §10.3、既定 100）。 */
+  maxTopK: number;
+  /** v2 経路の maxResults 上限（設計書 §10.3、既定 1000）。 */
+  maxResultsLimit: number;
+}
+
 export interface Config {
   projectRoot: string;
   projectName?: string;
@@ -294,6 +214,8 @@ export interface Config {
   watcher: WatcherConfig;
   embedding: EmbeddingConfig;
   indexing: IndexingConfig;
+  /** Present only when the config was loaded with transportMode="v2-http". */
+  http?: HttpConfig | undefined;
   metricsPort?: number;
   aggregatorPort?: number;
   packageMode: boolean;

@@ -5,8 +5,10 @@ import type { Config, EmbeddingConfig, IndexingConfig } from '../types/index.js'
 
 export interface LoadConfigOptions {
   projectRoot: string;
-  env?: NodeJS.ProcessEnv;
   configFileName?: string;
+  env?: NodeJS.ProcessEnv;
+  /** "v2-http" のときのみ HTTP v2 設定を読み込み、local-only 制約を適用する。 */
+  transportMode?: 'stdio' | 'v1-http' | 'v2-http';
 }
 
 export const DEFAULT_OLLAMA_NUM_THREAD = 2;
@@ -166,6 +168,25 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         validatePositiveInt(fileConfig.indexing?.embedBatchWindowSize) ??
         defaults.indexing.embedBatchWindowSize,
     },
+    ...(options.transportMode === 'v2-http'
+      ? {
+          http: {
+            host:
+              asString(env.NEXUS_HTTP_HOST) ??
+              validateString(fileConfig.http?.host) ??
+              '127.0.0.1',
+            port: asPortNumber(env.NEXUS_HTTP_PORT) ?? validatePortNumber(fileConfig.http?.port),
+            maxTopK:
+              asBoundedPositiveInt(env.NEXUS_HTTP_MAX_TOP_K, 4096) ??
+              validateBoundedPositiveInt(fileConfig.http?.maxTopK, 4096) ??
+              100,
+            maxResultsLimit:
+              asBoundedPositiveInt(env.NEXUS_HTTP_MAX_RESULTS_LIMIT, 65536) ??
+              validateBoundedPositiveInt(fileConfig.http?.maxResultsLimit, 65536) ??
+              1000,
+          },
+        }
+      : {}),
     metricsPort:
       asPortNumber(env.NEXUS_METRICS_PORT) ??
       validatePortNumber(fileConfig.metricsPort) ??
@@ -180,8 +201,49 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
       false,
   };
 
+  if (options.transportMode === 'v2-http') {
+    assertHttpV2Constraints(merged);
+  }
+
   return projectName === undefined ? merged : { ...merged, projectName };
 };
+
+/**
+ * True when the host string names a loopback interface.
+ * Accepts 127.0.0.0/8 dotted quads, "localhost", and "::1" (brackets optional).
+ */
+export const isLoopbackHost = (host: string): boolean => {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (normalized === 'localhost' || normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') {
+    return true;
+  }
+  const octets = normalized.match(/^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  return octets !== null && octets.slice(1).every((octet) => Number.parseInt(octet, 10) <= 255);
+};
+
+/**
+ * Local HTTP v2 constraints (design doc §3.2 / §6.1). Runs only when the
+ * config was loaded with transportMode="v2-http":
+ * - host must be a loopback interface (fail-closed; --allow-network is Phase 3)
+ * - external embedding providers are rejected (local-first contract)
+ */
+export function assertHttpV2Constraints(config: Config): void {
+  if (config.http === undefined) {
+    throw new Error('Local HTTP v2 requires the http config block (transportMode="v2-http").');
+  }
+  if (!isLoopbackHost(config.http.host)) {
+    throw new Error(
+      `Local HTTP v2 can only bind to a loopback interface (127.0.0.1, localhost, or ::1), ` +
+        `but received "${config.http.host}".`,
+    );
+  }
+  if (config.embedding.provider === 'openai-compat' || config.embedding.provider === 'bedrock') {
+    throw new Error(
+      `Local HTTP v2 is local-only: embedding.provider "${config.embedding.provider}" contacts ` +
+        'external networks. Use "ollama" or "test".',
+    );
+  }
+}
 
 const asString = (value: string | undefined): string | undefined => {
   if (value === undefined) return undefined;
