@@ -483,6 +483,8 @@ export class NexusServerFactory {
       metricsCollector,
     );
     const { watcher, onClose } = eventManager.setup();
+
+    try {
     const sanitizer = await PathSanitizer.create(projectRoot);
     const workspaceId = config.projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? 'unknown';
     const contentStore = new LocalContentStoreFactory({
@@ -490,7 +492,6 @@ export class NexusServerFactory {
       sanitize: (filePath) => sanitizer.sanitize(filePath),
     }).getStore(workspaceId, 'local');
 
-    try {
       return buildNexusRuntime({
         projectRoot,
         sanitizer,
