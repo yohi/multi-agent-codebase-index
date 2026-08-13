@@ -217,7 +217,8 @@ export const isLoopbackHost = (host: string): boolean => {
   if (normalized === 'localhost' || normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') {
     return true;
   }
-  return /^127(?:\.\d{1,3}){3}$/.test(normalized);
+  const octets = normalized.match(/^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  return octets !== null && octets.slice(1).every((octet) => Number.parseInt(octet, 10) <= 255);
 };
 
 /**

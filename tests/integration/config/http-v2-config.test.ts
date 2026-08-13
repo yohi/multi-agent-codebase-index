@@ -67,6 +67,17 @@ describe('loadConfig transportMode="v2-http"', () => {
     ).rejects.toThrow(/loopback/);
   });
 
+  it('rejects a loopback host with an out-of-range IPv4 octet', async () => {
+    const root = await freshProjectRoot();
+    await expect(
+      loadConfig({
+        projectRoot: root,
+        env: { NEXUS_HTTP_HOST: '127.0.0.999' },
+        transportMode: 'v2-http',
+      }),
+    ).rejects.toThrow(/loopback/);
+  });
+
   it('rejects external embedding providers in v2-http mode', async () => {
     const root = await freshProjectRoot();
     for (const provider of ['openai-compat', 'bedrock'] as const) {
