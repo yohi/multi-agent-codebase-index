@@ -65,6 +65,20 @@ describe('v1/v2 schema parity', () => {
   });
 });
 
+describe('v1/v2 schema parity', () => {
+
+  it('applies default mode eager for get_context', () => {
+    const getContext = TOOL_DEFINITIONS.find((definition) => definition.name === 'get_context');
+    if (getContext === undefined) {
+      throw new Error('get_context definition is missing');
+    }
+    const parsed = toZodV4Object(getContext.input).safeParse({ filePath: 'src/a.ts' });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.mode).toBe('eager');
+  });
+});
+
 describe('withErrorCode', () => {
   it('adds NEXUS_CONTENT_NOT_FOUND to classified error results', () => {
     const result = withErrorCode({
@@ -120,6 +134,40 @@ describe('v2 adapter over InMemoryTransport', () => {
       const result = await client.callTool({ name: 'grep_search', arguments: { pattern: 'authenticate' } });
       expect(result.isError).toBeUndefined();
       expect(result.structuredContent).toMatchObject({ matches: [{ filePath: expect.any(String) }] });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('defaults get_context to eager mode when mode is omitted', async () => {
+    const { Client } = await import('@modelcontextprotocol/client');
+    const { InMemoryTransport, McpServer } = await import('@modelcontextprotocol/server');
+    const { buildToolHandlers } = await import('../../../../../../src/server/tools/tool-support.js');
+    const { registerV2Tools } = await import('../../../../../../src/server/tools/registry/adapters/v2-adapter.js');
+    const { createTestNexusOptions } = await import('../../../../../shared/create-test-nexus-options.js');
+
+    const { options } = await createTestNexusOptions();
+    options.loadFileContent = async (filePath: string) => {
+      return `# README\n\nSample content for ${filePath}\n`;
+    };
+    const server = new McpServer({ name: 'nexus', version: '0.1.0' });
+    registerV2Tools(server, buildToolHandlers(options));
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'v2-adapter-test-client', version: '0.1.0' });
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const result = await client.callTool({
+        name: 'get_context',
+        arguments: { filePath: 'README.md', startLine: 1, endLine: 3 },
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({
+        filePath: expect.any(String),
+        content: expect.any(String),
+      });
+      expect(result.structuredContent).not.toHaveProperty('mode');
     } finally {
       await client.close();
       await server.close();
