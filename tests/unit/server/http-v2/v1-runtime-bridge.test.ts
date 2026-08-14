@@ -1,5 +1,6 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createV1RuntimeToolBridge, type V1RuntimeToolBridge } from '../../../../src/server/http-v2/v1-runtime-bridge.js';
 
@@ -7,6 +8,7 @@ describe('createV1RuntimeToolBridge', () => {
   let bridge: V1RuntimeToolBridge | undefined;
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await bridge?.close();
     bridge = undefined;
   });
@@ -40,5 +42,17 @@ describe('createV1RuntimeToolBridge', () => {
 
     await expect(bridge.handlers.index_status({}, { signal: controller.signal })).rejects.toThrow();
     expect(handlerCalled).toBe(false);
+  });
+
+  it('closes the runtime server when the client close fails', async () => {
+    const runtimeServer = new McpServer({ name: 'v1-runtime', version: '1.0.0' });
+    const serverClose = vi.spyOn(runtimeServer, 'close');
+    const clientCloseError = new Error('client close failed');
+    vi.spyOn(Client.prototype, 'close').mockRejectedValueOnce(clientCloseError);
+
+    bridge = await createV1RuntimeToolBridge(runtimeServer);
+
+    await expect(bridge.close()).rejects.toThrow(clientCloseError);
+    expect(serverClose).toHaveBeenCalledOnce();
   });
 });
