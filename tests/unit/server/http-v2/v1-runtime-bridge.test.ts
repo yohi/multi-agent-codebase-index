@@ -25,4 +25,20 @@ describe('createV1RuntimeToolBridge', () => {
     expect(result.structuredContent).toEqual({ status: 'ok' });
     expect(result.content).toEqual([{ type: 'text', text: '{"status":"ok"}' }]);
   });
+
+  it('forwards the handler AbortSignal to the v1 runtime client call', async () => {
+    const runtimeServer = new McpServer({ name: 'v1-runtime', version: '1.0.0' });
+    let handlerCalled = false;
+    runtimeServer.registerTool('index_status', {}, async () => {
+      handlerCalled = true;
+      return { content: [{ type: 'text', text: '{"status":"ok"}' }] };
+    });
+
+    bridge = await createV1RuntimeToolBridge(runtimeServer);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(bridge.handlers.index_status({}, { signal: controller.signal })).rejects.toThrow();
+    expect(handlerCalled).toBe(false);
+  });
 });
