@@ -46,8 +46,8 @@ describe('routeRequest', () => {
     ['GET', '/health', 'health'],
     ['GET', '/ready', 'ready'],
     ['POST', '/mcp', 'mcp'],
-    ['GET', '/mcp', null],
-    ['DELETE', '/mcp', null],
+    ['GET', '/mcp', 'mcp-method-not-allowed'],
+    ['DELETE', '/mcp', 'mcp-method-not-allowed'],
     ['POST', '/other', null],
     ['GET', '/', null],
   ] as const)('%s %s routes to %s', (method, pathname, expected) => {
@@ -114,6 +114,61 @@ describe('createRequestListener', () => {
 
       expect(await postWithoutAcceptHeader(port)).toBe(406);
       expect(mcpHandlerCalled).toBe(false);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('returns 500 when the MCP handler rejects before sending headers', async () => {
+    const server = createServer(
+      createRequestListener({
+        isReady: () => true,
+        mcpHandler: async () => {
+          throw new Error('handler failed');
+        },
+      }),
+    );
+    try {
+      const port = await listen(server);
+      const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      });
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: 'Internal Server Error' });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('destroys the response when the MCP handler rejects after sending headers', async () => {
+    const server = createServer(
+      createRequestListener({
+        isReady: () => true,
+        mcpHandler: async (_request, response) => {
+          response.writeHead(200);
+          throw new Error('handler failed');
+        },
+      }),
+    );
+    try {
+      const port = await listen(server);
+
+      await expect(
+        fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: {
+            accept: 'application/json, text/event-stream',
+            'content-type': 'application/json',
+          },
+          body: '{}',
+        }),
+      ).rejects.toThrow();
     } finally {
       await close(server);
     }

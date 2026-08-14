@@ -2,7 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import type { ToolName } from '../tools/registry/definitions.js';
+import { TOOL_DEFINITIONS, type ToolName } from '../tools/registry/definitions.js';
 import type { NexusToolCallResult, ToolHandler } from '../tools/types.js';
 
 export interface V1RuntimeToolBridge {
@@ -18,14 +18,7 @@ type V1ToolResult = {
   readonly structuredContent?: unknown;
 };
 
-const toolNames: readonly ToolName[] = [
-  'semantic_search',
-  'grep_search',
-  'hybrid_search',
-  'get_context',
-  'index_status',
-  'reindex',
-];
+const toolNames: readonly ToolName[] = TOOL_DEFINITIONS.map((definition) => definition.name);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -43,11 +36,14 @@ export const createV1RuntimeToolBridge = async (server: McpServer): Promise<V1Ru
 
   const handlers = {} as Record<ToolName, ToolHandler>;
   for (const name of toolNames) {
-    handlers[name] = async (args: unknown): Promise<NexusToolCallResult> => {
-      if (!isRecord(args)) {
+    handlers[name] = async (args: unknown, extra): Promise<NexusToolCallResult> => {
+      const normalizedArgs = args === undefined ? {} : args;
+      if (!isRecord(normalizedArgs)) {
         throw new Error(`tool arguments for ${name} must be an object`);
       }
-      const result = await client.callTool({ name, arguments: args });
+      const result = await client.callTool({ name, arguments: normalizedArgs }, undefined, {
+        signal: extra?.signal,
+      });
       if (!isV1ToolResult(result)) {
         throw new Error(`v1 runtime returned an unsupported result for ${name}`);
       }
@@ -68,8 +64,11 @@ export const createV1RuntimeToolBridge = async (server: McpServer): Promise<V1Ru
   return {
     handlers,
     close: async () => {
-      await client.close();
-      await server.close();
+      try {
+        await client.close();
+      } finally {
+        await server.close();
+      }
     },
   };
 };

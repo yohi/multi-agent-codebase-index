@@ -68,7 +68,7 @@ export const resolveServeEndpoint = (
   cli: ServeCliArgs,
   config: Config,
 ): { readonly host: string; readonly port: number } => {
-  const host = cli.host ?? config.http?.host ?? DEFAULT_HOST;
+  const host = (cli.host ?? config.http?.host ?? DEFAULT_HOST).trim().replace(/^\[|\]$/g, '');
   const port = cli.port ?? config.http?.port ?? DEFAULT_PORT;
   if (!isLoopbackHost(host)) {
     throw new Error(`nexus serve can only bind to a loopback interface, but received "${host}".`);
@@ -147,7 +147,12 @@ export const runServeCli = async (
 
     dependencies.output.write(`nexus serve listening on ${endpoint.host}:${server.port()}\n`);
 
+    let shutdownInProgress = false;
     const shutdown = (): void => {
+      if (shutdownInProgress) {
+        return;
+      }
+      shutdownInProgress = true;
       void (async () => {
         await server.close();
         await toolBridge?.close();

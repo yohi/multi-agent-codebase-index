@@ -125,11 +125,14 @@ describe('HTTP v2 server', () => {
     expect(result.tools).toHaveLength(6);
   });
 
-  it('returns 404 outside POST /mcp', async () => {
+  it('returns 405 for non-POST /mcp and 404 for unrelated paths', async () => {
     const baseUrl = await boot();
 
     expect((await fetch(`${baseUrl}/nope`, { method: 'POST' })).status).toBe(404);
-    expect((await fetch(`${baseUrl}/mcp`)).status).toBe(404);
+    const response = await fetch(`${baseUrl}/mcp`);
+    expect(response.status).toBe(405);
+    expect(response.headers.get('allow')).toBe('POST');
+    expect((await fetch(`${baseUrl}/mcp`, { method: 'DELETE' })).status).toBe(405);
   });
 
   it('rejects non-loopback origins before the MCP handler', async () => {

@@ -69,14 +69,46 @@ const resolveDeferredPreviewRange = (
 };
 
 export const executeGetContext = async (
-  loadFileContent: (filePath: string) => Promise<string>,
+  loadFileContent: (
+    filePath: string,
+    startLine: number,
+    endLine: number,
+    signal?: AbortSignal,
+  ) => Promise<string>,
   sanitizer: PathSanitizer,
   args: GetContextToolArgs,
+  signal?: AbortSignal,
 ): Promise<GetContextResult> => {
   const sanitizedPath = await sanitizer.sanitize(args.filePath);
-  const content = await loadFileContent(sanitizedPath);
+  const hasExplicitEagerRange = args.mode !== 'deferred' && args.startLine !== undefined && args.endLine !== undefined;
+  const requestedStartLine = args.startLine;
+  const requestedEndLine = args.endLine;
+  const canReadRequestedRange =
+    hasExplicitEagerRange &&
+    requestedStartLine !== undefined &&
+    requestedEndLine !== undefined &&
+    requestedStartLine <= requestedEndLine;
+  const content = await loadFileContent(
+    sanitizedPath,
+    canReadRequestedRange ? requestedStartLine : 1,
+    canReadRequestedRange ? requestedEndLine : Number.MAX_SAFE_INTEGER,
+    signal,
+  );
   const lines = content.split('\n');
   const totalLines = lines.length;
+
+  if (hasExplicitEagerRange && requestedStartLine !== undefined && requestedEndLine !== undefined) {
+    const range = resolveLineRange(totalLines, requestedStartLine, requestedEndLine);
+    if (range === null) {
+      throw buildInvalidRangeError(totalLines, requestedStartLine, requestedEndLine);
+    }
+    return {
+      filePath: args.filePath,
+      content: canReadRequestedRange ? content : sliceContent(content, range),
+      startLine: range.startLine,
+      endLine: canReadRequestedRange ? requestedEndLine : range.endLine,
+    };
+  }
 
   if (args.mode === 'deferred') {
     const previewRange = resolveDeferredPreviewRange(totalLines, args.startLine, args.endLine);
