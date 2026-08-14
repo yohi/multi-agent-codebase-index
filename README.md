@@ -9,7 +9,15 @@ Nexus は、AI エージェントが巨大なコードベースを効率的に�
 Semantic search、Exact grep search、File context 取得を 1 つのローカルインデックスに集約し、高速かつ一貫性のある検索体験を提供します。
 
 > [!IMPORTANT]
-> **v2 はメジャーリリースです。** MCP プロトコル v2 への移行に伴い、v1 で公開していた MCP ツール仕様・CLI オプション・設定キーの一部が後方互換性のない形で変更されています。v1 から移行する場合は [docs/mcp-tools.md](docs/mcp-tools.md) と [docs/configuration.md](docs/configuration.md) を参照してください。
+> **v2 はメジャーリリースです。** MCP プロトコル v2 への移行に伴い、v1 で公開していた MCP ツール仕様・CLI オプション・設定キーの一部が後方互換性のない形で変更されています。
+
+### v2 への移行 (Breaking Changes)
+
+- **MCP ツール仕様**: v1 で公開していたツール定義・入出力形式は v2 で置き換えられました。最新の仕様は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
+- **サーバー起動オプション・設定**: `nexus serve` などの CLI オプションと `.nexus.json` の設定キーが再設計されています。設定方法は [docs/configuration.md](docs/configuration.md) を参照してください。
+- **HTTP トランスポート**: ストリーミング対応の Streamable HTTP transport が標準となり、v1 の構成とは互換性がありません。
+
+v1 からの移行手順と前提条件は [docs/setup.md](docs/setup.md) を参照してください。
 
 ## 🚀 特徴
 
