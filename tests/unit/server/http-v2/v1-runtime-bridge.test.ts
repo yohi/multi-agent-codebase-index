@@ -28,6 +28,19 @@ describe('createV1RuntimeToolBridge', () => {
     expect(result.content).toEqual([{ type: 'text', text: '{"status":"ok"}' }]);
   });
 
+  it('forwards a parameterless handler call when arguments are undefined', async () => {
+    const runtimeServer = new McpServer({ name: 'v1-runtime', version: '1.0.0' });
+    runtimeServer.registerTool('index_status', {}, async () => ({
+      content: [{ type: 'text', text: '{"status":"ok"}' }],
+      structuredContent: { status: 'ok' },
+    }));
+
+    bridge = await createV1RuntimeToolBridge(runtimeServer);
+    const result = await bridge.handlers.index_status(undefined);
+
+    expect(result.structuredContent).toEqual({ status: 'ok' });
+  });
+
   it('forwards the handler AbortSignal to the v1 runtime client call', async () => {
     const runtimeServer = new McpServer({ name: 'v1-runtime', version: '1.0.0' });
     let handlerCalled = false;

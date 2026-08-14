@@ -37,10 +37,11 @@ export const createV1RuntimeToolBridge = async (server: McpServer): Promise<V1Ru
   const handlers = {} as Record<ToolName, ToolHandler>;
   for (const name of toolNames) {
     handlers[name] = async (args: unknown, extra): Promise<NexusToolCallResult> => {
-      if (!isRecord(args)) {
+      const normalizedArgs = args === undefined ? {} : args;
+      if (!isRecord(normalizedArgs)) {
         throw new Error(`tool arguments for ${name} must be an object`);
       }
-      const result = await client.callTool({ name, arguments: args }, undefined, {
+      const result = await client.callTool({ name, arguments: normalizedArgs }, undefined, {
         signal: extra?.signal,
       });
       if (!isV1ToolResult(result)) {
