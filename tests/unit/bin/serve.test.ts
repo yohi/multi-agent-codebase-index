@@ -14,6 +14,7 @@ import {
 } from '../../../src/bin/commands/serve.js';
 import type { NexusRuntime } from '../../../src/server/index.js';
 import type { HttpV2ServerHandle } from '../../../src/server/http-v2/entry.js';
+import { createV1RuntimeToolBridge } from '../../../src/server/http-v2/v1-runtime-bridge.js';
 import { createTestNexusOptions } from '../../shared/create-test-nexus-options.js';
 
 const collectOutput = (): { readonly stream: PassThrough; readonly text: () => string } => {
@@ -93,6 +94,19 @@ describe('resolveServeEndpoint', () => {
     expect(() => parseServeArgs(['--port', 'abc'])).toThrow(/port/i);
     expect(() => parseServeArgs(['--port', '65536'])).toThrow(/port/i);
   });
+
+  it('normalizes whitespace-padded and bracketed IPv6 loopback hosts', async () => {
+    const config = await loadConfig({ projectRoot: process.cwd(), env: {}, transportMode: 'v2-http' });
+
+    expect(resolveServeEndpoint(parseServeArgs(['--host', '  localhost  ']), config)).toEqual({
+      host: 'localhost',
+      port: 9200,
+    });
+    expect(resolveServeEndpoint(parseServeArgs(['--host', ' [::1] ']), config)).toEqual({
+      host: '::1',
+      port: 9200,
+    });
+  });
 });
 
 describe('runServeCli', () => {
@@ -171,5 +185,50 @@ describe('runServeCli', () => {
     expect(startServer).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();
     expect(dependencies.exit).toHaveBeenCalledWith(1);
+  });
+
+  it('runs shutdown cleanup once when both termination signals arrive', async () => {
+    const config = await loadConfig({ projectRoot: process.cwd(), env: {}, transportMode: 'v2-http' });
+    const runtimeClose = vi.fn(async () => {});
+    const runtime = await createRuntimeFixture(async () => {}, runtimeClose);
+    const bridge = await createV1RuntimeToolBridge(runtime.createServer());
+    const bridgeClose = vi.spyOn(bridge, 'close');
+    let resolveServerClose: (() => void) | undefined;
+    const serverCloseCompletion = new Promise<void>((resolve) => {
+      resolveServerClose = resolve;
+    });
+    const serverClose = vi.fn(() => serverCloseCompletion);
+    const signalSource = new EventEmitter();
+    const dependencies: ServeCliDependencies = {
+      ...createDependencies(new PassThrough(), new PassThrough()),
+      signalSource,
+      loadConfig: () => Promise.resolve(config),
+      createRuntime: () => Promise.resolve(runtime),
+      createToolBridge: () => Promise.resolve(bridge),
+      startServer: vi.fn(() =>
+        Promise.resolve<HttpV2ServerHandle>({
+          server: createServer(),
+          close: serverClose,
+          port: () => 9210,
+        }),
+      ),
+    };
+
+    await runServeCli([], {}, dependencies);
+
+    signalSource.emit('SIGINT');
+    signalSource.emit('SIGTERM');
+
+    expect(serverClose).toHaveBeenCalledOnce();
+    expect(bridgeClose).not.toHaveBeenCalled();
+    expect(runtimeClose).not.toHaveBeenCalled();
+    expect(dependencies.exit).not.toHaveBeenCalled();
+
+    resolveServerClose?.();
+    await vi.waitFor(() => expect(dependencies.exit).toHaveBeenCalledOnce());
+
+    expect(bridgeClose).toHaveBeenCalledOnce();
+    expect(runtimeClose).toHaveBeenCalledOnce();
+    expect(dependencies.exit).toHaveBeenCalledWith(0);
   });
 });
