@@ -1,8 +1,8 @@
 import type { MetricsHooks } from '../../observability/types.js';
 import type { PluginRegistry } from '../../plugins/registry.js';
 import type { SearchOrchestrator } from '../../search/orchestrator.js';
-import type { ISemanticSearch } from '../../search/semantic.js';
 import type { IContentStore } from '../../storage/interfaces/content-store.js';
+import type { ISemanticSearch } from '../../search/semantic.js';
 import type {
   IIndexPipeline,
   IMetadataStore,
