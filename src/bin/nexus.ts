@@ -58,6 +58,11 @@ const commands: readonly CliCommand[] = [
       await module.main(args);
     },
   },
+  {
+    name: "serve",
+    summary: "Start the local MCP v2 HTTP server (loopback only)",
+    run: (args) => import("./commands/serve.js").then((module) => module.main(args)),
+  },
 ];
 
 const argv = process.argv.slice(2);
