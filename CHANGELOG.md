@@ -1,5 +1,57 @@
 # Changelog
 
+## [2.0.0](https://github.com/yohi/nexus/compare/v1.31.5...v2.0.0) (2026-08-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **v2:** MCP プロトコル v2 への移行に伴い、v1 で公開していた MCP ツール仕様・CLI オプション・設定キー・HTTP トランスポートが 後方互換性のない形で変更されます。v1 から移行する場合は docs/setup.md, docs/mcp-tools.md, docs/configuration.md を参照してください。
+
+### Features
+
+* **bin:** nexus serve サブコマンドの引数解析と実行を追加 ([3272d84](https://github.com/yohi/nexus/commit/3272d8495e97589819d570457575f244c51fea1e))
+* **bin:** nexus.ts に serve サブコマンドを配線 ([7742e59](https://github.com/yohi/nexus/commit/7742e59900cce4bd31dce6eb8399ed53723a78eb))
+* **config:** HTTP v2 向け設定ブロックと SDK v2 依存パッケージを追加 ([273e0bf](https://github.com/yohi/nexus/commit/273e0bf8d2743d8ceae917e57a275eef7ebbcd4f))
+* **config:** HTTP v2 設定ブロックと SDK v2 依存パッケージを追加 ([1770296](https://github.com/yohi/nexus/commit/1770296c06c695689636db1f2f4e8be0ec5d4780))
+* **http:** MCP v2 HTTP ハンドラとローカル検証を追加 ([ff59c79](https://github.com/yohi/nexus/commit/ff59c791e6e6bb99acead1fda2787c8c20db4224))
+* **registry:** SDK 中立ツールレジストリと v1/v2 アダプタを追加 ([75c99be](https://github.com/yohi/nexus/commit/75c99be26f60bafcbda1a2979577eb083a6814c9))
+* **serve:** nexus serve CLI とドキュメントを追加 ([05cb130](https://github.com/yohi/nexus/commit/05cb13042a5c592c50bb3c69bca2df5363015931))
+* **server:** 6 ツールの中立定義レジストリを追加 ([383cd33](https://github.com/yohi/nexus/commit/383cd3355871dae1bc3d50dcacec06fffb7f30c5))
+* **server:** 6 ツールの中立定義レジストリを追加 ([5e125f8](https://github.com/yohi/nexus/commit/5e125f866846f600d1eb1fa69a9f360873a103c2))
+* **server:** HTTP v2 の Origin/Host 検証を追加 ([a2fd164](https://github.com/yohi/nexus/commit/a2fd16479d5bc9581ce5f554fda2aeae805b60f4))
+* **server:** HTTP v2 ルーティングとエントリポイントを実装 ([0045835](https://github.com/yohi/nexus/commit/00458353e1c5f0c9cf84e42b17b61ead52d1d345))
+* **server:** MCP v2 ハンドラファクトリを追加 ([355f002](https://github.com/yohi/nexus/commit/355f002adf02b0443b432d71fb45e1a33d6c82b7))
+* **server:** NexusErrorCode 分類モジュールを追加 ([e5ee93b](https://github.com/yohi/nexus/commit/e5ee93b2bed60c434fb20cbf27617021ddaa533c))
+* **server:** SDK v2 ツールアダプタを追加 ([e2ba72c](https://github.com/yohi/nexus/commit/e2ba72cc859fddc232d1c732b1186faa1e3af35d))
+* **server:** SDK v2 ツールアダプタを追加 ([589dc61](https://github.com/yohi/nexus/commit/589dc61c0553ec46430dc63c8d098b25c15c7ea5))
+* **server:** SDK 中立スキーマ DSL を追加 ([3ec34bb](https://github.com/yohi/nexus/commit/3ec34bb40ef9fc02e93f4165cdacc3361dee40ec))
+* **server:** SDK 中立スキーマ DSL を追加 ([a8d24d4](https://github.com/yohi/nexus/commit/a8d24d4506ecbe24de0f9361ac6cb3f4c4334865))
+* **storage:** LocalContentStore と get_context 統合を追加 ([1c7b48b](https://github.com/yohi/nexus/commit/1c7b48bcff8ab350ec9241566ce9bfe92c60686a))
+* **storage:** LocalContentStore を新設し get_context 系の読み出しを切り替え ([3c3cc86](https://github.com/yohi/nexus/commit/3c3cc86650201fd4be69beff487aa07becb23714))
+* **v2:** v2 メジャーリリースの破壊的変更を README に詳細化 ([f05fd11](https://github.com/yohi/nexus/commit/f05fd118a02d8edfb0a6b1da86e4b61876a7eb43))
+
+
+### Bug Fixes
+
+* **bridge:** SIGTERM時にmanagedセッションを維持 ([b44081b](https://github.com/yohi/nexus/commit/b44081b57543b496739d4092c8b9efe01eb0ddef))
+* ContentStore フォールバック経路でも行範囲を適用 ([d4a387d](https://github.com/yohi/nexus/commit/d4a387df783a01b690d50a122eafcd405fd57fb0))
+* gitignore更新 ([7043378](https://github.com/yohi/nexus/commit/70433782753ce5bd720df5cc473632f85436fb21))
+* gitignore更新 ([4ecdd4c](https://github.com/yohi/nexus/commit/4ecdd4c6b00dfd4bf496f6cd911963e34a319659))
+* HTTP v2 のエラー処理とキャンセル伝播を修正 ([d69c40f](https://github.com/yohi/nexus/commit/d69c40ff324ac0204db14d759e30b58df943db07))
+* loopback IPv4オクテット範囲を検証 ([6d94b3f](https://github.com/yohi/nexus/commit/6d94b3f78c81667bd01946513f5278e5859192c3))
+* MCPツールの範囲読取とキャンセル伝播を修正 ([3fd9296](https://github.com/yohi/nexus/commit/3fd92969731155f38e8383c184ee44f4eab394e1))
+* MCPツールの範囲読取とキャンセル伝播を修正 ([b4c2f35](https://github.com/yohi/nexus/commit/b4c2f3532287ec125e25f4026652f60e133e261b))
+* serveコマンドのホスト名正規化と二重シャットダウンの防止 ([1492691](https://github.com/yohi/nexus/commit/1492691bb451b13272b63740cd520b79d5e95fa7))
+* v1コードの後方互換性を復元 ([c64610f](https://github.com/yohi/nexus/commit/c64610f832b7dbf8ab3d076ab42c7ebbbde5023c))
+* v1ランタイムブリッジの終了処理を保証 ([59097d8](https://github.com/yohi/nexus/commit/59097d8e5e62093caf4d418d35974471dc93174a))
+* **v2:** MCP v2サーバー互換性を統合 ([9671d5a](https://github.com/yohi/nexus/commit/9671d5a1cfb0a93b25b8d63ad397ea57f9b45525))
+* **v2:** MCP v2移行のblockerを解消 ([b863c64](https://github.com/yohi/nexus/commit/b863c64b57600016f5ead552b114b27ccb46cccc))
+* **v2:** MCP v2移行のblockerを解消 ([aef39dd](https://github.com/yohi/nexus/commit/aef39ddd70a5b9ec32a7fe8e781387e6c108a52d))
+* **v2:** MCP v2移行のblockerを解消 ([11140d8](https://github.com/yohi/nexus/commit/11140d85fdc8b180a88976b4827fb3c0273dc1dd))
+* **v2:** MCP v2移行のblockerを解消 ([b600604](https://github.com/yohi/nexus/commit/b600604fe7e297e0cec8d6fbd98893d29575e3a8))
+* 初期化失敗時のリソース解放を保証 ([c9f4ec5](https://github.com/yohi/nexus/commit/c9f4ec50fa005426efd43ef8fef21b62ded5e037))
+* 引数なしツール呼び出しを許容 ([6b38392](https://github.com/yohi/nexus/commit/6b38392cbdffca5a7ac9927bd10cde20a6926303))
+
 ## [1.31.5](https://github.com/yohi/nexus/compare/v1.31.4...v1.31.5) (2026-08-12)
 
 
