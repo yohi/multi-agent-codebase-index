@@ -195,4 +195,16 @@ describe('loadConfig transportMode="v2-http"', () => {
       }),
     ).resolves.toMatchObject({ embedding: { baseUrl: 'https://localhost:11434' } });
   });
+
+  it('accepts the default Ollama base URL when it is not specified', async () => {
+    const root = await freshProjectRoot();
+
+    await expect(
+      loadConfig({
+        projectRoot: root,
+        env: { NEXUS_EMBEDDING_PROVIDER: 'ollama' },
+        transportMode: 'v2-http',
+      }),
+    ).resolves.toMatchObject({ embedding: { baseUrl: 'http://127.0.0.1:11434' } });
+  });
 });
