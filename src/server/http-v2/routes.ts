@@ -2,12 +2,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { applySecurityHeaders, validateMcpAcceptHeader, validateRequestHeaders } from './headers.js';
 
-export type RouteName = 'health' | 'ready' | 'mcp' | null;
+export type RouteName = 'health' | 'ready' | 'mcp' | 'mcp-method-not-allowed' | null;
 
 export const routeRequest = (method: string | undefined, pathname: string): RouteName => {
   if (method === 'GET' && pathname === '/health') return 'health';
   if (method === 'GET' && pathname === '/ready') return 'ready';
   if (method === 'POST' && pathname === '/mcp') return 'mcp';
+  if (pathname === '/mcp') return 'mcp-method-not-allowed';
   return null;
 };
 
@@ -55,9 +56,19 @@ export const createRequestListener = (deps: RoutesDeps) =>
           sendJson(res, 406, { error: acceptVerdict.reason });
           return;
         }
-        void deps.mcpHandler(req, res);
+        void deps.mcpHandler(req, res).catch(() => {
+          if (res.headersSent || res.destroyed) {
+            if (!res.destroyed) res.destroy();
+            return;
+          }
+          sendJson(res, 500, { error: 'Internal Server Error' });
+        });
         return;
       }
+      case 'mcp-method-not-allowed':
+        res.setHeader('allow', 'POST');
+        sendJson(res, 405, { error: 'Method Not Allowed' });
+        return;
       default:
         sendJson(res, 404, { error: 'Not found' });
     }

@@ -107,6 +107,66 @@ describe('loadConfig transportMode="v2-http"', () => {
     }
   });
 
+  it('does not expose Ollama base URL credentials in validation errors', async () => {
+    const root = await freshProjectRoot();
+    const baseUrl = 'https://user:password@evil.example:11434/embed?apiKey=secret';
+
+    const error = await loadConfig({
+      projectRoot: root,
+      env: {
+        NEXUS_EMBEDDING_PROVIDER: 'ollama',
+        NEXUS_EMBEDDING_BASE_URL: baseUrl,
+      },
+      transportMode: 'v2-http',
+    }).then(() => undefined, (caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    if (!(error instanceof Error)) return;
+    expect(error.message).toContain('evil.example');
+    expect(error.message).not.toContain('user');
+    expect(error.message).not.toContain('password');
+    expect(error.message).not.toContain('apiKey');
+    expect(error.message).not.toContain('secret');
+  });
+
+  it('uses a fixed error message for malformed Ollama base URLs', async () => {
+    const root = await freshProjectRoot();
+    const errors: string[] = [];
+
+    for (const baseUrl of ['not a url', 'still not a url']) {
+      const error = await loadConfig({
+        projectRoot: root,
+        env: {
+          NEXUS_EMBEDDING_PROVIDER: 'ollama',
+          NEXUS_EMBEDDING_BASE_URL: baseUrl,
+        },
+        transportMode: 'v2-http',
+      }).then(() => undefined, (caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      if (error instanceof Error) errors.push(error.message);
+    }
+
+    expect(errors[0]).toBe(errors[1]);
+  });
+
+  it('rejects unsupported Ollama URL schemes', async () => {
+    const root = await freshProjectRoot();
+
+    for (const baseUrl of ['ftp://127.0.0.1:11434', 'file://127.0.0.1/tmp/ollama']) {
+      await expect(
+        loadConfig({
+          projectRoot: root,
+          env: {
+            NEXUS_EMBEDDING_PROVIDER: 'ollama',
+            NEXUS_EMBEDDING_BASE_URL: baseUrl,
+          },
+          transportMode: 'v2-http',
+        }),
+      ).rejects.toThrow(/Ollama.*loopback/);
+    }
+  });
+
   it('accepts an Ollama base URL on a loopback interface in v2-http mode', async () => {
     const root = await freshProjectRoot();
     await expect(
@@ -119,5 +179,32 @@ describe('loadConfig transportMode="v2-http"', () => {
         transportMode: 'v2-http',
       }),
     ).resolves.toMatchObject({ embedding: { baseUrl: 'http://[::1]:11434' } });
+  });
+
+  it('accepts a valid HTTPS Ollama base URL on a loopback interface', async () => {
+    const root = await freshProjectRoot();
+
+    await expect(
+      loadConfig({
+        projectRoot: root,
+        env: {
+          NEXUS_EMBEDDING_PROVIDER: 'ollama',
+          NEXUS_EMBEDDING_BASE_URL: 'https://localhost:11434',
+        },
+        transportMode: 'v2-http',
+      }),
+    ).resolves.toMatchObject({ embedding: { baseUrl: 'https://localhost:11434' } });
+  });
+
+  it('accepts the default Ollama base URL when it is not specified', async () => {
+    const root = await freshProjectRoot();
+
+    await expect(
+      loadConfig({
+        projectRoot: root,
+        env: { NEXUS_EMBEDDING_PROVIDER: 'ollama' },
+        transportMode: 'v2-http',
+      }),
+    ).resolves.toMatchObject({ embedding: { baseUrl: 'http://127.0.0.1:11434' } });
   });
 });
