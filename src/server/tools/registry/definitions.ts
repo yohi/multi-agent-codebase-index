@@ -54,7 +54,7 @@ export const HYBRID_SEARCH_DEFINITION: ToolDefinition = {
       optional: true,
       maximum: 20,
       description:
-        'Lines of context to include before and after each match when includeSnippet is true. Maximum 20; values above are clamped.',
+        'Lines of context to include before and after each match when includeSnippet is true. Maximum 20; values above 20 are rejected.',
     },
   },
 };

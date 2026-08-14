@@ -1,5 +1,5 @@
-import { McpServer } from '@modelcontextprotocol/server';
-import { z } from 'zod-v4';
+import { fromJsonSchema, McpServer, type JsonSchemaType } from '@modelcontextprotocol/server';
+import { z } from 'zod/v4';
 
 import { classifyErrorMessage } from '../../../errors.js';
 import { TOOL_DEFINITIONS } from '../definitions.js';
@@ -17,6 +17,60 @@ const limitFor = (fieldName: string, declaredMaximum: number, limits: V2ToolLimi
   if (fieldName === 'topK') return limits.topK;
   if (fieldName === 'maxResults') return limits.maxResults;
   return declaredMaximum;
+};
+
+const schemaDescription = (field: NeutralField): { readonly description?: string } =>
+  field.description === undefined ? {} : { description: field.description };
+
+const toV2JsonSchemaField = (
+  name: string,
+  field: NeutralField,
+  limits: V2ToolLimits,
+): JsonSchemaType => {
+  const description = schemaDescription(field);
+  switch (field.kind) {
+    case 'string':
+      return { ...description, type: 'string' };
+    case 'integer':
+      return {
+        ...description,
+        type: 'integer',
+        minimum: 1,
+        ...(field.maximum === undefined ? {} : { maximum: limitFor(name, field.maximum, limits) }),
+      };
+    case 'number':
+      return { ...description, type: 'number' };
+    case 'boolean':
+      return {
+        ...description,
+        type: 'boolean',
+        ...(field.default === undefined ? {} : { default: field.default }),
+      };
+    case 'stringArray':
+      return { ...description, type: 'array', items: { type: 'string' } };
+    case 'enum':
+      return {
+        ...description,
+        type: 'string',
+        enum: field.values,
+        ...(field.default === undefined ? {} : { default: field.default }),
+      };
+  }
+};
+
+export const toV2JsonSchema = (
+  schema: NeutralSchema,
+  limits: V2ToolLimits = DEFAULT_V2_TOOL_LIMITS,
+): JsonSchemaType => {
+  const properties: Record<string, JsonSchemaType> = {};
+  const required: string[] = [];
+  for (const [name, field] of Object.entries(schema)) {
+    properties[name] = toV2JsonSchemaField(name, field, limits);
+    if (field.optional !== true) {
+      required.push(name);
+    }
+  }
+  return { type: 'object', properties, ...(required.length === 0 ? {} : { required }) };
 };
 
 const toZodV4Field = (name: string, field: NeutralField, limits: V2ToolLimits): z.ZodType => {
@@ -87,9 +141,12 @@ export const registerV2Tools = (
       definition.name,
       {
         description: definition.description,
-        inputSchema: toZodV4Object(definition.input, limits),
+        inputSchema: fromJsonSchema(toV2JsonSchema(definition.input, limits)),
       },
-      async (args, extra) => withErrorCode(await handler(args, { signal: extra.mcpReq.signal })),
+      async (args, extra) => {
+        const normalizedArgs = toZodV4Object(definition.input, limits).parse(args);
+        return withErrorCode(await handler(normalizedArgs, { signal: extra.mcpReq.signal }));
+      },
     );
   }
 };

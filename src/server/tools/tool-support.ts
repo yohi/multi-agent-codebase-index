@@ -13,7 +13,7 @@ import type { NexusServerOptions, ToolHandler } from './types.js';
 
 export const errorResult = (error: unknown) => {
   const errorMessage = sanitizeErrorMessage(error);
-  console.error('[Nexus Server Error]', error);
+  console.error('[Nexus Server Error]', errorMessage);
 
   return {
     content: [{ type: 'text' as const, text: `Error: ${errorMessage}` }],
@@ -47,17 +47,33 @@ export const toolResult = <T extends object>(structuredContent: T) => {
 
 export const createContentReader = (
   contentStore: IContentStore | undefined,
-  fallback: (filePath: string) => Promise<string>,
-): ((filePath: string) => Promise<string>) => {
+  fallback: (filePath: string, signal?: AbortSignal) => Promise<string>,
+): ((filePath: string, startLine?: number, endLine?: number, signal?: AbortSignal) => Promise<string>) => {
   if (contentStore === undefined) {
-    return fallback;
+    return async (filePath, startLine = 1, endLine = Number.MAX_SAFE_INTEGER, signal) => {
+      const content = await fallback(filePath, signal);
+      const lines = content.split('\n');
+      const clampedStart = Math.max(1, Math.min(startLine, lines.length));
+      const clampedEnd = Math.max(1, Math.min(endLine, lines.length));
+      if (clampedStart > clampedEnd) {
+        throw new Error(`Invalid line range: startLine (${clampedStart}) is greater than endLine (${clampedEnd})`);
+      }
+      return lines.slice(clampedStart - 1, clampedEnd).join('\n');
+    };
   }
-  return async (filePath: string): Promise<string> => {
+  return async (filePath, startLine = 1, endLine = Number.MAX_SAFE_INTEGER, signal): Promise<string> => {
     try {
-      return await contentStore.readRange(filePath, 1, Number.MAX_SAFE_INTEGER);
+      return await contentStore.readRange(filePath, startLine, endLine, signal);
     } catch (error) {
       console.warn('[Nexus] ContentStore readRange failed; falling back to filesystem read:', error);
-      return fallback(filePath);
+      const content = await fallback(filePath, signal);
+      const lines = content.split('\n');
+      const clampedStart = Math.max(1, Math.min(startLine, lines.length));
+      const clampedEnd = Math.max(1, Math.min(endLine, lines.length));
+      if (clampedStart > clampedEnd) {
+        throw new Error(`Invalid line range: startLine (${clampedStart}) is greater than endLine (${clampedEnd})`);
+      }
+      return lines.slice(clampedStart - 1, clampedEnd).join('\n');
     }
   };
 };
@@ -114,10 +130,10 @@ export const buildToolHandlers = (
     async (args: unknown, extra?: { signal?: AbortSignal }) => {
       if (awaitInitialize) await awaitInitialize();
       try {
-          const result = await executeHybridSearch(
-            options.orchestrator,
-            options.sanitizer,
-            readContent,
+        const result = await executeHybridSearch(
+          options.orchestrator,
+          options.sanitizer,
+          (filePath) => readContent(filePath, 1, Number.MAX_SAFE_INTEGER, extra?.signal),
           args as HybridSearchToolArgs & { filePattern?: string },
           extra?.signal,
           options.metricsHooks,
@@ -132,13 +148,14 @@ export const buildToolHandlers = (
   get_context: withToolMetrics(
     'get_context',
     options.metricsHooks,
-    async (args: unknown) => {
+    async (args: unknown, extra?: { signal?: AbortSignal }) => {
       if (awaitInitialize) await awaitInitialize();
       try {
-          const result = await executeGetContext(
-            readContent,
+        const result = await executeGetContext(
+          readContent,
           options.sanitizer,
           args as GetContextToolArgs,
+          extra?.signal,
         );
         const lineCount = 'mode' in result
           ? result.previewEndLine - result.previewStartLine + 1

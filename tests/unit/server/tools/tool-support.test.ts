@@ -59,11 +59,14 @@ describe('createContentReader', () => {
   });
 
   it('reads through the ContentStore when available', async () => {
-    const reader = createContentReader(createStore({}), async () => {
+    const reader = createContentReader(createStore({
+      readRange: async (_path: string, startLine: number, endLine: number): Promise<string> =>
+        `${startLine}-${endLine}`,
+    }), async () => {
       throw new Error('filesystem reader must not be called');
     });
 
-    await expect(reader('src/auth.ts')).resolves.toBe('FROM_STORE');
+    await expect(reader('src/auth.ts', 2, 4)).resolves.toBe('2-4');
   });
 
   it('falls back to the filesystem reader when ContentStore reading fails', async () => {
@@ -83,14 +86,17 @@ describe('createContentReader', () => {
     const { options } = await createTestNexusOptions();
     const handlers = buildToolHandlers({
       ...options,
-      contentStore: createStore({}),
+      contentStore: createStore({
+        readRange: async (_path: string, startLine: number, endLine: number): Promise<string> =>
+          `${startLine}-${endLine}`,
+      }),
       loadFileContent: async () => {
         throw new Error('filesystem reader must not be called');
       },
     });
 
-    const result = await handlers.get_context({ filePath: 'src/index.ts' });
-    expect(result.structuredContent).toMatchObject({ filePath: 'src/index.ts', content: 'FROM_STORE' });
+    const result = await handlers.get_context({ filePath: 'src/index.ts', startLine: 2, endLine: 4 });
+    expect(result.structuredContent).toMatchObject({ filePath: 'src/index.ts', content: '2-4' });
   });
 
   it('uses ContentStore reads for hybrid search snippets', async () => {
@@ -108,5 +114,18 @@ describe('createContentReader', () => {
     expect(result.structuredContent).toMatchObject({
       results: expect.arrayContaining([expect.objectContaining({ snippet: 'FROM_STORE' })]),
     });
+  });
+
+  it('applies the requested line range when falling back from ContentStore', async () => {
+    const reader = createContentReader(
+      createStore({
+        readRange: async () => {
+          throw new Error('store unavailable');
+        },
+      }),
+      async () => ['line1', 'line2', 'line3', 'line4', 'line5'].join('\n'),
+    );
+
+    await expect(reader('src/index.ts', 2, 4)).resolves.toBe('line2\nline3\nline4');
   });
 });
