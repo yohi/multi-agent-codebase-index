@@ -243,7 +243,37 @@ export function assertHttpV2Constraints(config: Config): void {
         'external networks. Use "ollama" or "test".',
     );
   }
+  if (config.embedding.provider === 'ollama' && !isLoopbackOllamaBaseUrl(config.embedding.baseUrl)) {
+    const parsedBaseUrl = parseOllamaBaseUrl(config.embedding.baseUrl);
+    const baseUrlDescription =
+      parsedBaseUrl === null
+        ? 'an invalid URL'
+        : `hostname "${parsedBaseUrl.hostname || '(empty)'}"`;
+    throw new Error(
+      `Local HTTP v2 requires the Ollama embedding base URL to use a loopback interface, ` +
+        `but received ${baseUrlDescription}.`,
+    );
+  }
 }
+
+const parseOllamaBaseUrl = (baseUrl: string | undefined): URL | null => {
+  if (baseUrl === undefined) {
+    return null;
+  }
+  try {
+    return new URL(baseUrl);
+  } catch {
+    return null;
+  }
+};
+
+const isLoopbackOllamaBaseUrl = (baseUrl: string | undefined): boolean => {
+  const url = parseOllamaBaseUrl(baseUrl);
+  if (url === null) {
+    return false;
+  }
+  return (url.protocol === 'http:' || url.protocol === 'https:') && isLoopbackHost(url.hostname);
+};
 
 const asString = (value: string | undefined): string | undefined => {
   if (value === undefined) return undefined;

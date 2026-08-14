@@ -483,14 +483,13 @@ export class NexusServerFactory {
       metricsCollector,
     );
     const { watcher, onClose } = eventManager.setup();
-
     try {
-    const sanitizer = await PathSanitizer.create(projectRoot);
-    const workspaceId = config.projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? 'unknown';
-    const contentStore = new LocalContentStoreFactory({
-      projectRoot,
-      sanitize: (filePath) => sanitizer.sanitize(filePath),
-    }).getStore(workspaceId, 'local');
+      const sanitizer = await PathSanitizer.create(projectRoot);
+      const workspaceId = config.projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? 'unknown';
+      const contentStore = new LocalContentStoreFactory({
+        projectRoot,
+        sanitize: (filePath) => sanitizer.sanitize(filePath),
+      }).getStore(workspaceId, 'local');
 
       return buildNexusRuntime({
         projectRoot,
