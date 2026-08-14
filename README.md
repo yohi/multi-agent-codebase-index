@@ -8,6 +8,9 @@
 Nexus は、AI エージェントが巨大なコードベースを効率的に理解し、正確なコンテキストを取得するための MCP (Model Context Protocol) サーバーです。
 Semantic search、Exact grep search、File context 取得を 1 つのローカルインデックスに集約し、高速かつ一貫性のある検索体験を提供します。
 
+> [!IMPORTANT]
+> **v2 はメジャーリリースです。** MCP プロトコル v2 への移行に伴い、v1 で公開していた MCP ツール仕様・CLI オプション・設定キーの一部が後方互換性のない形で変更されています。v1 から移行する場合は [docs/mcp-tools.md](docs/mcp-tools.md) と [docs/configuration.md](docs/configuration.md) を参照してください。
+
 ## 🚀 特徴
 
 - **ハイブリッド検索**: LanceDB によるベクトル検索と ripgrep による高速な文字列検索を統合。
