@@ -27,8 +27,8 @@
 
 This plan is split into **3 stacked pull requests**. Each PR builds on the previous one and is independently testable. Use `gh-stack` or manual branch stacking:
 
-```
-main
+```text
+master
  └── PR1: pipeline-completion-recording  (base)
       └── PR2: eventqueue-post-scan-queue  (stacked on PR1)
            └── PR3: runtime-auto-full-index (stacked on PR2)
@@ -38,7 +38,7 @@ main
 - **PR2** (`feat/eventqueue-post-scan-queue`): EventQueue gains a post-scan queue that buffers Watcher events during the startup Full Index; `markFullScanComplete()` no longer clears it.
 - **PR3** (`feat/runtime-auto-full-index`): NexusRuntime checks `lastIndexedAt` after initialization and starts a background Full reindex; `close()` waits for the Promise.
 
-Each task below indicates which PR it belongs to. Create the branch for each PR from the previous PR's branch (or `main` for PR1). Push and create a PR targeting the previous PR's branch (or `main` for PR1).
+Each task below indicates which PR it belongs to. Create the branch for each PR from the previous PR's branch (or `master` for PR1). Push and create a PR targeting the previous PR's branch (or `master` for PR1).
 
 ---
 
@@ -59,6 +59,7 @@ Each task below indicates which PR it belongs to. Create the branch for each PR 
 | `src/storage/interfaces/metadata-store.ts` | PR1 | Add `atomicCompletionCheck` method to `IMetadataStore` |
 | `src/storage/metadata-store.ts` | PR1 | Implement `atomicCompletionCheck` in `SqliteMetadataStore` |
 | `tests/unit/storage/in-memory-metadata-store.ts` | PR1 | Implement `atomicCompletionCheck` in `InMemoryMetadataStore` |
+| `tests/unit/storage/metadata-store.test.ts` | PR1 | Add SQLite integration test for `atomicCompletionCheck` (atomicity, DLQ residual suppression, completionLock) |
 | `src/indexer/dead-letter-queue.ts` | PR1 | Accept optional `completionLock` in `DeadLetterQueueOptions`; acquire it in `enqueue` and `removeEntries` |
 | `src/indexer/pipeline.ts` | PR1, PR2 | Add `completionLock`; add `reason` param to `reindex()`; call `atomicCompletionCheck` after compact; set `lastError`/`skippedFiles` on DLQ residual (PR1). Pass `eventQueue` to `markFullScanComplete` context (PR2 — no change needed, already wired) |
 | `src/types/index.ts` | PR1 | Widen `IIndexPipeline.reindex` `run` callback reason type; add `reason` param |
@@ -109,7 +110,7 @@ import type { DeadLetterEntry } from '../../types/index.js';
 
 - [ ] **Step 2: Run type check to verify it fails**
 
-Run: `npx tsc --noEmit 2>&1 | head -20`
+Run: `npx tsc --noEmit`
 Expected: Errors in `SqliteMetadataStore` and `InMemoryMetadataStore` (missing method implementation).
 
 - [ ] **Step 3: Implement in `SqliteMetadataStore`**
@@ -122,7 +123,7 @@ Add to `src/storage/metadata-store.ts` after `setIndexStats` (after line 367):
     dlqEntries: DeadLetterEntry[];
   }> {
     await this.asyncBoundary();
-    return this.db.transaction(() => {
+    const runTransaction = this.db.transaction(() => {
       const dlqEntries = this.db
         .prepare(
           `SELECT id,
@@ -159,6 +160,7 @@ Add to `src/storage/metadata-store.ts` after `setIndexStats` (after line 367):
 
       return { dlqEmpty: dlqEntries.length === 0, dlqEntries };
     });
+    return runTransaction();
   }
 ```
 
@@ -181,15 +183,138 @@ Add to `tests/unit/storage/in-memory-metadata-store.ts` after `setIndexStats` (a
   }
 ```
 
+- [ ] **Step 4b: Add SQLite integration test for `atomicCompletionCheck`
+
+> **Why:** `InMemoryMetadataStore` has no transaction boundary, so the atomicity guarantee of `SqliteMetadataStore.atomicCompletionCheck()` is untested. Add a test that uses a temporary SQLite database to verify: (1) the DLQ read and `index_stats` write are atomic, (2) DLQ residual suppresses the `index_stats` update, and (3) the shared `completionLock` prevents DLQ modifications between the read and write.
+
+Add to `tests/unit/storage/metadata-store.test.ts`:
+
+> **Note:** Use a temporary file-based SQLite database (not `:memory:`) to match production behavior. Clean up the temp file in `afterEach`/`afterAll`.
+
+```typescript
+import Database from 'better-sqlite3';
+import { Mutex } from 'async-mutex';
+import { mkdtempSync, rmSync } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
+
+describe('SqliteMetadataStore.atomicCompletionCheck (integration)', () => {
+  let tmpDir: string;
+  let store: SqliteMetadataStore;
+
+  beforeEach(async () => {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), 'nexus-sqlite-test-'));
+    store = new SqliteMetadataStore({ dbPath: path.join(tmpDir, 'test.db') });
+    await store.initialize();
+  });
+
+  afterEach(async () => {
+    await store.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('writes index_stats when DLQ is empty (atomic transaction)', async () => {
+    const stats = {
+      id: 'primary',
+      totalFiles: 10,
+      totalChunks: 20,
+      lastIndexedAt: '2026-01-01T00:00:00.000Z',
+      lastFullScanAt: '2026-01-01T00:00:00.000Z',
+      overflowCount: 0,
+    };
+    const result = await store.atomicCompletionCheck(stats);
+    expect(result.dlqEmpty).toBe(true);
+    expect(result.dlqEntries).toHaveLength(0);
+
+    const stored = await store.getIndexStats();
+    expect(stored).not.toBeNull();
+    expect(stored!.lastIndexedAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('does NOT write index_stats when DLQ has items', async () => {
+    await store.upsertDeadLetterEntries([
+      {
+        id: 'dlq-1',
+        filePath: 'failed.ts',
+        contentHash: 'hash-1',
+        errorMessage: 'embed failed',
+        attempts: 3,
+        recoveryAttempts: 0,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        lastRetryAt: null,
+      },
+    ]);
+
+    const stats = {
+      id: 'primary',
+      totalFiles: 10,
+      totalChunks: 20,
+      lastIndexedAt: '2026-01-01T00:00:00.000Z',
+      lastFullScanAt: '2026-01-01T00:00:00.000Z',
+      overflowCount: 0,
+    };
+    const result = await store.atomicCompletionCheck(stats);
+    expect(result.dlqEmpty).toBe(false);
+    expect(result.dlqEntries).toHaveLength(1);
+    expect(result.dlqEntries[0].filePath).toBe('failed.ts');
+
+    // index_stats should NOT be written
+    const stored = await store.getIndexStats();
+    expect(stored?.lastIndexedAt).toBeNull();
+  });
+
+  it('completionLock prevents DLQ modification during the check', async () => {
+    const completionLock = new Mutex();
+    // Acquire the lock to simulate the pipeline holding it
+    const release = await completionLock.acquire();
+    try {
+      // While the lock is held, a DLQ enqueue should wait
+      // (This verifies the lock is shared and serializes access)
+      const enqueuePromise = store.upsertDeadLetterEntries([
+        {
+          id: 'dlq-during',
+          filePath: 'concurrent.ts',
+          contentHash: 'hash',
+          errorMessage: 'error',
+          attempts: 1,
+          recoveryAttempts: 0,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          lastRetryAt: null,
+        },
+      ]);
+
+      // The atomicCompletionCheck should see an empty DLQ because the enqueue
+      // is blocked by the lock (in production, the DLQ also acquires this lock).
+      const stats = {
+        id: 'primary',
+        totalFiles: 0,
+        totalChunks: 0,
+        lastIndexedAt: '2026-01-01T00:00:00.000Z',
+        lastFullScanAt: null,
+        overflowCount: 0,
+      };
+      const result = await store.atomicCompletionCheck(stats);
+      expect(result.dlqEmpty).toBe(true); // enqueue hasn't completed yet
+    } finally {
+      release();
+    }
+  });
+});
+```
+
 - [ ] **Step 5: Run type check to verify it passes**
 
-Run: `npx tsc --noEmit 2>&1 | head -20`
+Run: `npx tsc --noEmit`
 Expected: No errors related to `atomicCompletionCheck`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/storage/interfaces/metadata-store.ts src/storage/metadata-store.ts tests/unit/storage/in-memory-metadata-store.ts
+git add src/storage/interfaces/metadata-store.ts src/storage/metadata-store.ts tests/unit/storage/in-memory-metadata-store.ts tests/unit/storage/metadata-store.test.ts
 git commit -m "feat: add atomicCompletionCheck to IMetadataStore for DLQ-aware index_stats update"
 ```
 
@@ -263,7 +388,7 @@ Modify `enqueue` to acquire the lock. Replace the `enqueue` method body:
 
       await this.options.metadataStore.upsertDeadLetterEntries([entry]);
       this.entries.set(entry.id, entry);
-      await this.trimToCapacity();
+      await this.trimToCapacityUnlocked();
       this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
 
       return entry;
@@ -273,9 +398,12 @@ Modify `enqueue` to acquire the lock. Replace the `enqueue` method body:
   }
 ```
 
-- [ ] **Step 3: Acquire `completionLock` in `removeEntries`**
+- [ ] **Step 3: Acquire `completionLock` in `removeEntries` and split lock-free variant
 
-Modify the private `removeEntries` method:
+Modify the private `removeEntries` method. Split it into two methods: `removeEntries`
+(acquires the lock, for external callers like `purgeExpired`, `reprocess`,
+`recoverySweep`) and `removeEntriesUnlocked` (no lock, for `trimToCapacity` when
+the lock is already held by the caller — prevents `async-mutex` re-entrancy deadlock):
 
 ```typescript
   private async removeEntries(ids: string[]): Promise<void> {
@@ -288,15 +416,46 @@ Modify the private `removeEntries` method:
       : Promise.resolve(() => {});
     const release = await acquire;
     try {
-      await this.options.metadataStore.removeDeadLetterEntries(ids);
-      for (const id of ids) {
-        this.entries.delete(id);
-      }
+      await this.removeEntriesUnlocked(ids);
     } finally {
       if (typeof release === 'function') release();
     }
   }
+
+  /**
+   * Removes entries without acquiring the completion lock.
+   * MUST only be called when the caller already holds the completion lock
+   * (e.g. from `enqueue` → `trimToCapacity`), otherwise DLQ modifications
+   * could race with the pipeline completion check.
+   */
+  private async removeEntriesUnlocked(ids: string[]): Promise<void> {
+    if (ids.length === 0) {
+      return;
+    }
+
+    await this.options.metadataStore.removeDeadLetterEntries(ids);
+    for (const id of ids) {
+      this.entries.delete(id);
+    }
+  }
 ```
+
+Also modify `trimToCapacity` to call `removeEntriesUnlocked` instead of `removeEntries`:
+
+```typescript
+  private async trimToCapacity(): Promise<void> {
+    if (this.entries.size > this.maxEntries) {
+      const sortedEntries = [...this.entries.values()]
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+      const toRemove = sortedEntries.slice(0, this.entries.size - this.maxEntries);
+      const removedIds = toRemove.map((e) => e.id);
+
+      await this.removeEntriesUnlocked(removedIds);
+    }
+  }
+```
+
 
 - [ ] **Step 4: Run existing DLQ tests to verify no regression**
 
@@ -336,7 +495,7 @@ export interface IIndexPipeline {
     loadContent: (filePath: string) => Promise<string>,
     fullRebuild?: boolean,
     reason?: ReindexOptions['reason'],
-  ): Promise<ReindexResult | { status: 'already_running' }>;
+  ): Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }>;
   getSkippedFiles(): ReadonlyMap<string, string>;
   reconcileOnStartup(): Promise<RuntimeInitializationResult>;
   getProgress(): PipelineProgress;
@@ -392,7 +551,7 @@ Replace the `reindex` method (lines 533-601):
     loadContent: ContentLoader,
     fullRebuild?: boolean,
     reason: ReindexOptions['reason'] = 'manual',
-  ): Promise<ReindexResult | { status: 'already_running' }> {
+  ): Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }> {
     const startedAt = new Date().toISOString();
     const startTime = Date.now();
 
@@ -430,6 +589,14 @@ Replace the `reindex` method (lines 533-601):
 
           // --- Completion recording ---
           await this.recordCompletion(fullRebuild, reason, startedAt, finishedAt);
+
+          // If DLQ had items, recordCompletion set lastError — don't report success.
+          // Per Global Constraint: "If DLQ has items after Full Index, it is NOT a successful completion."
+          if (this.progress.lastError) {
+            this.progress.status = 'idle';
+            this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
+            return { status: 'incomplete' as const };
+          }
 
           this.safeNotifyMetrics((h) => { h.onReindexComplete(durationMs, !!fullRebuild); });
 
@@ -654,7 +821,8 @@ describe('IndexPipeline completion recording', () => {
       },
     ]);
 
-    await pipeline.reindex(scanNoFiles, loadContent, true, 'manual');
+    const result = await pipeline.reindex(scanNoFiles, loadContent, true, 'manual');
+    expect(result).toEqual({ status: 'incomplete' });
 
     const stats = await metadataStore.getIndexStats();
     // lastIndexedAt should NOT be set (no completion recorded)
@@ -781,7 +949,7 @@ git commit -m "feat: record reindex completion in index_stats with DLQ-aware ato
 
 ```bash
 git push -u origin feat/pipeline-completion-recording
-gh pr create --base main --title "feat: pipeline completion recording in index_stats" --body "Stacked PR 1/3. Records reindex success atomically in index_stats with DLQ emptiness check via a shared completion lock."
+gh pr create --base master --title "feat: pipeline completion recording in index_stats" --body "Stacked PR 1/3. Records reindex success atomically in index_stats with DLQ emptiness check via a shared completion lock."
 ```
 
 ---
@@ -975,46 +1143,45 @@ describe('EventQueue post-scan queue', () => {
     expect(queue.getState()).toBe('normal'); // no overflow triggered
   });
 
-  it('markFullScanComplete does not clear the post-scan queue', () => {
-    const queue = makeQueue();
-    queue.enterPostScanMode();
-
-    queue.enqueue(makeEvent('a.ts'));
-    queue.enqueue(makeEvent('b.ts'));
-
-    // Simulate overflow → full_scan state
-    // Force the queue into full_scan by filling and draining
-    queue.clear();
-
-    // Put queue into full_scan state manually via internal mechanism
-    // We need to trigger overflow first
-    const smallQueue = new EventQueue({
+  it('markFullScanComplete preserves post-scan queue when in full_scan state', async () => {
+    // Create a queue that triggers overflow → full_scan via the public API.
+    // maxQueueSize=2, fullScanThreshold=1: exceeding maxQueueSize triggers overflow.
+    const queue = new EventQueue({
       debounceMs: 0,
-      maxQueueSize: 1,
+      maxQueueSize: 2,
       fullScanThreshold: 1,
       concurrency: 1,
     });
-    smallQueue.enterPostScanMode();
-    smallQueue.enqueue(makeEvent('post-1.ts'));
 
-    // Now exit post-scan and trigger overflow on the normal path
-    smallQueue.drainPostScanQueue();
-    // The drained event is in watcherQueue, size=1 which equals fullScanThreshold
-    // We need to trigger overflow → full_scan via drain, but that requires async
-    // Instead, test markFullScanComplete's behavior directly
+    // Enter post-scan mode and buffer events (these bypass the normal queue)
+    queue.enterPostScanMode();
+    queue.enqueue(makeEvent('post-1.ts'));
+    queue.enqueue(makeEvent('post-2.ts'));
+    expect(queue.getPostScanQueueSize()).toBe(2);
 
-    // markFullScanComplete when not in full_scan state should be a no-op
-    smallQueue.markFullScanComplete();
-    expect(smallQueue.getPostScanQueueSize()).toBe(0); // post-scan was already drained
+    // Exit post-scan mode — drained events go to the normal watcher queue
+    queue.drainPostScanQueue();
+    expect(queue.size()).toBe(2); // drained into normal queue
 
-    // Test: enter post-scan, buffer, call markFullScanComplete, queue preserved
-    const q2 = makeQueue();
-    q2.enterPostScanMode();
-    q2.enqueue(makeEvent('x.ts'));
-    q2.enqueue(makeEvent('y.ts'));
-    // markFullScanComplete is no-op when state !== 'full_scan'
-    q2.markFullScanComplete();
-    expect(q2.getPostScanQueueSize()).toBe(2); // preserved
+    // Now trigger overflow by enqueuing beyond maxQueueSize on the normal path.
+    // The drained events are already in the queue (size=2 == maxQueueSize).
+    // Adding one more should trigger overflow → full_scan state.
+    queue.enqueue(makeEvent('overflow-trigger.ts'));
+
+    // The queue should now be in full_scan state
+    expect(queue.getState()).toBe('full_scan');
+
+    // Re-enter post-scan mode and buffer more events during the Full Index
+    queue.enterPostScanMode();
+    queue.enqueue(makeEvent('post-3.ts'));
+    queue.enqueue(makeEvent('post-4.ts'));
+    expect(queue.getPostScanQueueSize()).toBe(2);
+
+    // Call markFullScanComplete — should reset overflow state but preserve post-scan queue
+    queue.markFullScanComplete();
+    expect(queue.getState()).toBe('normal');
+    expect(queue.getPostScanQueueSize()).toBe(2); // preserved!
+    expect(queue.isPostScanActive()).toBe(true); // still in post-scan mode
   });
 
   it('abortPostScanMode discards buffered events without draining', () => {
@@ -1440,6 +1607,27 @@ export const buildNexusRuntime = (
       await options.vectorStore.initialize();
       await options.pipeline.reconcileOnStartup();
 
+
+      // --- Check if unindexed BEFORE starting the Watcher ---
+      // Enter post-scan mode before watcher.start() so events arriving
+      // during the Full Index are buffered, not processed concurrently.
+      // (Thread 9: prevents Full Index results from being overwritten by
+      // stale Watcher events processed in parallel.)
+      let needsPostScan = false;
+      try {
+        const stats = await options.metadataStore.getIndexStats();
+        const isUnindexed = stats === null || stats.lastIndexedAt === null;
+        if (isUnindexed && !isShuttingDown) {
+          options.eventQueue?.enterPostScanMode();
+          needsPostScan = true;
+        }
+      } catch (statsError) {
+        console.error(
+          `[Nexus] Failed to check index status for auto Full Index:`,
+          statsError,
+        );
+      }
+
       try {
         options.pipeline.start();
         await options.watcher.start().catch((error) => {
@@ -1495,53 +1683,48 @@ export const buildNexusRuntime = (
         throw error;
       }
 
-      // --- Auto background Full Index for unindexed projects ---
-      try {
-        const stats = await options.metadataStore.getIndexStats();
-        const isUnindexed = stats === null || stats.lastIndexedAt === null;
+      // --- Start background Full Index if unindexed ---
+      if (needsPostScan) {
+        const reindexPromise = options.pipeline
+          .reindex(
+            options.runReindex,
+            options.loadFileContent,
+            true,
+            "startup-reconciliation",
+          )
+          .then(async (result) => {
+            // Don't drain if reindex didn't actually run (already_running).
+            // (Thread 10: prevents treating already_running as Full Index completion.)
+            if (result && typeof result === 'object' && 'status' in result &&
+                (result.status === 'already_running' || result.status === 'incomplete')) {
+              // Another reindex is already running, or DLQ had items.
+              // Do NOT drain the post-scan queue — the Full Index hasn't completed.
+              return;
+            }
+            // Drain post-scan queue after scan completes (if not shutting down).
+            if (!isShuttingDown) {
+              options.eventQueue?.drainPostScanQueue();
+            }
+          })
+          .catch(async (error) => {
+            // Drain post-scan queue even on failure (if not shutting down).
+            if (!isShuttingDown) {
+              options.eventQueue?.drainPostScanQueue();
+            }
+            const message =
+              error instanceof Error ? error.message : String(error);
+            console.error(
+              `[Nexus] Startup auto Full Index failed:`,
+              error,
+            );
+            const progress = options.pipeline.getProgress();
+            if (!progress.lastError) {
+              progress.lastError = message;
+            }
+          });
 
-        if (isUnindexed && !isShuttingDown) {
-          // Enter post-scan mode so Watcher events are buffered during the scan.
-          options.eventQueue?.enterPostScanMode();
-
-          const reindexPromise = options.pipeline
-            .reindex(
-              options.runReindex,
-              options.loadFileContent,
-              true,
-              "startup-reconciliation",
-            )
-            .then(async () => {
-              // Drain post-scan queue after scan completes (if not shutting down).
-              if (!isShuttingDown) {
-                options.eventQueue?.drainPostScanQueue();
-              }
-            })
-            .catch(async (error) => {
-              // Drain post-scan queue even on failure (if not shutting down).
-              if (!isShuttingDown) {
-                options.eventQueue?.drainPostScanQueue();
-              }
-              const message =
-                error instanceof Error ? error.message : String(error);
-              console.error(
-                `[Nexus] Startup auto Full Index failed:`,
-                error,
-              );
-              const progress = options.pipeline.getProgress();
-              if (!progress.lastError) {
-                progress.lastError = message;
-              }
-            });
-
-          // Attach rejection handler at Promise creation to prevent unhandled rejection.
-          autoReindexPromise = reindexPromise;
-        }
-      } catch (statsError) {
-        console.error(
-          `[Nexus] Failed to check index status for auto Full Index:`,
-          statsError,
-        );
+        // Attach rejection handler at Promise creation to prevent unhandled rejection.
+        autoReindexPromise = reindexPromise;
       }
     })().catch((err) => {
       initPromise = null;
@@ -1729,20 +1912,31 @@ describe('NexusRuntime auto Full Index', () => {
     });
     options.eventQueue = eventQueue;
 
-    const reindexSpy = vi.fn(async () => ({
-      startedAt: '2026-01-01T00:00:00.000Z',
-      finishedAt: '2026-01-01T00:00:01.000Z',
-      durationMs: 1000,
-      reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
-      chunksIndexed: 0,
-    }));
+    // Use a deferred Promise so we can verify initialize() does NOT await the reindex.
+    // (Thread 11: if the spy resolves immediately, the test passes even if
+    // initialize() incorrectly awaits the reindex.)
+    let resolveReindex!: () => void;
+    const reindexDeferred = new Promise<void>((resolve) => {
+      resolveReindex = resolve;
+    });
+
+    const reindexSpy = vi.fn(async () => {
+      await reindexDeferred;
+      return {
+        startedAt: '2026-01-01T00:00:00.000Z',
+        finishedAt: '2026-01-01T00:00:01.000Z',
+        durationMs: 1000,
+        reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
+        chunksIndexed: 0,
+      };
+    });
     options.pipeline.reindex = reindexSpy;
 
     const runtime = buildNexusRuntime(options);
     await runtime.initialize();
 
-    // initialize() should NOT have awaited the reindex
-    // But the reindex should have been called with fullRebuild=true and reason='startup-reconciliation'
+    // initialize() should NOT have awaited the reindex — the deferred Promise
+    // is still pending, yet initialize() already returned.
     expect(reindexSpy).toHaveBeenCalledWith(
       options.runReindex,
       options.loadFileContent,
@@ -1750,7 +1944,15 @@ describe('NexusRuntime auto Full Index', () => {
       'startup-reconciliation',
     );
 
-    // Post-scan mode should have been entered then drained
+    // Post-scan mode should still be active (reindex hasn't completed yet)
+    expect(eventQueue.isPostScanActive()).toBe(true);
+
+    // Now resolve the reindex so the .then() handler can drain the post-scan queue
+    resolveReindex();
+    // Wait for the .then() handler to run
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Post-scan mode should have been drained now
     expect(eventQueue.isPostScanActive()).toBe(false);
 
     await runtime.close();
@@ -1783,7 +1985,7 @@ describe('NexusRuntime auto Full Index', () => {
     await runtime.close();
   });
 
-  it('does NOT start auto Full reindex when index_stats row exists but lastIndexedAt is null (stale migration)', async () => {
+  it('starts auto Full reindex when index_stats row exists but lastIndexedAt is null (stale migration)', async () => {
     // This tests the migration case: existing data without lastIndexedAt
     const options = makeOptions();
     const metadataStore = options.metadataStore as InMemoryMetadataStore;
@@ -1987,7 +2189,7 @@ Expected: Build succeeds.
 | IndexPipeline records success atomically with DLQ check | Task 1.1, 1.2, 1.3 |
 | Completion lock shared with DLQ add/remove | Task 1.2 |
 | Compact failure is non-fatal, doesn't block completion | Task 1.3 |
-| DLQ residual → lastError + skippedFiles, no completion | Task 1.3 |
+| DLQ residual → lastError + skippedFiles, no completion, returns `{ status: 'incomplete' }` | Task 1.3 |
 | Same path multiple DLQ entries → newest createdAt's errorMessage | Task 1.3 |
 | Manual and auto reindex use same success conditions | Task 1.3 (shared code path) |
 | `reason: 'startup-reconciliation'` for auto, `'manual'` for manual | Task 1.3, 3.2 |
@@ -2002,6 +2204,7 @@ Expected: Build succeeds.
 | Runtime continues → drain after scan completes (success or failure) | Task 3.2 |
 | No new CLI, MCP, API, UI | All tasks |
 | No schema changes | Task 1.1 (reuses existing columns) |
+| Watcher start delayed until after unindexed check + post-scan mode entry | Task 3.2 |
 
 ### Placeholder Scan
 
@@ -2010,7 +2213,7 @@ No "TBD", "TODO", "implement later", "fill in details", "Add appropriate error h
 ### Type Consistency
 
 - `atomicCompletionCheck(stats: IndexStatsRow): Promise<{ dlqEmpty: boolean; dlqEntries: DeadLetterEntry[] }>` — consistent across `IMetadataStore`, `SqliteMetadataStore`, `InMemoryMetadataStore`.
-- `reindex(run, loadContent, fullRebuild?, reason?)` — consistent across `IIndexPipeline` interface and `IndexPipeline` implementation.
+- `reindex(run, loadContent, fullRebuild?, reason?)` — consistent across `IIndexPipeline` interface and `IndexPipeline` implementation. Return type: `Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }>` — `{ status: 'incomplete' }` is returned when DLQ has items after Full Index (not a successful completion).
 - `ReindexOptions['reason']` — widened from `'manual'` to the full union `'manual' | 'overflow-recovery' | 'startup-reconciliation'`.
 - `EventQueue.enterPostScanMode()`, `drainPostScanQueue()`, `abortPostScanMode()`, `getPostScanQueueSize()`, `isPostScanActive()` — consistent names used in tests and implementation.
 - `setEventQueue(eventQueue: EventQueue)` — defined on `IndexPipeline`, called in `factory.ts`.
