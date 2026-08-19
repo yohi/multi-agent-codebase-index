@@ -57,9 +57,17 @@
 2. post-reindex compact を実行する。compact の失敗は既存どおり非致命としてログに記録し、
    完了判定の失敗理由にはしない。
 3. DLQ への追加・削除と共有する completion lock を取得し、Vector Store 統計を取得する。
+   completion lock は非再入のため、DLQ の `enqueue` が保持中に `trimToCapacity` 経由で
+   削除を呼ぶ際は同じ lock を再取得しない。外部削除（`removeEntries`）のみ lock を取得し、
+   内部削除は lock を保持しない経路を呼ぶ。これにより enqueue 中の容量トリムが停止しない。
 4. lock を保持したまま、SQLite transaction 内で全永続 DLQ 項目を再確認し、空の場合だけ
    `index_stats` を更新する。この transaction が DLQ 判定と完了状態保存の単一原子境界である。
-5. 例外、DLQ 残存、中断では、完了状態を保存しない。
+   トランザクションは生成した関数を実行して完了させる。関数を返しただけでは DLQ 読み取りも
+   `index_stats` 書き込みも実行されない。
+5. 例外、DLQ 残存、中断では、完了状態を保存しない。DLQ が残存した場合は成功メトリクス
+   （`onReindexComplete`）の発火と `pipelineProgress.status: "idle"` への遷移を行わず、
+   完了日時未保存の不完全結果として扱う。正常完了フロー（DLQ 空）は既存どおり成功メトリクス
+   発火と idle 遷移を行う。
 
 完了判定の対象は今回の実行で生成した項目だけではなく、`dead_letter_queue` の全永続項目とする。
 実行ごとの DLQ 識別子は追加しない。DLQ が残る場合は `pipelineProgress.lastError` に
@@ -74,12 +82,21 @@ completion lock 解放後に項目を追加しても、次の完了判定で必�
 ### NexusRuntime
 
 `NexusRuntime.initialize()` は、既存どおりメタデータストア、Vector Store、
-起動時整合化、Pipeline、Watcher を初期化する。これらが完了した後にだけ、
-`lastIndexedAt` を確認する。
+起動時整合化、Pipeline を初期化する。Watcher の起動に先立ち、未インデックス判定のため
+`lastIndexedAt` を確認する。未インデックスで Full Index が必要な場合は、Watcher の起動前に
+post-scan モードへ遷移し、その後に Watcher を起動する。これにより Watcher 起動から
+post-scan モード遷移までの間に発生したイベントが通常キューへ投入され、Full Index と並行処理
+されるか overflow-drop されることを防ぐ。既にインデックス済みの場合は既存どおり通常の
+Watcher 起動順序を維持し、post-scan モードには遷移しない。
 
 未インデックスなら、既存の Full reindex 処理を開始する Promise を保持するが、
 `initialize()` からは await しない。Promise の失敗は Runtime の初期化失敗に
 せず、ログと Pipeline 状態へ記録する。既に完了日時があれば何もしない。
+
+Full reindex が `{ status: 'already_running' }` を返した場合は Full Index が実際に開始されて
+いないため、post-scan queue の drain を行わない。drain は Full Index が実際に完了した
+成功・失敗時のみ行う。既に進行中の Full Index がある場合は、その Promise を共有または待機して
+完了後に drain する。
 
 自動実行は `run({ fullScan: true, reason: 'startup-reconciliation' })` として起動する。
 手動 CLI と MCP Tool が使う reindex は引き続き `reason: 'manual'` とする。開始・完了・失敗の
@@ -93,6 +110,15 @@ Runtime の初期化は既存の stdio、`serve`、managed HTTP の共通境界�
 保持した自動 reindex Promise が fulfilled または rejected になるまで待機する。その後にだけ
 metadata store と Vector Store を閉じる。停止による rejection は記録済みとして扱い、
 `close()` 自身の未処理 rejection にしない。中断した自動処理は完了日時を保存しない。
+
+### EventQueue の共有
+
+`EventProcessingManager.setup()` が生成した単一の `EventQueue` インスタンスを、
+`IndexPipeline` と `NexusRuntime` の両方で共有する。別インスタンスを生成しない。
+生成順序は EventQueue → `IndexPipeline` への設定 → `buildNexusRuntime` への引き渡しとし、
+`IndexPipeline.setEventQueue()` または同機能の setter で `setup()` 完了後に紐付ける。
+これにより Full Index の `markFullScanComplete()` と post-scan モードの制御が同一キュー
+インスタンス上で一貫する。
 
 ## 状態遷移
 
@@ -134,8 +160,10 @@ DLQ 回復ループが後から項目を処理しても、その事実だけで�
 - 起動時 Full Index 中も Watcher は稼働する。scan 開始後に発生した Watcher イベントは
   起動時 Full Index 専用の post-scan queue に保持し、Runtime が稼働を継続する場合は scan の成功・
   失敗を問わず Pipeline mutex 解放後に通常のイベント処理として drain する。既存 overflow recovery の
-  イベント破棄契約は
-  この post-scan queue には適用しない。
+  イベント破棄契約はこの post-scan queue には適用しない。post-scan queue は無限成長を防ぐため、
+  容量上限、バックプレッシャ、またはファイル単位のイベント coalescing のいずれかを全 enqueue 経路に
+  一貫して適用する。必要なイベントセマンティクスを維持したまま、長時間の Full Index 実行や
+  Watcher イベントバースト時のメモリ消費を抑える。
 - `markFullScanComplete()` は scan の終端を通知するだけで、post-scan queue を消去してはならない。
   これは成功、例外、中断のいずれでも同じである。停止時は queue の drain を開始せず、Runtime の停止処理が
   queue を所有する。強制的なプロセス終了で処理できなかった場合を含め、完了日時を保存しないため、次回の
@@ -162,30 +190,45 @@ DLQ 回復ループが後から項目を処理しても、その事実だけで�
 - Pipeline の単体テストで、DLQ が空の成功した通常 reindex と Full reindex が
   正しい統計・日時を保存することを確認する。通常 reindex では既存の `lastFullScanAt` を
   保持し、新規統計行では `lastFullScanAt: null` となることも確認する。
+- EventQueue と Pipeline の単体テストで、`markFullScanComplete` のフルスキャン状態遷移を
+  EventQueue の公開 overflow 挙動を通じて検証する。フルスキャン状態で `markFullScanComplete`
+  を呼び出し、その後の post-scan queue が保持されることを確認する。
 - Pipeline の単体テストで、例外、DLQ 残存、停止時に完了日時が保存されないことを確認する。
 - Pipeline の単体テストで、DLQ 残存時に安定した `lastError`、`skippedFiles`、未保存の完了日時を
   確認する。既存 DLQ、完了判定と保存の間に追加される DLQ、および DLQ recovery loop との競合を
   含める。
 - Pipeline の単体テストで、compact 失敗がログに記録される非致命エラーであり、DLQ が空なら
   完了状態を保存することを確認する。
+- `SqliteMetadataStore` の単体テストで、`atomicCompletionCheck` が実 SQLite トランザクション内で
+  DLQ 空の場合に `index_stats` を更新し、DLQ 残存の場合に更新せず項目を返すことを確認する。
+  共有 completion lock とトランザクションの組み合わせも検証する。既存の
+  `tests/unit/storage/metadata-store.test.ts` 構成に追加する。
 - EventQueue と Pipeline の単体または統合テストで、起動時 Full Index 中の Watcher イベントが
   post-scan queue に残り、成功・失敗・停止時の `markFullScanComplete()` が当該イベントを破棄せず、
   Runtime が稼働を継続する成功・失敗時には scan 終了後に処理されることを確認する。
 - Runtime の単体テストで、未インデックス時に Full reindex が一度開始され、
   その完了を `initialize()` が待たないこと、`startup-reconciliation` の理由が渡されることを
-  制御可能な Promise で確認する。
+  制御可能な deferred Promise で確認する。reindex が即時 resolve する spy では非ブロッキング性を
+  検証できないため、未解決 Promise を返し `initialize()` 完了後に resolve して順序を検証する。
 - Runtime の単体テストで、自動 reindex の rejection が未処理にならず、ログと Pipeline 状態に
   記録されること、および `close()` が Promise の完了後にのみ store を閉じることを確認する。
+- Runtime の単体テストで、Full reindex が `{ status: 'already_running' }` を返した場合は
+  Full Index が実際に開始されていないため post-scan queue の drain を行わないことを確認する。
+  進行中の Full Index がある場合はその完了後に drain することも確認する。
 - Runtime の単体テストで、完了日時がある場合と stale な既存インデックスの場合に
   自動 Full Index が開始されないことを確認する。
 - Runtime の単体テストで、更新前に作られ完了日時が未記録のデータは、最初の
   新バージョン起動で一度だけ自動 Full Index の対象になることを確認する。
+  このテストは `lastIndexedAt` が `null` の stale migration ケースであり、
+  auto Full Index が開始される側の検証となる。
 - 共通 Runtime 初期化境界のテストを主軸にし、stdio、`serve`、managed HTTP、
   `http-bridge` の既存起動契約テストを維持する。
 - 複数の通常起動経路が同一 Runtime インスタンスへ収束し、自動 Full Index が一度だけ起動される
   ことを単体または統合テストで確認する。
 
 実装時の検証コマンドは、対象 Vitest、`npm run lint`、`npm run build`、全 Vitest とする。
+型チェックは `npx tsc --noEmit` を直接実行する。パイプで `head` 等に渡す場合は `pipefail` を
+設定し、tsc の失敗がパイプ後段の終了コードで隠れないようにする。
 
 ## 対象外
 
