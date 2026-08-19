@@ -266,29 +266,42 @@ describe('SqliteMetadataStore.atomicCompletionCheck (integration)', () => {
     expect(stored?.lastIndexedAt).toBeNull();
   });
 
-  it('completionLock prevents DLQ modification during the check', async () => {
+  it('completionLock serializes DLQ updates with atomicCompletionCheck', async () => {
+    // Verify the shared completionLock prevents DeadLetterQueue.enqueue()/
+    // removeEntries() from completing while the lock is held, and that they
+    // complete after release. SqliteMetadataStore.upsertDeadLetterEntries()
+    // does NOT acquire completionLock — only DeadLetterQueue does (Task 1.2),
+    // so the test must drive updates through DeadLetterQueue.
     const completionLock = new Mutex();
-    // Acquire the lock to simulate the pipeline holding it
+    const dlq = new DeadLetterQueue({
+      metadataStore: store,
+      completionLock,
+    });
+    await dlq.load();
+
+    // Acquire the lock to simulate the pipeline's atomicCompletionCheck
+    // holding it; DLQ updates started now must not complete until release.
     const release = await completionLock.acquire();
     try {
-      // While the lock is held, a DLQ enqueue should wait
-      // (This verifies the lock is shared and serializes access)
-      const enqueuePromise = store.upsertDeadLetterEntries([
-        {
-          id: 'dlq-during',
-          filePath: 'concurrent.ts',
-          contentHash: 'hash',
-          errorMessage: 'error',
-          attempts: 1,
-          recoveryAttempts: 0,
-          createdAt: '2026-01-01T00:00:00.000Z',
-          updatedAt: '2026-01-01T00:00:00.000Z',
-          lastRetryAt: null,
-        },
-      ]);
+      const enqueuePromise = dlq.enqueue({
+        filePath: 'concurrent.ts',
+        contentHash: 'hash',
+        errorMessage: 'error',
+        attempts: 1,
+      });
 
-      // The atomicCompletionCheck should see an empty DLQ because the enqueue
-      // is blocked by the lock (in production, the DLQ also acquires this lock).
+      // Let pending microtasks settle. The enqueue must still be pending
+      // because completionLock is held.
+      await Promise.race([
+        enqueuePromise,
+        new Promise((resolve) => setImmediate(resolve)),
+      ]);
+      expect(dlq.snapshot().has('concurrent.ts')).toBe(false);
+
+      const entriesAfter = await store.getDeadLetterEntries();
+      expect(entriesAfter).toHaveLength(0);
+
+      // atomicCompletionCheck runs while the lock is held; DLQ is empty.
       const stats = {
         id: 'primary',
         totalFiles: 0,
@@ -298,10 +311,17 @@ describe('SqliteMetadataStore.atomicCompletionCheck (integration)', () => {
         overflowCount: 0,
       };
       const result = await store.atomicCompletionCheck(stats);
-      expect(result.dlqEmpty).toBe(true); // enqueue hasn't completed yet
+      expect(result.dlqEmpty).toBe(true);
     } finally {
       release();
     }
+
+    // After release, the blocked enqueue completes and the entry persists.
+    const entry = await enqueuePromise;
+    expect(entry.filePath).toBe('concurrent.ts');
+    const persisted = await store.getDeadLetterEntries();
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].filePath).toBe('concurrent.ts');
   });
 });
 ```
@@ -1165,10 +1185,19 @@ describe('EventQueue post-scan queue', () => {
 
     // Now trigger overflow by enqueuing beyond maxQueueSize on the normal path.
     // The drained events are already in the queue (size=2 == maxQueueSize).
-    // Adding one more should trigger overflow → full_scan state.
+    // Adding one more triggers overflow (enterOverflow sets state='overflow').
     queue.enqueue(makeEvent('overflow-trigger.ts'));
+    expect(queue.getState()).toBe('overflow');
 
-    // The queue should now be in full_scan state
+    // drain() processes the watcher queue; when both queues are empty and
+    // state was 'overflow', it transitions to 'full_scan' (see event-queue.ts
+    // drain() Phase 2 tail). Stub onFullScanRequired to avoid recursion.
+    let fullScanTriggered = false;
+    (queue as unknown as { options: { onFullScanRequired?: () => Promise<void> } }).options.onFullScanRequired = async () => {
+      fullScanTriggered = true;
+    };
+    await queue.drain(async () => undefined);
+    expect(fullScanTriggered).toBe(true);
     expect(queue.getState()).toBe('full_scan');
 
     // Re-enter post-scan mode and buffer more events during the Full Index
@@ -2084,6 +2113,40 @@ describe('NexusRuntime auto Full Index', () => {
     expect(stopOrder).toContain('reindex-done');
     expect(stopOrder).toContain('pipeline.stop');
     expect(stopOrder.indexOf('reindex-done')).toBeLessThan(stopOrder.indexOf('pipeline.stop'));
+  });
+
+  it('does NOT drain post-scan queue when reindex returns already_running', async () => {
+    const options = makeOptions();
+    const eventQueue = new EventQueue({
+      debounceMs: 10,
+      maxQueueSize: 100,
+      fullScanThreshold: 50,
+      concurrency: 1,
+    });
+    options.eventQueue = eventQueue;
+    eventQueue.enterPostScanMode();
+    eventQueue.enqueue({
+      type: 'added',
+      filePath: 'buffered.ts',
+      detectedAt: new Date().toISOString(),
+    });
+    expect(eventQueue.isPostScanActive()).toBe(true);
+    expect(eventQueue.getPostScanQueueSize()).toBe(1);
+
+    options.pipeline.reindex = vi.fn(async () => ({ status: 'already_running' }));
+
+    const runtime = buildNexusRuntime(options);
+    await runtime.initialize();
+
+    // Let the .then() handler settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // reindex returned already_running → Full Index did not complete;
+    // post-scan queue must remain buffered and active.
+    expect(eventQueue.isPostScanActive()).toBe(true);
+    expect(eventQueue.getPostScanQueueSize()).toBe(1);
+
+    await runtime.close();
   });
 
   it('does not start auto Full reindex twice in the same Runtime', async () => {
