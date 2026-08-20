@@ -232,6 +232,7 @@ indexing pipeline を通じて manual reindex を実行します。
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `fullRebuild` | boolean | no | incremental pass ではなく full rebuild を要求 |
+| `reason` | `manual` \| `overflow-recovery` \| `startup-reconciliation` | no | 再インデックスの起点。省略時は `manual` |
 
 ### レスポンス
 
@@ -241,6 +242,14 @@ indexing pipeline を通じて manual reindex を実行します。
 ```json
 {
   "status": "already_running"
+}
+```
+
+DLQ に残存エントリがあるため完了状態を保存できなかった場合は、次を返します。`index_stats` は更新されません。
+
+```json
+{
+  "status": "incomplete"
 }
 ```
 

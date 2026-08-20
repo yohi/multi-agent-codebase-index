@@ -2,9 +2,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../../src/config/index.js';
+import { EventQueue } from '../../../src/indexer/event-queue.js';
+import { IndexPipeline } from '../../../src/indexer/pipeline.js';
 import { NexusServerFactory, assertPackageModeConstraints } from '../../../src/server/factory.js';
 import type { Config } from '../../../src/types/index.js';
 import type { PluginRegistry } from '../../../src/plugins/registry.js';
@@ -99,5 +101,35 @@ describe('NexusServerFactory.setupPluginRegistry', () => {
     });
 
     expect(() => internals.setupPluginRegistry(config)).toThrow(/requires embedding\.provider="bedrock"/);
+  });
+});
+
+describe('NexusServerFactory.createRuntime', () => {
+  let tempDir: string | undefined;
+
+  afterEach(async () => {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true });
+      tempDir = undefined;
+    }
+  });
+
+  it('registers the runtime event queue with the index pipeline', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-factory-'));
+    const config = await loadConfig({ projectRoot: tempDir });
+    const setEventQueueSpy = vi.spyOn(IndexPipeline.prototype, 'setEventQueue');
+    let runtime: Awaited<ReturnType<typeof NexusServerFactory.createRuntime>> | undefined;
+
+    try {
+      runtime = await NexusServerFactory.createRuntime(config);
+
+      expect(setEventQueueSpy).toHaveBeenCalledOnce();
+      expect(setEventQueueSpy.mock.calls[0]?.[0]).toBeInstanceOf(EventQueue);
+    } finally {
+      setEventQueueSpy.mockRestore();
+      if (runtime) {
+        await runtime.close();
+      }
+    }
   });
 });

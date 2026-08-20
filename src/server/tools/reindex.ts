@@ -2,6 +2,7 @@ import type { IndexEvent, ReindexResult, ReindexOptions, IIndexPipeline } from '
 
 export interface ReindexToolArgs {
   fullRebuild?: boolean;
+  reason?: ReindexOptions['reason'];
 }
 
 export type ReindexToolResult = ReindexResult | { status: 'already_running' } | { status: 'incomplete' };
@@ -11,4 +12,4 @@ export const executeReindex = async (
   runReindex: (options?: ReindexOptions) => Promise<IndexEvent[]>,
   loadFileContent: (filePath: string) => Promise<string>,
   args: ReindexToolArgs,
-): Promise<ReindexToolResult> => pipeline.reindex(runReindex, loadFileContent, args.fullRebuild);
+): Promise<ReindexToolResult> => pipeline.reindex(runReindex, loadFileContent, args.fullRebuild, args.reason);

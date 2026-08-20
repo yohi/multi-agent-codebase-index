@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
-import type { CompactionResult, IndexEvent, ReindexOptions } from '../../../src/types/index.js';
+import type {
+  CompactionResult,
+  DeadLetterEntry,
+  IndexEvent,
+  ReindexOptions,
+} from '../../../src/types/index.js';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
 import { createPipeline } from '../../shared/test-helpers.js';
 import { InMemoryVectorStore } from '../storage/in-memory-vector-store.js';
@@ -24,16 +29,16 @@ const makePipeline = async () => {
   return { pipeline, metadataStore, vectorStore };
 };
 
-const makeDlqEntry = (overrides: Partial<IndexEvent> & { id: string; errorMessage: string; createdAt: string }) => ({
-  id: overrides.id,
+const makeDlqEntry = (overrides: Partial<DeadLetterEntry> = {}): DeadLetterEntry => ({
+  id: overrides.id ?? 'dlq-1',
   filePath: overrides.filePath ?? 'failed.ts',
   contentHash: overrides.contentHash ?? 'hash',
-  errorMessage: overrides.errorMessage,
-  attempts: 1,
-  recoveryAttempts: 0,
-  createdAt: overrides.createdAt,
-  updatedAt: overrides.createdAt,
-  lastRetryAt: null,
+  errorMessage: overrides.errorMessage ?? 'embed failed',
+  attempts: overrides.attempts ?? 1,
+  recoveryAttempts: overrides.recoveryAttempts ?? 0,
+  createdAt: overrides.createdAt ?? '2026-08-20T00:00:00.000Z',
+  updatedAt: overrides.updatedAt ?? overrides.createdAt ?? '2026-08-20T00:00:00.000Z',
+  lastRetryAt: overrides.lastRetryAt ?? null,
 });
 
 const scanNoFiles = async (_options?: { fullScan?: boolean; reason?: ReindexOptions['reason'] }): Promise<IndexEvent[]> => [];

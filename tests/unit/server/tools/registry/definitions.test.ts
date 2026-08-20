@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   GET_CONTEXT_DEFINITION,
+  REINDEX_DEFINITION,
   TOOL_DEFINITIONS,
 } from '../../../../../src/server/tools/registry/definitions.js';
 
@@ -38,5 +39,13 @@ describe('tool definitions', () => {
     const hybrid = TOOL_DEFINITIONS.find((definition) => definition.name === 'hybrid_search');
     expect(hybrid?.input.contextLines?.description).toContain('rejected');
     expect(hybrid?.input.contextLines?.description).not.toContain('clamped');
+  });
+
+  it('accepts reindex reasons at the tool boundary', () => {
+    expect(REINDEX_DEFINITION.input.reason).toEqual({
+      kind: 'enum',
+      values: ['manual', 'overflow-recovery', 'startup-reconciliation'],
+      optional: true,
+    });
   });
 });
