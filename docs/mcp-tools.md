@@ -245,6 +245,14 @@ indexing pipeline を通じて manual reindex を実行します。
 }
 ```
 
+DLQ に残存エントリがあるため完了状態を保存できなかった場合は、次を返します。`index_stats` は更新されません。
+
+```json
+{
+  "status": "incomplete"
+}
+```
+
 - `1 MB` を超える request body は HTTP transport 層で reject されます。
 
 ## stdio-only クライアント向け HTTP Bridge

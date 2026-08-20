@@ -12,6 +12,19 @@ export interface SqliteMetadataStoreOptions {
 
 const PRIMARY_STATS_ID = 'primary';
 
+const UPSERT_INDEX_STATS_SQL = `
+  INSERT INTO index_stats (
+    id, total_files, total_chunks, last_indexed_at, last_full_scan_at, overflow_count
+  ) VALUES (
+    @id, @totalFiles, @totalChunks, @lastIndexedAt, @lastFullScanAt, @overflowCount
+  )
+  ON CONFLICT(id) DO UPDATE SET
+    total_files = excluded.total_files,
+    total_chunks = excluded.total_chunks,
+    last_indexed_at = excluded.last_indexed_at,
+    last_full_scan_at = excluded.last_full_scan_at,
+    overflow_count = excluded.overflow_count`;
+
 export class SqliteMetadataStore implements IMetadataStore {
   private readonly db: Database.Database;
 
@@ -349,21 +362,7 @@ export class SqliteMetadataStore implements IMetadataStore {
 
   async setIndexStats(stats: IndexStatsRow): Promise<void> {
     await this.asyncBoundary();
-    this.db
-      .prepare(
-        `INSERT INTO index_stats (
-            id, total_files, total_chunks, last_indexed_at, last_full_scan_at, overflow_count
-          ) VALUES (
-            @id, @totalFiles, @totalChunks, @lastIndexedAt, @lastFullScanAt, @overflowCount
-          )
-          ON CONFLICT(id) DO UPDATE SET
-            total_files = excluded.total_files,
-            total_chunks = excluded.total_chunks,
-            last_indexed_at = excluded.last_indexed_at,
-            last_full_scan_at = excluded.last_full_scan_at,
-            overflow_count = excluded.overflow_count`,
-      )
-      .run(stats);
+    this.db.prepare(UPSERT_INDEX_STATS_SQL).run(stats);
   }
 
   async atomicCompletionCheck(stats: IndexStatsRow): Promise<{
@@ -390,27 +389,13 @@ export class SqliteMetadataStore implements IMetadataStore {
         .all() as DeadLetterEntry[];
 
       if (dlqEntries.length === 0) {
-        this.db
-          .prepare(
-            `INSERT INTO index_stats (
-                id, total_files, total_chunks, last_indexed_at, last_full_scan_at, overflow_count
-              ) VALUES (
-                @id, @totalFiles, @totalChunks, @lastIndexedAt, @lastFullScanAt, @overflowCount
-              )
-              ON CONFLICT(id) DO UPDATE SET
-                total_files = excluded.total_files,
-                total_chunks = excluded.total_chunks,
-                last_indexed_at = excluded.last_indexed_at,
-                last_full_scan_at = excluded.last_full_scan_at,
-                overflow_count = excluded.overflow_count`,
-          )
-          .run(stats);
+        this.db.prepare(UPSERT_INDEX_STATS_SQL).run(stats);
       }
 
       return { dlqEmpty: dlqEntries.length === 0, dlqEntries };
     });
 
-    return runTransaction();
+    return runTransaction.immediate();
   }
 
   async upsertDeadLetterEntries(entries: DeadLetterEntry[]): Promise<void> {

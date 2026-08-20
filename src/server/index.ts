@@ -249,8 +249,11 @@ export const buildNexusRuntime = (
       options.loadFileContent,
       fullRebuild,
     );
-    if ("status" in result) {
+    if ("status" in result && result.status === "already_running") {
       throw new Error(`Reindex already running: ${result.status}`);
+    }
+    if ("status" in result) {
+      throw new Error('Reindex incomplete: dead-letter queue entries remain');
     }
   };
 

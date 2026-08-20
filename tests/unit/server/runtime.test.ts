@@ -166,6 +166,21 @@ describe('initializeNexusRuntime', () => {
     await runtime.close();
   });
 
+  it('reports an incomplete manual reindex separately from an already-running reindex', async () => {
+    const options = makeServerOptions();
+    options.pipeline.reindex = vi.fn(async () => ({ status: 'incomplete' as const }));
+    const watcher = {
+      start: async () => undefined,
+      stop: async () => undefined,
+    };
+    const runtime = await initializeNexusRuntime({ ...options, watcher });
+
+    await expect(runtime.reindex()).rejects.toThrow(
+      'Reindex incomplete: dead-letter queue entries remain',
+    );
+    await runtime.close();
+  });
+
   it('registers with a 1000ms timeout and projectRoot basename when aggregatorPort is configured', async () => {
     vi.useFakeTimers();
     const registrations: Array<{ readonly url: string; readonly body: unknown; readonly signal: AbortSignal | undefined }> = [];

@@ -221,8 +221,13 @@ class EventProcessingManager {
           reason,
         );
 
-        if ("status" in result) {
+        if ("status" in result && result.status === "already_running") {
           throw new Error("already_running");
+        }
+
+        if ("status" in result) {
+          this.onLog?.("[Nexus] Background full scan incomplete; dead-letter queue entries remain.");
+          return;
         }
 
         if (this.onLog) {

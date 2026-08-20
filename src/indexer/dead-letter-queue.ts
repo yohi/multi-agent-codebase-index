@@ -284,9 +284,15 @@ export class DeadLetterQueue {
       return;
     }
 
+    // The completion lock prevents index completion checks from observing a
+    // removal between the metadata and in-memory updates.
     await this.withCompletionLock(() => this.removeEntriesUnlocked(ids));
   }
 
+  /**
+   * Lock-free removal primitive. Callers must already own the completion lock,
+   * except during the initial capacity trim before the queue is exposed.
+   */
   private async removeEntriesUnlocked(ids: string[]): Promise<void> {
     if (ids.length === 0) {
       return;
