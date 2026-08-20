@@ -12,6 +12,19 @@ export interface SqliteMetadataStoreOptions {
 
 const PRIMARY_STATS_ID = 'primary';
 
+const UPSERT_INDEX_STATS_SQL = `
+  INSERT INTO index_stats (
+    id, total_files, total_chunks, last_indexed_at, last_full_scan_at, overflow_count
+  ) VALUES (
+    @id, @totalFiles, @totalChunks, @lastIndexedAt, @lastFullScanAt, @overflowCount
+  )
+  ON CONFLICT(id) DO UPDATE SET
+    total_files = excluded.total_files,
+    total_chunks = excluded.total_chunks,
+    last_indexed_at = excluded.last_indexed_at,
+    last_full_scan_at = excluded.last_full_scan_at,
+    overflow_count = excluded.overflow_count`;
+
 export class SqliteMetadataStore implements IMetadataStore {
   private readonly db: Database.Database;
 
@@ -349,21 +362,40 @@ export class SqliteMetadataStore implements IMetadataStore {
 
   async setIndexStats(stats: IndexStatsRow): Promise<void> {
     await this.asyncBoundary();
-    this.db
-      .prepare(
-        `INSERT INTO index_stats (
-            id, total_files, total_chunks, last_indexed_at, last_full_scan_at, overflow_count
-          ) VALUES (
-            @id, @totalFiles, @totalChunks, @lastIndexedAt, @lastFullScanAt, @overflowCount
-          )
-          ON CONFLICT(id) DO UPDATE SET
-            total_files = excluded.total_files,
-            total_chunks = excluded.total_chunks,
-            last_indexed_at = excluded.last_indexed_at,
-            last_full_scan_at = excluded.last_full_scan_at,
-            overflow_count = excluded.overflow_count`,
-      )
-      .run(stats);
+    this.db.prepare(UPSERT_INDEX_STATS_SQL).run(stats);
+  }
+
+  async atomicCompletionCheck(stats: IndexStatsRow): Promise<{
+    dlqEmpty: boolean;
+    dlqEntries: DeadLetterEntry[];
+  }> {
+    await this.asyncBoundary();
+
+    const runTransaction = this.db.transaction(() => {
+      const dlqEntries = this.db
+        .prepare(
+          `SELECT id,
+                  file_path AS filePath,
+                  content_hash AS contentHash,
+                  error_message AS errorMessage,
+                  attempts,
+                  recovery_attempts AS recoveryAttempts,
+                  created_at AS createdAt,
+                  updated_at AS updatedAt,
+                  last_retry_at AS lastRetryAt
+           FROM dead_letter_queue
+           ORDER BY created_at ASC`,
+        )
+        .all() as DeadLetterEntry[];
+
+      if (dlqEntries.length === 0) {
+        this.db.prepare(UPSERT_INDEX_STATS_SQL).run(stats);
+      }
+
+      return { dlqEmpty: dlqEntries.length === 0, dlqEntries };
+    });
+
+    return runTransaction.immediate();
   }
 
   async upsertDeadLetterEntries(entries: DeadLetterEntry[]): Promise<void> {

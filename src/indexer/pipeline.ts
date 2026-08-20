@@ -22,6 +22,8 @@ import {
   type PipelineProgress,
   type RetryExhaustedError,
   type EmbeddingCacheEntry,
+  type IndexStatsRow,
+  type ReindexOptions,
 } from '../types/index.js';
 interface IndexPipelineOptions {
   metadataStore: IMetadataStore;
@@ -44,6 +46,7 @@ interface IndexPipelineOptions {
     | 'onRecoverySweepComplete'
     | 'onIndexingProgress'
   >;
+  completionLock?: Mutex;
 }
 
 interface ProcessEventsResult {
@@ -67,6 +70,10 @@ export class IndexPipeline implements IIndexPipeline {
   private readonly skippedFiles = new Map<string, string>();
 
   private readonly deadLetterQueue: DeadLetterQueue;
+
+  private readonly completionLock: Mutex;
+
+  private eventQueue: EventQueue | undefined;
 
   private dlqStopper: (() => Promise<void>) | undefined;
 
@@ -92,12 +99,15 @@ export class IndexPipeline implements IIndexPipeline {
     this.embedBatchWindowSize = Math.max(1, options.embedBatchWindowSize ?? 16);
     this.embeddingCacheSize = options.embeddingCacheSize ?? 10_000;
     this.embeddingCache = new Map<string, number[]>();
+    this.completionLock = options.completionLock ?? new Mutex();
+    this.eventQueue = options.eventQueue;
     this.deadLetterQueue = new DeadLetterQueue({
       metadataStore: options.metadataStore,
       embeddingHealthy: () => this.embeddingHealthy(),
       computeFileHash: (path) => this.computeFileHash(path),
       reprocess: (entry) => this.reprocess(entry),
       metricsHooks: options.metricsHooks,
+      completionLock: this.completionLock,
     });
   }
 
@@ -531,10 +541,11 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   async reindex(
-    run: (options?: { fullScan?: boolean; reason?: 'manual' }) => Promise<IndexEvent[]>,
+    run: (options?: { fullScan?: boolean; reason?: ReindexOptions['reason'] }) => Promise<IndexEvent[]>,
     loadContent: ContentLoader,
     fullRebuild?: boolean,
-  ): Promise<ReindexResult | { status: 'already_running' }> {
+    reason: ReindexOptions['reason'] = 'manual',
+  ): Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }> {
     const startedAt = new Date().toISOString();
     const startTime = Date.now();
 
@@ -547,10 +558,12 @@ export class IndexPipeline implements IIndexPipeline {
         this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, 0, true); });
 
         try {
-          const events = await run({ fullScan: fullRebuild, reason: 'manual' });
+          const events = await run({ fullScan: fullRebuild, reason });
           this.progress.totalFiles = events.length;
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, events.length, true); });
-          this.safeLogProgress(`Starting reindex of ${events.length} files (fullRebuild: ${!!fullRebuild})`);
+          this.safeLogProgress(
+            `Starting reindex of ${events.length} files (fullRebuild: ${!!fullRebuild}, reason: ${reason})`,
+          );
 
           const { chunksIndexed } = await this.processEvents(events, loadContent, { trackProgress: true });
 
@@ -570,6 +583,14 @@ export class IndexPipeline implements IIndexPipeline {
             console.error('Post-reindex compaction failed (non-fatal):', compactionError);
           }
 
+          const completionRecorded = await this.recordCompletion(fullRebuild, reason, finishedAt);
+
+          if (!completionRecorded) {
+            this.progress.status = 'idle';
+            this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
+            return { status: 'incomplete' as const };
+          }
+
           this.safeNotifyMetrics((h) => { h.onReindexComplete(durationMs, !!fullRebuild); });
 
           this.progress.status = 'idle';
@@ -587,8 +608,8 @@ export class IndexPipeline implements IIndexPipeline {
           this.progress.lastError = error instanceof Error ? error.message : String(error);
           throw error;
         } finally {
-          if (fullRebuild && this.options.eventQueue) {
-            this.options.eventQueue.markFullScanComplete();
+          if (fullRebuild && this.eventQueue) {
+            this.eventQueue.markFullScanComplete();
           }
         }
       });
@@ -597,6 +618,60 @@ export class IndexPipeline implements IIndexPipeline {
         return { status: 'already_running' as const };
       }
       throw e;
+    }
+  }
+
+  private async recordCompletion(
+    fullRebuild: boolean | undefined,
+    reason: ReindexOptions['reason'],
+    finishedAt: string,
+  ): Promise<boolean> {
+    const release = await this.completionLock.acquire();
+    try {
+      const vectorStats = await this.options.vectorStore.getStats();
+      const existingStats = await this.options.metadataStore.getIndexStats();
+      const nowIso = finishedAt;
+      const stats: IndexStatsRow = {
+        id: 'primary',
+        totalFiles: vectorStats.totalFiles,
+        totalChunks: vectorStats.totalChunks,
+        lastIndexedAt: nowIso,
+        lastFullScanAt: fullRebuild ? nowIso : (existingStats?.lastFullScanAt ?? null),
+        overflowCount: existingStats?.overflowCount ?? 0,
+      };
+
+      const { dlqEmpty, dlqEntries } =
+        await this.options.metadataStore.atomicCompletionCheck(stats);
+
+      const reasonLabel = reason ?? 'manual';
+      if (!dlqEmpty) {
+        this.progress.lastError =
+          `Full reindex incomplete: ${dlqEntries.length} dead-letter queue item(s) remain`;
+
+        const byPath = new Map<string, { createdAt: string; errorMessage: string }>();
+        for (const entry of dlqEntries) {
+          const existing = byPath.get(entry.filePath);
+          if (existing === undefined || entry.createdAt > existing.createdAt) {
+            byPath.set(entry.filePath, {
+              createdAt: entry.createdAt,
+              errorMessage: entry.errorMessage,
+            });
+          }
+        }
+        for (const [filePath, info] of byPath) {
+          this.skippedFiles.set(filePath, info.errorMessage);
+        }
+
+        this.safeLogProgress(
+          `Reindex incomplete (${reasonLabel}): ${dlqEntries.length} DLQ item(s) remain. Completion state NOT saved.`,
+        );
+        return false;
+      }
+
+      this.safeLogProgress(`Reindex completed (${reasonLabel}). index_stats updated.`);
+      return true;
+    } finally {
+      release();
     }
   }
 
@@ -631,6 +706,10 @@ export class IndexPipeline implements IIndexPipeline {
 
   getSkippedFiles(): ReadonlyMap<string, string> {
     return this.skippedFiles;
+  }
+
+  setEventQueue(eventQueue: EventQueue): void {
+    this.eventQueue = eventQueue;
   }
 
   private async indexFile(filePath: string, content: string, contentHash: string): Promise<number> {

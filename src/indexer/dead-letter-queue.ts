@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import type { Mutex } from 'async-mutex';
+
 import { computeFileHashStreaming } from './hash.js';
 import type { DeadLetterEntry, IMetadataStore } from '../types/index.js';
 import type { MetricsHooks } from '../observability/types.js';
@@ -23,6 +25,7 @@ export interface DeadLetterQueueOptions {
   reprocess?: (entry: DeadLetterEntry) => Promise<void>;
   logger?: Pick<Console, 'warn' | 'error'>;
   metricsHooks?: Pick<MetricsHooks, 'onDlqSnapshot' | 'onRecoverySweepComplete'>;
+  completionLock?: Mutex;
 }
 
 export class DeadLetterQueue {
@@ -41,6 +44,8 @@ export class DeadLetterQueue {
   private readonly reprocess: (entry: DeadLetterEntry) => Promise<void>;
 
   private readonly logger: Pick<Console, 'warn' | 'error'>;
+
+  private readonly completionLock?: Mutex;
 
   private readonly entries = new Map<string, DeadLetterEntry>();
 
@@ -66,6 +71,7 @@ export class DeadLetterQueue {
     this.computeFileHash = options.computeFileHash ?? computeFileHashStreaming;
     this.reprocess = options.reprocess ?? (() => Promise.resolve(undefined));
     this.logger = options.logger ?? console;
+    this.completionLock = options.completionLock;
   }
 
   async load(): Promise<void> {
@@ -80,29 +86,31 @@ export class DeadLetterQueue {
   }
 
   async enqueue(input: Pick<DeadLetterEntry, 'filePath' | 'contentHash' | 'errorMessage' | 'attempts'>): Promise<DeadLetterEntry> {
-    await this.ensureLoaded();
-    const timestamp = this.now().toISOString();
+    return this.withCompletionLock(async () => {
+      await this.ensureLoaded();
+      const timestamp = this.now().toISOString();
 
-    const existingEntry = [...this.entries.values()].find((e) => e.filePath === input.filePath);
+      const existingEntry = [...this.entries.values()].find((e) => e.filePath === input.filePath);
 
-    const entry: DeadLetterEntry = {
-      id: existingEntry?.id ?? randomUUID(),
-      filePath: input.filePath,
-      contentHash: input.contentHash,
-      errorMessage: input.errorMessage,
-      attempts: input.attempts,
-      recoveryAttempts: existingEntry?.recoveryAttempts ?? 0,
-      createdAt: existingEntry?.createdAt ?? timestamp,
-      updatedAt: timestamp,
-      lastRetryAt: existingEntry?.lastRetryAt ?? null,
-    };
+      const entry: DeadLetterEntry = {
+        id: existingEntry?.id ?? randomUUID(),
+        filePath: input.filePath,
+        contentHash: input.contentHash,
+        errorMessage: input.errorMessage,
+        attempts: input.attempts,
+        recoveryAttempts: existingEntry?.recoveryAttempts ?? 0,
+        createdAt: existingEntry?.createdAt ?? timestamp,
+        updatedAt: timestamp,
+        lastRetryAt: existingEntry?.lastRetryAt ?? null,
+      };
 
-    await this.options.metadataStore.upsertDeadLetterEntries([entry]);
-    this.entries.set(entry.id, entry);
-    await this.trimToCapacity();
-    this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
+      await this.options.metadataStore.upsertDeadLetterEntries([entry]);
+      this.entries.set(entry.id, entry);
+      await this.trimToCapacity();
+      this.safeNotifyMetrics((h) => { h.onDlqSnapshot(this.entries.size, this.options.name); });
 
-    return entry;
+      return entry;
+    });
   }
 
   /**
@@ -192,8 +200,10 @@ export class DeadLetterQueue {
               await this.removeEntries([entry.id]);
               abandoned += 1;
             } else {
-              await this.options.metadataStore.upsertDeadLetterEntries([entry]);
-              this.entries.set(entry.id, entry);
+              await this.withCompletionLock(async () => {
+                await this.options.metadataStore.upsertDeadLetterEntries([entry]);
+                this.entries.set(entry.id, entry);
+              });
               skipped += 1;
               this.logger.error(
                 `Failed to recover DLQ entry for ${entry.filePath} (attempt ${entry.recoveryAttempts}/${this.maxRecoveryAttempts})`,
@@ -274,6 +284,20 @@ export class DeadLetterQueue {
       return;
     }
 
+    // The completion lock prevents index completion checks from observing a
+    // removal between the metadata and in-memory updates.
+    await this.withCompletionLock(() => this.removeEntriesUnlocked(ids));
+  }
+
+  /**
+   * Lock-free removal primitive. Callers must already own the completion lock,
+   * except during the initial capacity trim before the queue is exposed.
+   */
+  private async removeEntriesUnlocked(ids: string[]): Promise<void> {
+    if (ids.length === 0) {
+      return;
+    }
+
     await this.options.metadataStore.removeDeadLetterEntries(ids);
     for (const id of ids) {
       this.entries.delete(id);
@@ -296,6 +320,15 @@ export class DeadLetterQueue {
     }
   }
 
+  private async withCompletionLock<T>(operation: () => Promise<T>): Promise<T> {
+    const release = await (this.completionLock?.acquire() ?? Promise.resolve(() => {}));
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
   private async trimToCapacity(): Promise<void> {
     if (this.entries.size > this.maxEntries) {
       const sortedEntries = [...this.entries.values()]
@@ -304,7 +337,7 @@ export class DeadLetterQueue {
       const toRemove = sortedEntries.slice(0, this.entries.size - this.maxEntries);
       const removedIds = toRemove.map((e) => e.id);
 
-      await this.removeEntries(removedIds);
+      await this.removeEntriesUnlocked(removedIds);
     }
   }
 }

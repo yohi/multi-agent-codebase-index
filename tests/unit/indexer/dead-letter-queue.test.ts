@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
+import { Mutex } from 'async-mutex';
 
 import { DeadLetterQueue } from '../../../src/indexer/dead-letter-queue.js';
-import type { DeadLetterEntry, IMetadataStore } from '../../../src/types/index.js';
+import type { DeadLetterEntry } from '../../../src/types/index.js';
 import { InMemoryMetadataStore } from '../storage/in-memory-metadata-store.js';
 
 const makeEntry = (overrides: Partial<DeadLetterEntry> = {}): DeadLetterEntry => ({
@@ -36,6 +37,35 @@ describe('DeadLetterQueue', () => {
     expect(entry.id).toBeTruthy();
     await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([entry]);
     expect(queue.snapshot().get('/repo/src/auth.ts')).toBe('embed failed');
+  });
+
+  it('waits for the shared completion lock before enqueueing', async () => {
+    const metadataStore = new InMemoryMetadataStore();
+    await metadataStore.initialize();
+    const completionLock = new Mutex();
+    const queue = new DeadLetterQueue({ metadataStore, completionLock });
+    const release = await completionLock.acquire();
+
+    try {
+      const enqueuePromise = queue.enqueue({
+        filePath: '/repo/src/locked.ts',
+        contentHash: 'hash-locked',
+        errorMessage: 'embed failed',
+        attempts: 1,
+      });
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await expect(metadataStore.getDeadLetterEntries()).resolves.toHaveLength(0);
+
+      release();
+      await enqueuePromise;
+    } finally {
+      if (completionLock.isLocked()) {
+        release();
+      }
+    }
+
+    await expect(metadataStore.getDeadLetterEntries()).resolves.toHaveLength(1);
   });
 
   it('keeps only the latest entries in the in-memory ring buffer', async () => {
@@ -315,4 +345,3 @@ describe('DeadLetterQueue', () => {
     expect(result.abandoned).toBe(0);
   });
 });
-
