@@ -232,6 +232,7 @@ indexing pipeline を通じて manual reindex を実行します。
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `fullRebuild` | boolean | no | incremental pass ではなく full rebuild を要求 |
+| `reason` | `manual` \| `overflow-recovery` \| `startup-reconciliation` | no | 再インデックスの起点。省略時は `manual` |
 
 ### レスポンス
 

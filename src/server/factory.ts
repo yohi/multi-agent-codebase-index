@@ -29,7 +29,7 @@ import { RipgrepEngine } from "../search/grep.js";
 import { FileWatcher } from "../indexer/watcher.js";
 import { EventQueue } from "../indexer/event-queue.js";
 import { MetricsCollector } from "../observability/metrics-collector.js";
-import type { Config, GrepMatch, IndexEvent } from "../types/index.js";
+import type { Config, GrepMatch, IndexEvent, ReindexOptions } from "../types/index.js";
 import { DEFAULT_OLLAMA_NUM_THREAD } from "../config/index.js";
 
 /**
@@ -169,7 +169,7 @@ class EventProcessingManager {
       concurrency: 4,
       metricsHooks: this.metricsCollector,
       onFullScanRequired: () => {
-        const p = this.triggerFullScan().finally(() => {
+        const p = this.triggerFullScan('overflow-recovery').finally(() => {
           if (this.fullScanPromise === p) {
             this.fullScanPromise = undefined;
           }
@@ -197,7 +197,11 @@ class EventProcessingManager {
     ]);
   }
 
-  private async triggerFullScan(retryCount = 3, baseDelayMs = 1000) {
+  private async triggerFullScan(
+    reason: ReindexOptions['reason'] = 'overflow-recovery',
+    retryCount = 3,
+    baseDelayMs = 1000,
+  ) {
     for (let attempt = 0; attempt < retryCount; attempt += 1) {
       if (this.abortController.signal.aborted) {
         return;
@@ -214,6 +218,7 @@ class EventProcessingManager {
             ),
           this.loadFileContent,
           true,
+          reason,
         );
 
         if ("status" in result) {
@@ -254,7 +259,7 @@ class EventProcessingManager {
       try {
         await eventQueue.drain(async (event) => {
           if (event.type === "reindex") {
-            await this.triggerFullScan();
+            await this.triggerFullScan(event.options.reason ?? 'manual');
           } else {
             await this.pipeline.processEvents([event], this.loadFileContent, { trackProgress: false });
           }

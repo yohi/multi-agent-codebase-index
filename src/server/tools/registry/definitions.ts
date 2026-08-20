@@ -89,6 +89,11 @@ export const REINDEX_DEFINITION: ToolDefinition = {
   description: 'Manually rebuild the local search index.',
   input: {
     fullRebuild: { kind: 'boolean', optional: true },
+    reason: {
+      kind: 'enum',
+      values: ['manual', 'overflow-recovery', 'startup-reconciliation'],
+      optional: true,
+    },
   },
 };
 
