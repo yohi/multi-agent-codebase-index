@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Mutex } from 'async-mutex';
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
 import type { DeadLetterEntry, IndexStatsRow, MerkleNodeRow } from '../../../src/types/index.js';
+import { DeadLetterQueue } from '../../../src/indexer/dead-letter-queue.js';
 import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
 import type { Database } from 'better-sqlite3';
 
@@ -124,6 +126,83 @@ describe('SqliteMetadataStore', () => {
 
     await expect(store.getIndexStats()).resolves.toEqual(stats);
     expect(store.getPragmaValue('wal_autocheckpoint') as number).toBe(1000);
+  });
+
+  it('writes index stats when atomic completion sees an empty DLQ', async () => {
+    const stats: IndexStatsRow = {
+      id: 'primary',
+      totalFiles: 10,
+      totalChunks: 20,
+      lastIndexedAt: '2026-01-01T00:00:00.000Z',
+      lastFullScanAt: '2026-01-01T00:00:00.000Z',
+      overflowCount: 0,
+    };
+
+    await expect(store.atomicCompletionCheck(stats)).resolves.toEqual({
+      dlqEmpty: true,
+      dlqEntries: [],
+    });
+    await expect(store.getIndexStats()).resolves.toEqual(stats);
+  });
+
+  it('does not write index stats when atomic completion sees DLQ entries', async () => {
+    const entry = makeDeadLetterEntry({ filePath: 'failed.ts' });
+    await store.upsertDeadLetterEntries([entry]);
+    const stats: IndexStatsRow = {
+      id: 'primary',
+      totalFiles: 10,
+      totalChunks: 20,
+      lastIndexedAt: '2026-01-01T00:00:00.000Z',
+      lastFullScanAt: '2026-01-01T00:00:00.000Z',
+      overflowCount: 0,
+    };
+
+    const result = await store.atomicCompletionCheck(stats);
+
+    expect(result.dlqEmpty).toBe(false);
+    expect(result.dlqEntries).toEqual([entry]);
+    await expect(store.getIndexStats()).resolves.toBeNull();
+  });
+
+  it('serializes DLQ updates with the atomic completion check lock', async () => {
+    const completionLock = new Mutex();
+    const queue = new DeadLetterQueue({ metadataStore: store, completionLock });
+    await queue.load();
+    const release = await completionLock.acquire();
+    let released = false;
+    const releaseOnce = () => {
+      if (!released) {
+        released = true;
+        release();
+      }
+    };
+
+    const enqueuePromise = queue.enqueue({
+      filePath: 'concurrent.ts',
+      contentHash: 'hash',
+      errorMessage: 'error',
+      attempts: 1,
+    });
+
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await expect(store.getDeadLetterEntries()).resolves.toHaveLength(0);
+      await expect(
+        store.atomicCompletionCheck({
+          id: 'primary',
+          totalFiles: 0,
+          totalChunks: 0,
+          lastIndexedAt: '2026-01-01T00:00:00.000Z',
+          lastFullScanAt: null,
+          overflowCount: 0,
+        }),
+      ).resolves.toMatchObject({ dlqEmpty: true });
+    } finally {
+      releaseOnce();
+    }
+
+    await expect(enqueuePromise).resolves.toMatchObject({ filePath: 'concurrent.ts' });
+    await expect(store.getDeadLetterEntries()).resolves.toHaveLength(1);
   });
 
   it('stores, updates, and removes dead letter entries', async () => {

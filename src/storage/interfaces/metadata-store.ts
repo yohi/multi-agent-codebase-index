@@ -39,6 +39,20 @@ export interface IMetadataStore {
   getAllPaths(): Promise<string[]>;
   getIndexStats(): Promise<IndexStatsRow | null>;
   setIndexStats(stats: IndexStatsRow): Promise<void>;
+  /**
+   * Atomically checks whether the dead-letter queue is empty and, if so,
+   * updates index_stats. Returns the DLQ entries for error reporting when
+   * the queue is not empty.
+   *
+   * In SQLite this runs inside a single transaction so the DLQ read and the
+   * index_stats write form one atomic boundary. The caller must hold the
+   * completion lock before calling this method so DLQ modifications cannot
+   * occur between the read and the write.
+   */
+  atomicCompletionCheck(stats: IndexStatsRow): Promise<{
+    dlqEmpty: boolean;
+    dlqEntries: DeadLetterEntry[];
+  }>;
   upsertDeadLetterEntries(entries: DeadLetterEntry[]): Promise<void>;
   removeDeadLetterEntries(ids: string[]): Promise<void>;
   getDeadLetterEntries(): Promise<DeadLetterEntry[]>;

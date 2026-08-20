@@ -316,10 +316,11 @@ export interface IIndexPipeline {
   start(): void;
   stop(): Promise<void>;
   reindex(
-    run: (options?: { fullScan?: boolean; reason?: 'manual' }) => Promise<IndexEvent[]>,
+    run: (options?: { fullScan?: boolean; reason?: ReindexOptions['reason'] }) => Promise<IndexEvent[]>,
     loadContent: (filePath: string) => Promise<string>,
     fullRebuild?: boolean,
-  ): Promise<ReindexResult | { status: 'already_running' }>;
+    reason?: ReindexOptions['reason'],
+  ): Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }>;
   getSkippedFiles(): ReadonlyMap<string, string>;
   reconcileOnStartup(): Promise<RuntimeInitializationResult>;
   getProgress(): PipelineProgress;
