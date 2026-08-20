@@ -4,7 +4,7 @@ export interface ReindexToolArgs {
   fullRebuild?: boolean;
 }
 
-export type ReindexToolResult = ReindexResult | { status: 'already_running' };
+export type ReindexToolResult = ReindexResult | { status: 'already_running' } | { status: 'incomplete' };
 
 export const executeReindex = async (
   pipeline: IIndexPipeline,

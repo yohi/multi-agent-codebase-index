@@ -146,6 +146,17 @@ export class InMemoryMetadataStore implements IMetadataStore {
     this.stats = stats;
   }
 
+  async atomicCompletionCheck(stats: IndexStatsRow): Promise<{
+    dlqEmpty: boolean;
+    dlqEntries: DeadLetterEntry[];
+  }> {
+    const dlqEntries = await this.getDeadLetterEntries();
+    if (dlqEntries.length === 0) {
+      this.stats = stats;
+    }
+    return { dlqEmpty: dlqEntries.length === 0, dlqEntries };
+  }
+
   async upsertDeadLetterEntries(entries: DeadLetterEntry[]): Promise<void> {
     for (const entry of entries) {
       this.deadLetterEntries.set(entry.id, entry);
