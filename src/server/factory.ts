@@ -178,6 +178,7 @@ class EventProcessingManager {
         return Promise.resolve();
       },
     });
+    this.pipeline.setEventQueue(eventQueue);
 
     const watcher = new FileWatcher(
       { projectRoot: this.projectRoot, ignorePaths: this.ignorePaths },
