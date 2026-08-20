@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
-import type { IIndexPipeline } from '../../../../src/types/index.js';
+import type { IIndexPipeline, ReindexOptions } from '../../../../src/types/index.js';
 import { executeReindex } from '../../../../src/server/tools/reindex.js';
 let lastFullRebuild: boolean | undefined;
+let lastReason: ReindexOptions['reason'];
 
 const pipeline = {
-  reindex: async (_run: unknown, _load: unknown, fullRebuild?: boolean) => {
+  reindex: async (
+    _run: unknown,
+    _load: unknown,
+    fullRebuild?: boolean,
+    reason?: ReindexOptions['reason'],
+  ) => {
     lastFullRebuild = fullRebuild;
+    lastReason = reason;
     return {
       startedAt: '2026-04-05T00:00:00.000Z',
       finishedAt: '2026-04-05T00:00:01.000Z',
@@ -31,5 +38,16 @@ describe('executeReindex', () => {
       chunksIndexed: 2,
     });
     expect(lastFullRebuild).toBe(true);
+  });
+
+  it('forwards the reindex reason to the index pipeline', async () => {
+    await executeReindex(
+      pipeline,
+      async () => [],
+      async () => '',
+      { fullRebuild: true, reason: 'overflow-recovery' },
+    );
+
+    expect(lastReason).toBe('overflow-recovery');
   });
 });

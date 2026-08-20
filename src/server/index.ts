@@ -304,7 +304,7 @@ export const buildNexusRuntime = (
     if ("status" in result) {
       const message = result.status === 'already_running'
         ? `Reindex already running: ${result.status}`
-        : `Reindex incomplete: ${result.status}`;
+        : 'Reindex incomplete: dead-letter queue entries remain';
       throw new Error(message);
     }
   };

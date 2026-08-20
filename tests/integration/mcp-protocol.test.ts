@@ -174,7 +174,7 @@ describe('Phase 2 MCP protocol integration', () => {
       grep_search: ['caseSensitive', 'filePattern', 'filePatterns', 'maxResults', 'pattern'],
       hybrid_search: ['contextLines', 'filePattern', 'filePatterns', 'grepPattern', 'includeSnippet', 'language', 'query', 'topK'],
       index_status: [],
-      reindex: ['fullRebuild'],
+      reindex: ['fullRebuild', 'reason'],
       semantic_search: ['filePattern', 'filePatterns', 'language', 'query', 'topK'],
     });
 
@@ -225,7 +225,10 @@ describe('Phase 2 MCP protocol integration', () => {
       vectorStats: expect.objectContaining({ totalFiles: 1, totalChunks: 1 }),
     });
 
-    const reindex = await client.callTool({ name: 'reindex', arguments: { fullRebuild: true } });
+    const reindex = await client.callTool({
+      name: 'reindex',
+      arguments: { fullRebuild: true, reason: 'startup-reconciliation' },
+    });
     expect(parseResult(reindex)).toMatchObject({
       reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
       chunksIndexed: 0,

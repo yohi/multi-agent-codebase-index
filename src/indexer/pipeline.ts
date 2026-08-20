@@ -73,6 +73,8 @@ export class IndexPipeline implements IIndexPipeline {
 
   private readonly completionLock: Mutex;
 
+  private eventQueue: EventQueue | undefined;
+
   private dlqStopper: (() => Promise<void>) | undefined;
 
   private isTreeLoaded = false;
@@ -98,6 +100,7 @@ export class IndexPipeline implements IIndexPipeline {
     this.embeddingCacheSize = options.embeddingCacheSize ?? 10_000;
     this.embeddingCache = new Map<string, number[]>();
     this.completionLock = options.completionLock ?? new Mutex();
+    this.eventQueue = options.eventQueue;
     this.deadLetterQueue = new DeadLetterQueue({
       metadataStore: options.metadataStore,
       embeddingHealthy: () => this.embeddingHealthy(),
@@ -580,9 +583,9 @@ export class IndexPipeline implements IIndexPipeline {
             console.error('Post-reindex compaction failed (non-fatal):', compactionError);
           }
 
-          await this.recordCompletion(fullRebuild, reason, startedAt, finishedAt);
+          const completionRecorded = await this.recordCompletion(fullRebuild, reason, finishedAt);
 
-          if (this.progress.lastError) {
+          if (!completionRecorded) {
             this.progress.status = 'idle';
             this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
             return { status: 'incomplete' as const };
@@ -605,8 +608,8 @@ export class IndexPipeline implements IIndexPipeline {
           this.progress.lastError = error instanceof Error ? error.message : String(error);
           throw error;
         } finally {
-          if (fullRebuild && this.options.eventQueue) {
-            this.options.eventQueue.markFullScanComplete();
+          if (fullRebuild && this.eventQueue) {
+            this.eventQueue.markFullScanComplete();
           }
         }
       });
@@ -621,9 +624,8 @@ export class IndexPipeline implements IIndexPipeline {
   private async recordCompletion(
     fullRebuild: boolean | undefined,
     reason: ReindexOptions['reason'],
-    _startedAt: string,
     finishedAt: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const release = await this.completionLock.acquire();
     try {
       const vectorStats = await this.options.vectorStore.getStats();
@@ -663,10 +665,11 @@ export class IndexPipeline implements IIndexPipeline {
         this.safeLogProgress(
           `Reindex incomplete (${reasonLabel}): ${dlqEntries.length} DLQ item(s) remain. Completion state NOT saved.`,
         );
-        return;
+        return false;
       }
 
       this.safeLogProgress(`Reindex completed (${reasonLabel}). index_stats updated.`);
+      return true;
     } finally {
       release();
     }
@@ -706,7 +709,7 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   setEventQueue(eventQueue: EventQueue): void {
-    this.options.eventQueue = eventQueue;
+    this.eventQueue = eventQueue;
   }
 
   private async indexFile(filePath: string, content: string, contentHash: string): Promise<number> {
