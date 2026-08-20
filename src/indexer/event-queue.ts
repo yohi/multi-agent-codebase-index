@@ -35,6 +35,8 @@ export class EventQueue {
 
   private postScanActive = false;
 
+  private postScanOverflowed = false;
+
   constructor(private readonly options: EventQueueOptions) {
     if (this.options.fullScanThreshold > this.options.maxQueueSize) {
       throw new Error('fullScanThreshold must be less than or equal to maxQueueSize');
@@ -51,6 +53,12 @@ export class EventQueue {
 
   enqueue(event: IndexEvent): boolean {
     if (this.postScanActive) {
+      if (this.postScanQueue.length >= this.options.maxQueueSize) {
+        // Keep the post-scan buffer bounded. The dropped event is recovered by
+        // the full-scan path once the accepted post-scan events are drained.
+        this.postScanOverflowed = true;
+        return this.recordDroppedEvent();
+      }
       this.postScanQueue.push(event);
       this.safeNotifyMetrics();
       return true;
@@ -294,16 +302,34 @@ export class EventQueue {
       return 0;
     }
 
-    this.postScanActive = false;
     const drained = this.postScanQueue.length;
-    this.watcherQueue.push(...this.postScanQueue);
+    let forwarded = 0;
+    try {
+      for (const event of this.postScanQueue) {
+        this.watcherQueue.push(event);
+        forwarded += 1;
+      }
+    } catch (error) {
+      // Retain only events that were not forwarded so a later drain can retry
+      // without duplicating events that already reached the watcher queue.
+      this.postScanQueue.splice(0, forwarded);
+      this.safeNotifyMetrics();
+      throw error;
+    }
+
     this.postScanQueue.length = 0;
+    if (this.postScanOverflowed) {
+      this.enterOverflow();
+      this.postScanOverflowed = false;
+    }
+    this.postScanActive = false;
     this.safeNotifyMetrics();
     return drained;
   }
 
   abortPostScanMode(): void {
     this.postScanActive = false;
+    this.postScanOverflowed = false;
     this.postScanQueue.length = 0;
     this.safeNotifyMetrics();
   }
@@ -323,6 +349,7 @@ export class EventQueue {
     this.reindexQueue.length = 0;
     this.postScanQueue.length = 0;
     this.postScanActive = false;
+    this.postScanOverflowed = false;
     this.state = 'normal';
   }
 
