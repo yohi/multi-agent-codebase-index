@@ -36,7 +36,14 @@ const makeServerOptions = (): Omit<NexusRuntimeOptions, 'watcher'> => ({
     getAllNodes: async () => [],
     getAllFileNodes: async () => [],
     getAllPaths: async () => [],
-    getIndexStats: async () => null,
+    getIndexStats: async () => ({
+      id: 'primary',
+      totalFiles: 0,
+      totalChunks: 0,
+      lastIndexedAt: '2026-08-20T00:00:00.000Z',
+      lastFullScanAt: null,
+      overflowCount: 0,
+    }),
     setIndexStats: async () => undefined,
   } as any,
   pipeline: {
@@ -50,6 +57,13 @@ const makeServerOptions = (): Omit<NexusRuntimeOptions, 'watcher'> => ({
     getSkippedFiles: () => new Map(),
     start: () => undefined,
     stop: async () => {},
+    reindex: async () => ({
+      startedAt: '2026-08-20T00:00:00.000Z',
+      finishedAt: '2026-08-20T00:00:01.000Z',
+      durationMs: 1000,
+      reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
+      chunksIndexed: 0,
+    }),
   } as any,
   pluginRegistry: {
     healthCheck: async () => ({ languages: ['typescript'], embeddingProvider: 'test', healthy: true }),

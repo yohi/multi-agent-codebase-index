@@ -108,6 +108,8 @@ export const buildNexusRuntime = (
   let metricsServer: MetricsHttpServer | null = null;
   let initPromise: Promise<void> | null = null;
   let registrationClient: RegistrationClient | null = null;
+  let autoReindexPromise: Promise<void> | null = null;
+  let isShuttingDown = false;
 
   const initialize = (): Promise<void> => {
     if (initPromise) {
@@ -117,6 +119,18 @@ export const buildNexusRuntime = (
       await options.metadataStore.initialize();
       await options.vectorStore.initialize();
       await options.pipeline.reconcileOnStartup();
+
+      let needsPostScan = false;
+      try {
+        const stats = await options.metadataStore.getIndexStats();
+        const isUnindexed = stats === null || stats.lastIndexedAt === null;
+        if (isUnindexed && !isShuttingDown) {
+          options.eventQueue?.enterPostScanMode();
+          needsPostScan = true;
+        }
+      } catch (statsError) {
+        console.error('[Nexus] Failed to check index status for auto Full Index:', statsError);
+      }
 
       try {
         options.pipeline.start();
@@ -170,7 +184,34 @@ export const buildNexusRuntime = (
             stopError,
           );
         });
+        if (needsPostScan) {
+          options.eventQueue?.abortPostScanMode();
+        }
         throw error;
+      }
+
+      if (needsPostScan) {
+        autoReindexPromise = options.pipeline
+          .reindex(
+            options.runReindex,
+            options.loadFileContent,
+            true,
+            'startup-reconciliation',
+          )
+          .then((result) => {
+            if ('status' in result && (result.status === 'already_running' || result.status === 'incomplete')) {
+              return;
+            }
+            if (!isShuttingDown) {
+              options.eventQueue?.drainPostScanQueue();
+            }
+          })
+          .catch((error: unknown) => {
+            if (!isShuttingDown) {
+              options.eventQueue?.drainPostScanQueue();
+            }
+            console.error('[Nexus] Startup auto Full Index failed:', error);
+          });
       }
     })().catch((err) => {
       // Reset initPromise on failure so initialize() can be retried later
@@ -180,6 +221,7 @@ export const buildNexusRuntime = (
     return initPromise;
   };
   const close = async () => {
+    isShuttingDown = true;
     const shutdownErrors: unknown[] = [];
 
     // Wait for any ongoing initialization to complete or fail before
@@ -194,6 +236,8 @@ export const buildNexusRuntime = (
         // attempted cleanup. Proceed with the rest of shutdown.
       }
     }
+
+    options.eventQueue?.abortPostScanMode();
 
     if (metricsServer) {
       try {
@@ -225,6 +269,14 @@ export const buildNexusRuntime = (
       shutdownErrors.push(error);
     }
 
+    if (autoReindexPromise) {
+      try {
+        await autoReindexPromise;
+      } catch (error) {
+        shutdownErrors.push(error);
+      }
+    }
+
     try {
       await options.pipeline.stop();
     } catch (error) {
@@ -249,11 +301,11 @@ export const buildNexusRuntime = (
       options.loadFileContent,
       fullRebuild,
     );
-    if ("status" in result && result.status === "already_running") {
-      throw new Error(`Reindex already running: ${result.status}`);
-    }
     if ("status" in result) {
-      throw new Error('Reindex incomplete: dead-letter queue entries remain');
+      const message = result.status === 'already_running'
+        ? `Reindex already running: ${result.status}`
+        : 'Reindex incomplete: dead-letter queue entries remain';
+      throw new Error(message);
     }
   };
 

@@ -21,6 +21,7 @@ import { TestEmbeddingProvider } from '../unit/plugins/embeddings/test-embedding
 import { TestGrepEngine } from '../unit/search/test-grep-engine.js';
 import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.js';
 import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
+import { SqliteMetadataStore } from '../../src/storage/metadata-store.js';
 import { PathSanitizer } from '../../src/server/path-sanitizer.js';
 import type { CodeChunk } from '../../src/types/index.js';
 import { createMockMetricsHooks } from '../shared/test-helpers.js';
@@ -314,6 +315,21 @@ describe('MCP reindex factory integration', () => {
   it('returns a normal reindex result when the factory scanner callback is used', async () => {
     const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-mcp-reindex-'));
     const config = await loadConfig({ projectRoot, env: {} });
+    await fs.mkdir(path.dirname(config.storage.metadataDbPath), { recursive: true });
+    const metadataStore = new SqliteMetadataStore({
+      databasePath: config.storage.metadataDbPath,
+      batchSize: config.storage.batchSize,
+    });
+    await metadataStore.initialize();
+    await metadataStore.setIndexStats({
+      id: 'primary',
+      totalFiles: 0,
+      totalChunks: 0,
+      lastIndexedAt: new Date().toISOString(),
+      lastFullScanAt: null,
+      overflowCount: 0,
+    });
+    await metadataStore.close();
     const runtime = await NexusServerFactory.createRuntime(config);
     const handler = createStreamableHttpHandler({ createServer: () => runtime.createServer() });
     const httpServer = createServer((req, res) => {
