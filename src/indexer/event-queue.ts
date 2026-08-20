@@ -31,6 +31,12 @@ export class EventQueue {
 
   private droppedEventCount = 0;
 
+  private readonly postScanQueue: IndexEvent[] = [];
+
+  private postScanActive = false;
+
+  private postScanOverflowed = false;
+
   constructor(private readonly options: EventQueueOptions) {
     if (this.options.fullScanThreshold > this.options.maxQueueSize) {
       throw new Error('fullScanThreshold must be less than or equal to maxQueueSize');
@@ -46,6 +52,18 @@ export class EventQueue {
   }
 
   enqueue(event: IndexEvent): boolean {
+    if (this.postScanActive) {
+      if (this.postScanQueue.length >= this.options.maxQueueSize) {
+        // Keep the post-scan buffer bounded. The dropped event is recovered by
+        // the full-scan path once the accepted post-scan events are drained.
+        this.postScanOverflowed = true;
+        return this.recordDroppedEvent();
+      }
+      this.postScanQueue.push(event);
+      this.safeNotifyMetrics();
+      return true;
+    }
+
     if (this.state !== 'normal') {
       return this.recordDroppedEvent();
     }
@@ -267,8 +285,61 @@ export class EventQueue {
       return;
     }
 
-    this.resetInternalState();
+    this.flushTimers();
+    this.debouncedEvents.clear();
+    this.watcherQueue.length = 0;
+    this.reindexQueue.length = 0;
+    this.state = 'normal';
     this.safeNotifyMetrics();
+  }
+
+  enterPostScanMode(): void {
+    this.postScanActive = true;
+  }
+
+  drainPostScanQueue(): number {
+    if (!this.postScanActive) {
+      return 0;
+    }
+
+    const drained = this.postScanQueue.length;
+    let forwarded = 0;
+    try {
+      for (const event of this.postScanQueue) {
+        this.watcherQueue.push(event);
+        forwarded += 1;
+      }
+    } catch (error) {
+      // Retain only events that were not forwarded so a later drain can retry
+      // without duplicating events that already reached the watcher queue.
+      this.postScanQueue.splice(0, forwarded);
+      this.safeNotifyMetrics();
+      throw error;
+    }
+
+    this.postScanQueue.length = 0;
+    if (this.postScanOverflowed) {
+      this.enterOverflow();
+      this.postScanOverflowed = false;
+    }
+    this.postScanActive = false;
+    this.safeNotifyMetrics();
+    return drained;
+  }
+
+  abortPostScanMode(): void {
+    this.postScanActive = false;
+    this.postScanOverflowed = false;
+    this.postScanQueue.length = 0;
+    this.safeNotifyMetrics();
+  }
+
+  getPostScanQueueSize(): number {
+    return this.postScanQueue.length;
+  }
+
+  isPostScanActive(): boolean {
+    return this.postScanActive;
   }
 
   private resetInternalState(): void {
@@ -276,6 +347,9 @@ export class EventQueue {
     this.debouncedEvents.clear();
     this.watcherQueue.length = 0;
     this.reindexQueue.length = 0;
+    this.postScanQueue.length = 0;
+    this.postScanActive = false;
+    this.postScanOverflowed = false;
     this.state = 'normal';
   }
 

@@ -161,7 +161,7 @@ class EventProcessingManager {
     private metricsCollector?: MetricsCollector,
   ) {}
 
-  setup() {
+  setup(): { eventQueue: EventQueue; watcher: FileWatcher; onClose: () => Promise<void> } {
     const eventQueue = new EventQueue({
       debounceMs: this.config.watcher.debounceMs,
       maxQueueSize: this.config.watcher.maxQueueSize,
@@ -187,7 +187,7 @@ class EventProcessingManager {
 
     this.drainTask = this.startDrainLoop(eventQueue);
 
-    return { watcher, onClose: () => this.stop() };
+    return { eventQueue, watcher, onClose: () => this.stop() };
   }
 
   private async stop() {
@@ -222,11 +222,11 @@ class EventProcessingManager {
           reason,
         );
 
-        if ("status" in result && result.status === "already_running") {
-          throw new Error("already_running");
-        }
-
         if ("status" in result) {
+          if (result.status === "already_running") {
+            throw new Error("already_running");
+          }
+
           this.onLog?.("[Nexus] Background full scan incomplete; dead-letter queue entries remain.");
           return;
         }
@@ -493,7 +493,7 @@ export class NexusServerFactory {
       onLog,
       metricsCollector,
     );
-    const { watcher, onClose } = eventManager.setup();
+    const { eventQueue, watcher, onClose } = eventManager.setup();
     try {
       const sanitizer = await PathSanitizer.create(projectRoot);
       const workspaceId = config.projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? 'unknown';
@@ -511,6 +511,7 @@ export class NexusServerFactory {
         vectorStore,
         metadataStore,
         pipeline,
+        eventQueue,
         pluginRegistry,
         watcher,
         loadFileContent,

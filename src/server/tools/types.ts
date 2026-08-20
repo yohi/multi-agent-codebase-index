@@ -1,4 +1,5 @@
 import type { MetricsHooks } from '../../observability/types.js';
+import type { EventQueue } from '../../indexer/event-queue.js';
 import type { PluginRegistry } from '../../plugins/registry.js';
 import type { SearchOrchestrator } from '../../search/orchestrator.js';
 import type { IContentStore } from '../../storage/interfaces/content-store.js';
@@ -28,6 +29,7 @@ export interface NexusServerOptions {
   contentStore?: IContentStore;
   metricsHooks?: MetricsHooks;
   packageMode?: boolean;
+  eventQueue?: EventQueue;
 }
 
 export interface NexusToolCallResult {
