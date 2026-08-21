@@ -605,7 +605,9 @@ export class IndexPipeline implements IIndexPipeline {
         } catch (error) {
           this.progress.status = 'idle';
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
-          this.progress.lastError = error instanceof Error ? error.message : String(error);
+          const message = error instanceof Error ? error.message : String(error);
+          this.progress.lastError = message;
+          this.safeLogProgress(`Reindex failed (${reason}): ${message}`);
           throw error;
         } finally {
           if (fullRebuild && this.eventQueue) {
@@ -706,6 +708,11 @@ export class IndexPipeline implements IIndexPipeline {
 
   getSkippedFiles(): ReadonlyMap<string, string> {
     return this.skippedFiles;
+  }
+
+  async waitForActiveReindex(): Promise<void> {
+    const release = await this.mutex.acquire();
+    release();
   }
 
   setEventQueue(eventQueue: EventQueue): void {

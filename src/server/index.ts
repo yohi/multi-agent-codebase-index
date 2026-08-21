@@ -198,9 +198,9 @@ export const buildNexusRuntime = (
             true,
             'startup-reconciliation',
           )
-          .then((result) => {
-            if ('status' in result && (result.status === 'already_running' || result.status === 'incomplete')) {
-              return;
+          .then(async (result) => {
+            if ('status' in result && result.status === 'already_running') {
+              await options.pipeline.waitForActiveReindex();
             }
             if (!isShuttingDown) {
               options.eventQueue?.drainPostScanQueue();
@@ -255,14 +255,6 @@ export const buildNexusRuntime = (
     }
 
 
-    if (options.onClose) {
-      try {
-        await options.onClose();
-      } catch (error) {
-        shutdownErrors.push(error);
-      }
-    }
-
     try {
       await options.watcher.stop();
     } catch (error) {
@@ -272,6 +264,14 @@ export const buildNexusRuntime = (
     if (autoReindexPromise) {
       try {
         await autoReindexPromise;
+      } catch (error) {
+        shutdownErrors.push(error);
+      }
+    }
+
+    if (options.onClose) {
+      try {
+        await options.onClose();
       } catch (error) {
         shutdownErrors.push(error);
       }

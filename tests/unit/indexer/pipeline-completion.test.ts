@@ -17,7 +17,7 @@ class CompactionFailingVectorStore extends InMemoryVectorStore {
   }
 }
 
-const makePipeline = async () => {
+const makePipeline = async (onProgress?: (message: string) => void) => {
   const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
   const pipeline = new IndexPipeline({
     metadataStore,
@@ -25,6 +25,7 @@ const makePipeline = async () => {
     chunker,
     embeddingProvider: new TestEmbeddingProvider(),
     pluginRegistry: registry,
+    onProgress,
   });
   return { pipeline, metadataStore, vectorStore };
 };
@@ -102,6 +103,19 @@ describe('IndexPipeline completion recording', () => {
     ).rejects.toThrow('scan failed');
 
     expect(await metadataStore.getIndexStats()).toBeNull();
+  });
+
+  it('logs the reindex reason when scanning throws', async () => {
+    const logs: string[] = [];
+    const { pipeline } = await makePipeline((message) => logs.push(message));
+
+    await expect(
+      pipeline.reindex(async () => {
+        throw new Error('scan failed');
+      }, loadContent, true, 'startup-reconciliation'),
+    ).rejects.toThrow('scan failed');
+
+    expect(logs).toContain('Reindex failed (startup-reconciliation): scan failed');
   });
 
   it('records completion when compaction fails', async () => {
