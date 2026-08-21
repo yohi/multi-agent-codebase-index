@@ -48,6 +48,44 @@ Nexus は、ローカル環境で完結する高度なコードベースイン�
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### ツール登録レイヤーと依存方向 (Tool Registration Layer)
+
+- ツール定義は SDK 非依存の中立 DSL
+  (`src/server/tools/registry/schemas-neutral.ts`) で保持され、
+  v1 アダプタ (zod v3) / v2 アダプタ (zod v4) へ変換されます。
+  サポート型は string / integer / number / boolean / string[] /
+  enum の6種です。
+- v2 経路のみアダプタ層で入力上限を適用します
+  (`topK <= 100`, `maxResults <= 1000`)。
+  v1 経路の既存入力契約は変更しません。
+- 依存方向は Transport → Registry Adapters → Tool Handlers /
+  Search Orchestrator → Storage Interfaces → Storage Adapters
+  の一方向です。Transport 層から Storage Adapter への直接 import、
+  および指定モジュール外での SDK v2 直接利用は禁止します。
+- SQLite / LanceDB / Watcher / Embedding Provider
+  はプロセス起動時に一度だけ生成され、
+  MCP 接続単位では生成されません。
+
+### Local HTTP v2 (`nexus serve`)
+
+- MCP プロトコル `2026-07-28` 準拠です。
+  SDK v2 のステートレスハンドラを用い、
+  `Mcp-Session-Id` とセッション Map は廃止されています。
+- bind は loopback (`127.0.0.1` / `localhost` / `::1`) のみ許可し、
+  非 loopback host 指定は起動時 fail-closed となります。
+- Origin / Host 検証は DNS Rebinding 対策として
+  アプリ側ミドルウェアで実施します (SDK は検証を行いません)。
+- local-only 契約: 外部 Embedding Provider
+  (`openai-compat` / `bedrock`) を設定時に拒否し、
+  Ollama の baseUrl も loopback のみ許容します。
+- `/health` と `/ready` を提供します。`/ready` はストア初期化状態を返し、
+  未準備時は 503 と `NEXUS_STORAGE_UNAVAILABLE` を返します。
+- エラーは3層で表現されます。HTTP 層 (403/400/404/413/503)、
+  ツール実行層 (`isError: true` と `structuredContent.code` への
+  NEXUS_* コード付与、一覧は `src/server/errors.ts`)、
+  内部ログ (`console.error` のみ。スタックトレースは
+  レスポンスに含めません)。
+
 ### stdio-only クライアント向け HTTP Bridge
 
 stdio 接続のみに対応した MCP クライアント（OpenCode など）から、Nexus HTTP サーバーに接続するには、`nexus http-bridge` サブコマンドを使います。Bridge は独立したローカルプロセスとして起動し、標準入出力の JSON-RPC を Nexus の Streamable HTTP エンドポイントに転送します。同一プロジェクトに対しては常に 1 つの Nexus HTTP サーバーを共有し、最後の MCP クライアントが切断すると自動的に停止します。
@@ -75,6 +113,13 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
 
 - **常時稼働の Watcher**: OS レベルのファイル監視 (`chokidar`) は停止せず、変更イベントを取りこぼしません。
 - **Event Queue と Backpressure**: 変更イベントはキューでバッファリングされ、デバウンス (100ms) されます。キューサイズが閾値 (`fullScanThreshold`: 5,000) を超えた場合はオーバーフロー状態となり、新規イベントを破棄した上でフルスキャン (Reconciliation) へフォールバックし、デススパイラルを防ぎます。
+- **起動時 Full Index の post-scan queue**: 未インデックスの通常サービス起動では、
+  Watcher 開始前に post-scan モードへ入ります。
+  Full Index 中の Watcher イベントは専用キューへ退避します。
+  通常の overflow-drop は適用せず、`maxQueueSize` で容量を制限します。
+  容量超過分は drain 後に通常の overflow recovery へ引き継がれます。
+  `markFullScanComplete()` は post-scan queue を消去しません。
+  Runtime 継続時にのみ drain します。
 
 ### 3.2. Diff Detector (Merkle Tree)
 
@@ -102,6 +147,37 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
   - **L2 エラーハンドリング**: L2 (SQLite) キャッシュの読み書きに失敗した場合、暗黙的に Embedding の再計算へフォールバックすることはなく、パイプラインの既存エラー動作（DLQ への委譲等）を通じて表出されます。
 - **AWS Bedrock Provider**: `bedrock` provider（`src/plugins/embeddings/bedrock.ts`）は `InvokeModelCommand` で Titan v2 埋め込みモデルを直接呼び出します。Titan v2 はバッチ非対応（1 リクエスト = 1 テキスト）のため、`embed(texts[])` は `maxConcurrency` で束ねた N 本の並列 `InvokeModel` 呼び出しにマップします。認証は AWS SDK v3 のデフォルト認証チェーン（環境変数 → SSO → 名前付きプロファイル → IAM ロール）に委譲し、資格情報をコードに保持しません。`region` 未設定時は `us-east-1` にフォールバックし警告ログを出力します。`AccessDeniedException` / `ValidationException` / `ResourceNotFoundException` / `ExpiredTokenException` / `UnrecognizedClientException` は非リトライで即座に失敗させ、`ThrottlingException` や 5xx 相当のエラーは指数バックオフ + full jitter でリトライします（`RetryExhaustedError`）。返却次元が設定次元と異なる場合は `DimensionMismatchError` を即座に投げ、リトライしません。`healthCheck()` はエラー種別ごとに診断メッセージ（認証切れなら `aws sso login`、モデル未有効化なら Bedrock コンソールでのモデルアクセス有効化を促す等）を `console.warn` に出力してから `false` を返します。
 
+### 3.5. 起動時 Full Index と完了状態
+
+- `index_stats` がリインデックスの正常完了状態の唯一の情報源です。行が存在しない、または `lastIndexedAt` が `null` のときだけ未インデックスと判定します。
+  `lastIndexedAt` が設定済みの stale インデックスは自動 Full Index の対象にしません。
+- stdio、`nexus serve`、managed HTTP は同じ Runtime 初期化経路を通ります。
+  未インデックスなら `run({ fullScan: true, reason: 'startup-reconciliation' })` を
+  バックグラウンドで一度だけ開始します。
+  `initialize()` はこの Promise を待機せず、手動実行は `reason: 'manual'` を使用します。
+- すべてのリインデックスは同じ完了条件を使用します。
+  `IndexPipeline` は post-reindex compact を試行し、失敗は非致命として記録します。
+  completion lock 下で Vector Store 統計、全永続 DLQ 項目、`index_stats` 更新を
+  単一の SQLite transaction として実行します。
+- DLQ が空の場合だけ `lastIndexedAt`、`totalFiles`、`totalChunks` を保存します。
+  Full reindex は `lastFullScanAt` を更新し、通常 reindex は既存値を保持します。
+  `overflowCount` は既存値を保持し、新規行では `0` です。
+- DLQ が残る、例外が起きる、または停止されたリインデックスは完了日時を保存しません。
+  DLQ 残存時は成功メトリクスを発火せず、`{ status: 'incomplete' }` を返します。
+  `pipelineProgress.lastError` と `skippedFiles` に失敗内容を反映します。
+  処理終了後の `pipelineProgress.status` は `idle` に戻ります。
+  完了可否は status 単独ではなく `lastIndexedAt` と `lastError` で判定します。
+- 自動 Full Index が既存実行と競合した場合は、mutex 解放を待ってから
+  post-scan queue を drain します。Runtime 停止時は新規 Watcher イベントを止め、
+  post-scan queue を drain せずに破棄します。
+  自動 reindex Promise の完了後に Pipeline と stores を閉じます。
+- DLQ recovery sweep が単独で項目を処理しても完了日時は記録されません。
+  失敗した Full Index からの回復には、DLQ 解消後の再リインデックスが必要です。
+- インデックス処理中も検索は待機・拒否・キューイングされません。
+- DLQ 残存時の `pipelineProgress.lastError` は安定メッセージ
+  `Full reindex incomplete: <count> dead-letter queue item(s) remain`
+  です。
+
 ## 4. ストレージ層 (Dual-Store)
 
 ### 4.1. Metadata Store (SQLite)
@@ -116,7 +192,18 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
 - **インジェクション対策**: フィルタ値には厳密なホワイトリスト検証 (`validateFilterValue`) と、SQLインジェクション対策のエスケープ (`escapeFilterValue`, `escapeLikeValue`) を行います。
 - **In-flight I/O トラッキング**: サーバー終了時 (`close()` 呼び出し時) に実行中の I/O 操作の完了を待機し、安全にリソースを解放します。
 
-### 4.3. Compaction (コンパクション)
+### 4.3. Content Store
+
+- `IContentStoreFactory` は `(workspaceId, revisionId)` に束縛された
+  `IContentStore` を返します。
+  複数の workspace や revision に同じパスがあっても、
+  `readRange(path, startLine, endLine)` を一意に解決できます。
+- `put`、`get`、`delete`、`exists` はグローバルに一意な content hash をキーとします。
+  `readRange` はスコープされた Metadata Store を通じて path を content hash に解決します。
+- 現行のローカル実装は PathSanitizer の検証後にローカルファイルシステムから必要な範囲を読み出します。
+  外部ストレージや外部へのソースコード送信は導入しません。
+
+### 4.4. Compaction (コンパクション)
 
 LanceDB のフラグメンテーションを防ぐため、以下のタイミングで排他制御 (`AsyncMutex`) のもとコンパクション (`optimize`) が実行されます:
 

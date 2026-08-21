@@ -204,6 +204,11 @@ semantic search と grep search を統合した ranking search です。
     "lastCompactedAt": null
   },
   "skippedFiles": 0,
+  "pipelineProgress": {
+    "totalFiles": 1,
+    "processedFiles": 1,
+    "status": "idle"
+  },
   "pluginHealth": {
     "languages": {
       "registered": [
@@ -223,6 +228,14 @@ semantic search と grep search を統合した ranking search です。
 }
 ```
 
+`indexStats` が `null`、または `indexStats.lastIndexedAt` が `null` の場合、そのプロジェクトには成功済みリインデックスの記録がありません。
+通常サービス起動では、この状態に対してバックグラウンド Full Index が一度だけ開始されます。
+
+`pipelineProgress.status === "running"` はインデックス処理中であることを示しますが、検索は利用できます。
+成功済みのインデックスは `lastIndexedAt` が非nullかつ `pipelineProgress.lastError` が未設定であることにより判断してください。
+DLQ 残存などで `lastError` が設定された場合でも、処理終了後の `status` は `"idle"` になるため、status 単独では成功を判定できません。
+`skippedFiles` は現在の永続 DLQ エントリ数です。
+
 ## `reindex`
 
 indexing pipeline を通じて manual reindex を実行します。
@@ -236,7 +249,8 @@ indexing pipeline を通じて manual reindex を実行します。
 
 ### レスポンス
 
-成功時のレスポンス形状は pipeline の reindex result に従います。
+成功時のレスポンス形状は pipeline の reindex result に従います。手動・起動時自動・overflow recovery のいずれも、
+DLQ が空の場合だけ `index_stats` の完了状態を保存します。
 すでに reindex が実行中の場合は、次を返します。
 
 ```json
@@ -246,6 +260,10 @@ indexing pipeline を通じて manual reindex を実行します。
 ```
 
 DLQ に残存エントリがあるため完了状態を保存できなかった場合は、次を返します。`index_stats` は更新されません。
+
+この場合 `pipelineProgress.lastError` には安定メッセージ
+`Full reindex incomplete: <count> dead-letter queue item(s) remain`
+が設定されるため、クライアントはこれで不完全完了を判定できます。
 
 ```json
 {
