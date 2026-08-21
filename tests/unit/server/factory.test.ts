@@ -132,4 +132,25 @@ describe('NexusServerFactory.createRuntime', () => {
       }
     }
   });
+
+  it('creates independent MCP servers over one shared runtime resource set', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-factory-'));
+    const config = await loadConfig({ projectRoot: tempDir });
+    let runtime: Awaited<ReturnType<typeof NexusServerFactory.createRuntime>> | undefined;
+
+    try {
+      runtime = await NexusServerFactory.createRuntime(config);
+      const first = runtime.createServer();
+      const second = runtime.createServer();
+
+      expect(first).not.toBe(second);
+      expect(runtime.orchestrator).toBeDefined();
+      expect(runtime.sanitizer).toBeDefined();
+
+      await first.close();
+      await second.close();
+    } finally {
+      await runtime?.close();
+    }
+  });
 });

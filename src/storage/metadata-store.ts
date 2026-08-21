@@ -14,16 +14,17 @@ const PRIMARY_STATS_ID = 'primary';
 
 const UPSERT_INDEX_STATS_SQL = `
   INSERT INTO index_stats (
-    id, total_files, total_chunks, last_indexed_at, last_full_scan_at, overflow_count
+    id, total_files, total_chunks, last_indexed_at, last_full_scan_at, overflow_count, last_error
   ) VALUES (
-    @id, @totalFiles, @totalChunks, @lastIndexedAt, @lastFullScanAt, @overflowCount
+    @id, @totalFiles, @totalChunks, @lastIndexedAt, @lastFullScanAt, @overflowCount, @lastError
   )
   ON CONFLICT(id) DO UPDATE SET
     total_files = excluded.total_files,
     total_chunks = excluded.total_chunks,
     last_indexed_at = excluded.last_indexed_at,
     last_full_scan_at = excluded.last_full_scan_at,
-    overflow_count = excluded.overflow_count`;
+    overflow_count = excluded.overflow_count,
+    last_error = excluded.last_error`;
 
 export class SqliteMetadataStore implements IMetadataStore {
   private readonly db: Database.Database;
@@ -69,7 +70,8 @@ export class SqliteMetadataStore implements IMetadataStore {
         total_chunks INTEGER NOT NULL,
         last_indexed_at TEXT,
         last_full_scan_at TEXT,
-        overflow_count INTEGER NOT NULL
+        overflow_count INTEGER NOT NULL,
+        last_error TEXT
       );
 
       CREATE TABLE IF NOT EXISTS dead_letter_queue (
@@ -99,6 +101,12 @@ export class SqliteMetadataStore implements IMetadataStore {
     const hasRecoveryAttempts = columns.some((col) => col.name === 'recovery_attempts');
     if (!hasRecoveryAttempts) {
       this.db.exec('ALTER TABLE dead_letter_queue ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0');
+    }
+
+    const indexStatsColumns = this.db.pragma('table_info(index_stats)') as Array<{ name: string }>;
+    const hasLastError = indexStatsColumns.some((col) => col.name === 'last_error');
+    if (!hasLastError) {
+      this.db.exec('ALTER TABLE index_stats ADD COLUMN last_error TEXT');
     }
   }
 
@@ -351,7 +359,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       .prepare(
         `SELECT id, total_files AS totalFiles, total_chunks AS totalChunks,
                 last_indexed_at AS lastIndexedAt, last_full_scan_at AS lastFullScanAt,
-                overflow_count AS overflowCount
+                overflow_count AS overflowCount, last_error AS lastError
          FROM index_stats
          WHERE id = ?`,
       )

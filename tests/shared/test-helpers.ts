@@ -43,12 +43,24 @@ export const createPipeline = async (options: CreatePipelineOptions = {}) => {
 
 export const createMockNexusRuntimeOptions = (overrides: Partial<NexusRuntimeOptions> = {}): NexusRuntimeOptions => {
   return {
-    metadataStore: { initialize: vi.fn().mockResolvedValue(undefined) },
+    metadataStore: {
+      initialize: vi.fn().mockResolvedValue(undefined),
+      getIndexStats: vi.fn().mockResolvedValue({
+        id: 'primary',
+        totalFiles: 0,
+        totalChunks: 0,
+        lastIndexedAt: '2026-08-20T00:00:00.000Z',
+        lastFullScanAt: null,
+        overflowCount: 0,
+        lastError: null,
+      }),
+    },
     vectorStore: { initialize: vi.fn().mockResolvedValue(undefined) },
     pipeline: {
       reconcileOnStartup: vi.fn().mockResolvedValue({}),
       start: vi.fn(),
       stop: vi.fn().mockResolvedValue(undefined),
+      waitForActiveReindex: vi.fn().mockResolvedValue(undefined),
     },
     watcher: {
       start: vi.fn().mockResolvedValue(undefined),
@@ -84,4 +96,3 @@ export const createMockMetricsHooks = (): MetricsHooks => ({
 
 export const createMockRegistry = (): Registry =>
   ({ metrics: vi.fn().mockResolvedValue(''), getMetricsAsJSON: vi.fn().mockResolvedValue([]) } as unknown as Registry);
-

@@ -15,7 +15,7 @@ Semantic search、Exact grep search、File context 取得を 1 つのローカ�
 
 - **MCP ツール仕様**: v1 で公開していたツール定義・入出力形式は v2 で置き換えられました。最新の仕様は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
 - **サーバー起動オプション・設定**: `nexus serve` などの CLI オプションと `.nexus.json` の設定キーが再設計されています。設定方法は [docs/configuration.md](docs/configuration.md) を参照してください。
-- **HTTP トランスポート**: ストリーミング対応の Streamable HTTP transport が標準となり、v1 の構成とは互換性がありません。
+- **HTTP トランスポート**: ストリーミング対応の Streamable HTTP transport が標準となり、v1 の構成とは互換性がありません。直接起動する `nexus serve` は stateless v2 HTTP、`nexus http-bridge` が管理する HTTP サーバーはクライアントごとの MCP セッションと共有ランタイムを持ちます。
 
 v1 からの移行手順と前提条件は [docs/setup.md](docs/setup.md) を参照してください。
 
@@ -282,13 +282,13 @@ server.listen(3000, '127.0.0.1');
 `nexus --reindex` を実行すると、即座に 1 回だけインデックスを再構築して終了します。
 `--full` を付けると incremental ではなく clean full rebuild で実行します。
 
-通常サービスは、`index_stats` 行が存在しないか `lastIndexedAt` が `null` のプロジェクトで起動時にバックグラウンド Full Index を開始します。
+通常サービスは、`index_stats` 行が存在しない、`lastIndexedAt` が `null`、または `lastError` が設定されたプロジェクトで起動時にバックグラウンド Full Index を開始します。
 この処理はサーバーの初期化や検索を待たせず、同一 Runtime では再試行しません。
-`lastIndexedAt` が設定済みの stale インデックスは自動再構築の対象外です。
+`lastIndexedAt` が設定済みで `lastError` がない stale インデックスは自動再構築の対象外です。
 
 手動・自動を問わず、リインデックスの正常完了には DLQ が空であることが必要です。
 DLQ が残ると `index_stats` の完了日時は更新されず、`reindex` は `incomplete` を返します。
-`index_status` の `pipelineProgress.lastError` と `skippedFiles` を確認して原因を解消してから再実行してください。
+`index_status` の `indexStats.lastError`、`pipelineProgress.lastError`、`skippedFiles` を確認して原因を解消してから再実行してください。`indexStats.lastError` は再起動後も保持され、再試行開始時に消去されます。
 DLQ 自動リカバリの成功だけでは完了日時は更新されないため、原因解消後の再リインデックスが必要です。
 
 ## ⚙️ 設定

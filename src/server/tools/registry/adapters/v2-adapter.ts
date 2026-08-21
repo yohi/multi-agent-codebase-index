@@ -121,10 +121,8 @@ export const withErrorCode = (result: NexusToolCallResult): NexusToolCallResult 
     return result;
   }
   const message = result.structuredContent['message'];
-  const code = typeof message === 'string' ? classifyErrorMessage(message) : undefined;
-  return code === undefined
-    ? result
-    : { ...result, structuredContent: { ...result.structuredContent, code } };
+  const code = typeof message === 'string' ? classifyErrorMessage(message) : 'NEXUS_INTERNAL_ERROR';
+  return { ...result, structuredContent: { ...result.structuredContent, code } };
 };
 
 export const registerV2Tools = (

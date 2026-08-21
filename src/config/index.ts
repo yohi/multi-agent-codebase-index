@@ -1,4 +1,6 @@
 import { readFile } from 'node:fs/promises';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import path from 'node:path';
 
 import type { Config, EmbeddingConfig, IndexingConfig } from '../types/index.js';
@@ -202,7 +204,7 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
   };
 
   if (options.transportMode === 'v2-http') {
-    assertHttpV2Constraints(merged);
+    await assertHttpV2Constraints(merged);
   }
 
   return projectName === undefined ? merged : { ...merged, projectName };
@@ -214,11 +216,43 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
  */
 export const isLoopbackHost = (host: string): boolean => {
   const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
-  if (normalized === 'localhost' || normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') {
+  if (normalized === 'localhost' || isLoopbackIpAddress(normalized)) {
     return true;
+  }
+  return false;
+};
+
+const isLoopbackIpAddress = (host: string): boolean => {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') {
+    return true;
+  }
+  if (normalized.startsWith('::ffff:')) {
+    return isLoopbackIpAddress(normalized.slice('::ffff:'.length));
   }
   const octets = normalized.match(/^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   return octets !== null && octets.slice(1).every((octet) => Number.parseInt(octet, 10) <= 255);
+};
+
+export const assertLoopbackHost = async (host: string, description = 'host'): Promise<void> => {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (isLoopbackIpAddress(normalized)) {
+    return;
+  }
+  if (isIP(normalized) !== 0 || /^\d+(?:\.\d+){3}$/.test(normalized)) {
+    throw new Error(`${description} must resolve only to loopback addresses, but received "${host}".`);
+  }
+
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await lookup(normalized, { all: true, verbatim: true });
+  } catch {
+    throw new Error(`${description} must resolve only to loopback addresses, but "${host}" could not be resolved.`);
+  }
+
+  if (addresses.length === 0 || !addresses.every(({ address }) => isLoopbackIpAddress(address))) {
+    throw new Error(`${description} must resolve only to loopback addresses, but received "${host}".`);
+  }
 };
 
 /**
@@ -227,11 +261,13 @@ export const isLoopbackHost = (host: string): boolean => {
  * - host must be a loopback interface (fail-closed; --allow-network is Phase 3)
  * - external embedding providers are rejected (local-first contract)
  */
-export function assertHttpV2Constraints(config: Config): void {
+export async function assertHttpV2Constraints(config: Config): Promise<void> {
   if (config.http === undefined) {
     throw new Error('Local HTTP v2 requires the http config block (transportMode="v2-http").');
   }
-  if (!isLoopbackHost(config.http.host)) {
+  try {
+    await assertLoopbackHost(config.http.host, 'Local HTTP v2 host');
+  } catch {
     throw new Error(
       `Local HTTP v2 can only bind to a loopback interface (127.0.0.1, localhost, or ::1), ` +
         `but received "${config.http.host}".`,
@@ -243,16 +279,19 @@ export function assertHttpV2Constraints(config: Config): void {
         'external networks. Use "ollama" or "test".',
     );
   }
-  if (config.embedding.provider === 'ollama' && !isLoopbackOllamaBaseUrl(config.embedding.baseUrl)) {
+  if (config.embedding.provider === 'ollama') {
     const parsedBaseUrl = parseOllamaBaseUrl(config.embedding.baseUrl);
-    const baseUrlDescription =
-      parsedBaseUrl === null
-        ? 'an invalid URL'
-        : `hostname "${parsedBaseUrl.hostname || '(empty)'}"`;
-    throw new Error(
-      `Local HTTP v2 requires the Ollama embedding base URL to use a loopback interface, ` +
-        `but received ${baseUrlDescription}.`,
-    );
+    if (parsedBaseUrl === null || (parsedBaseUrl.protocol !== 'http:' && parsedBaseUrl.protocol !== 'https:')) {
+      throw new Error('Local HTTP v2 requires the Ollama embedding base URL to use a loopback interface, but received an invalid URL.');
+    }
+    try {
+      await assertLoopbackHost(parsedBaseUrl.hostname, 'Ollama embedding host');
+    } catch {
+      throw new Error(
+        `Local HTTP v2 requires the Ollama embedding base URL to use a loopback interface, ` +
+          `but received hostname "${parsedBaseUrl.hostname || '(empty)'}".`,
+      );
+    }
   }
 }
 
@@ -265,14 +304,6 @@ const parseOllamaBaseUrl = (baseUrl: string | undefined): URL | null => {
   } catch {
     return null;
   }
-};
-
-const isLoopbackOllamaBaseUrl = (baseUrl: string | undefined): boolean => {
-  const url = parseOllamaBaseUrl(baseUrl);
-  if (url === null) {
-    return false;
-  }
-  return (url.protocol === 'http:' || url.protocol === 'https:') && isLoopbackHost(url.hostname);
 };
 
 const asString = (value: string | undefined): string | undefined => {

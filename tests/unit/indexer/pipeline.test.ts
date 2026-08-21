@@ -3,14 +3,10 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { Chunker } from '../../../src/indexer/chunker.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
-import { PluginRegistry } from '../../../src/plugins/registry.js';
-import { TypeScriptLanguagePlugin } from '../../../src/plugins/languages/typescript.js';
 import { RetryExhaustedError } from '../../../src/types/index.js';
 import { createPipeline } from '../../shared/test-helpers.js';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
-import { InMemoryMetadataStore } from '../storage/in-memory-metadata-store.js';
 import { InMemoryVectorStore } from '../storage/in-memory-vector-store.js';
 
 class FailingEmbeddingProvider extends TestEmbeddingProvider {
@@ -679,8 +675,8 @@ describe('IndexPipeline', () => {
     const finalCalls = progressCalls.filter((c) => !c.active);
     expect(finalCalls.length).toBeGreaterThanOrEqual(1);
     const finalCall = finalCalls[finalCalls.length - 1];
-    expect(finalCall.processed).toBe(2);
-    expect(finalCall.total).toBe(2);
+    expect(finalCall?.processed).toBe(2);
+    expect(finalCall?.total).toBe(2);
   });
 
   it('logs cancelled state when aborted before processing', async () => {

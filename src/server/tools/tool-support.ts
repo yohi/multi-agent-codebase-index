@@ -40,7 +40,11 @@ export const toolResult = <T extends object>(structuredContent: T) => {
     return {
       content: [{ type: 'text' as const, text: `Failed to serialize structuredContent: ${errorMessage}` }],
       isError: true,
-      structuredContent: { error: true, message: errorMessage, originalType: typeof structuredContent },
+      structuredContent: {
+        error: true,
+        message: errorMessage,
+        originalType: typeof structuredContent,
+      },
     };
   }
 };

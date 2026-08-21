@@ -328,6 +328,7 @@ describe('MCP reindex factory integration', () => {
       lastIndexedAt: new Date().toISOString(),
       lastFullScanAt: null,
       overflowCount: 0,
+      lastError: null,
     });
     await metadataStore.close();
     const runtime = await NexusServerFactory.createRuntime(config);

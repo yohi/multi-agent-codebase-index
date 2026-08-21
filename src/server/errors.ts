@@ -1,5 +1,6 @@
 /** Error codes exposed as structuredContent.error.code on the v2 HTTP path. */
 export type NexusErrorCode =
+  | 'NEXUS_INTERNAL_ERROR'
   | 'NEXUS_STORAGE_UNAVAILABLE'
   | 'NEXUS_VECTOR_DIMENSION_MISMATCH'
   | 'NEXUS_CONTENT_NOT_FOUND'
@@ -27,5 +28,21 @@ export const classifyErrorMessage = (message: string): NexusErrorCode | undefine
   if (lower.includes('enoent') || lower.includes('no such file')) {
     return 'NEXUS_CONTENT_NOT_FOUND';
   }
-  return undefined;
+  if (
+    lower.includes('permission denied') ||
+    lower.includes('access denied') ||
+    lower.includes('forbidden')
+  ) {
+    return 'NEXUS_ACCESS_DENIED';
+  }
+  if (
+    lower.includes('database') ||
+    lower.includes('sqlite') ||
+    lower.includes('lancedb') ||
+    lower.includes('storage') ||
+    lower.includes('not initialized')
+  ) {
+    return 'NEXUS_STORAGE_UNAVAILABLE';
+  }
+  return 'NEXUS_INTERNAL_ERROR';
 };

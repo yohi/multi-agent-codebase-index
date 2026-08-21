@@ -1,7 +1,7 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { createNexusServer, errorResult, toolResult, initializeNexusRuntime } from '../../../src/server/index.js';
-import { PathSanitizer, PathTraversalError } from '../../../src/server/path-sanitizer.js';
+import { errorResult, toolResult, initializeNexusRuntime } from '../../../src/server/index.js';
+import { PathTraversalError } from '../../../src/server/path-sanitizer.js';
 import * as metricsPortUtils from '../../../src/server/metrics-port.js';
 import { createMockNexusRuntimeOptions, createMockRegistry } from '../../shared/test-helpers.js';
 
@@ -150,6 +150,7 @@ describe('NexusServer helpers', () => {
         stop: vi.fn().mockImplementation(() => stopDeferred.promise),
         reconcileOnStartup: vi.fn().mockResolvedValue({}),
         reindex: vi.fn().mockResolvedValue({ status: 'success' as const, processed: 0, skipped: 0 }),
+        waitForActiveReindex: vi.fn().mockResolvedValue(undefined),
         getSkippedFiles: vi.fn().mockReturnValue(new Map()),
         getProgress: vi.fn().mockReturnValue({ status: 'idle' as const, processed: 0, total: 0 }),
       };

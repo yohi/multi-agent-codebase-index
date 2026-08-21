@@ -194,7 +194,8 @@ semantic search と grep search を統合した ranking search です。
     "totalChunks": 1,
     "lastIndexedAt": "2026-04-07T00:00:00.000Z",
     "lastFullScanAt": null,
-    "overflowCount": 0
+    "overflowCount": 0,
+    "lastError": null
   },
   "vectorStats": {
     "totalChunks": 1,
@@ -207,7 +208,8 @@ semantic search と grep search を統合した ranking search です。
   "pipelineProgress": {
     "totalFiles": 1,
     "processedFiles": 1,
-    "status": "idle"
+    "status": "idle",
+    "lastError": null
   },
   "pluginHealth": {
     "languages": {
@@ -228,11 +230,12 @@ semantic search と grep search を統合した ranking search です。
 }
 ```
 
-`indexStats` が `null`、または `indexStats.lastIndexedAt` が `null` の場合、そのプロジェクトには成功済みリインデックスの記録がありません。
+`indexStats` が `null`、`indexStats.lastIndexedAt` が `null`、または `indexStats.lastError` が non-null の場合、そのプロジェクトには成功済みリインデックスの記録がありません。
 通常サービス起動では、この状態に対してバックグラウンド Full Index が一度だけ開始されます。
 
 `pipelineProgress.status === "running"` はインデックス処理中であることを示しますが、検索は利用できます。
-成功済みのインデックスは `lastIndexedAt` が非nullかつ `pipelineProgress.lastError` が未設定であることにより判断してください。
+成功済みのインデックスは `indexStats.lastIndexedAt` が非nullかつ `indexStats.lastError` が null であることにより判断してください。
+`pipelineProgress.lastError` は現在のプロセスにおける診断情報として併せて参照できます。
 DLQ 残存などで `lastError` が設定された場合でも、処理終了後の `status` は `"idle"` になるため、status 単独では成功を判定できません。
 `skippedFiles` は現在の永続 DLQ エントリ数です。
 
@@ -285,7 +288,7 @@ stdio 接続のみに対応した MCP クライアント（OpenCode など）か
 nexus http-bridge
 ```
 
-同じプロジェクトに対しては常に 1 つの Nexus HTTP サーバーが共有されます。初回の Bridge 接続時にまだ HTTP サーバーが起動していなければ、OS 割当のループバックポートで自動起動します。全 MCP クライアントが切断すると、HTTP サーバーは自動的に停止し、プロジェクトの `endpoint.json` 記述子も削除されます。
+同じプロジェクトに対しては常に 1 つの Nexus HTTP サーバーが共有されます。初回の Bridge 接続時にまだ HTTP サーバーが起動していなければ、OS 割当のループバックポートで自動起動します。全 MCP クライアントが切断すると、HTTP サーバーは自動的に停止し、プロジェクトの `endpoint.json` 記述子も削除されます。これは managed HTTP 経路の説明であり、直接起動する `nexus serve` は MCP セッションを保持しない stateless v2 HTTP 経路です。
 
 managed server の descriptor は `<storage.rootDir>/endpoint.json` に保存され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。managed server の descriptor health check は `127.0.0.1` のみを受け付ける loopback-only 制限です。コネクターは、descriptor の `projectRoot` 一致、`url` が `127.0.0.1`（ループバック）であること、`pid` の生存、`GET /health` が同一 `instanceId`/`projectRoot` を返すこと、というすべての条件で健全性を判定し、いずれかを満たさない場合は descriptor を削除して再起動候補とします。起動が競合した場合、グローバル起動ロックを取得できなかった側のコネクターは新規プロセスを起動せず、取得側が公開する descriptor をポーリングで待ち受けて同じ URL に接続します。`127.0.0.1` 以外を指す URL は健全とは判定されないため、本機能はループバックのみを対象とし、ネットワーク公開や systemd 等の外部プロセス管理には依存しません。
 

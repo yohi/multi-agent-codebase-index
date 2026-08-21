@@ -72,7 +72,8 @@ Nexus は、ローカル環境で完結する高度なコードベースイン�
   SDK v2 のステートレスハンドラを用い、
   `Mcp-Session-Id` とセッション Map は廃止されています。
 - bind は loopback (`127.0.0.1` / `localhost` / `::1`) のみ許可し、
-  非 loopback host 指定は起動時 fail-closed となります。
+  非 loopback host 指定は起動時 fail-closed となります。ホスト名を指定した場合は
+  DNS の全解決アドレスが loopback であることを確認します。
 - Origin / Host 検証は DNS Rebinding 対策として
   アプリ側ミドルウェアで実施します (SDK は検証を行いません)。
 - local-only 契約: 外部 Embedding Provider
@@ -101,7 +102,7 @@ Bridge はデフォルトで自動的にプロジェクト専用のループバ�
 
 自動管理プロセスの descriptor は `<storage.rootDir>/endpoint.json` に一時ファイルへの書き込み後 `rename` する原子的操作で永続化され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。managed server の descriptor 検証と health 検証は loopback 専用で、コネクターは、descriptor の `projectRoot` が要求元と一致し、`url` が `127.0.0.1`（ループバック）を指し、記録された `pid` が生存し、`GET /health` が同一 `instanceId`/`projectRoot` を返す、という条件をすべて満たした場合のみ健全と判定します。いずれかを満たさない descriptor は削除され、再起動候補として扱われます。起動が競合した場合、`project-start-<hash>` ロック（§8.3）を取得できなかった側は新規プロセスを起動せず、既存の健全なプロセスを停止・削除することもありません。取得できなかった側は、ロック獲得側が公開する descriptor をポーリングで待ち受け、健全と判定できた時点で同じ URL に接続します。本機能はループバックのみを対象とし、ネットワーク公開・外部ホストからの接続・systemd 等の外部プロセス管理には依存しません。明示 URL モードではこの descriptor/health 検証を行いません。
 
-同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP サーバー/transport インスタンスを持ちますが、SQLite・LanceDB・File Watcher などのランタイムリソースは 1 つの managed HTTP サーバープロセスだけが所有し、全クライアントで共有します。
+同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP サーバー/transport インスタンスを持ちますが、SQLite・LanceDB・File Watcher などのランタイムリソースは 1 つの managed HTTP サーバープロセスだけが所有し、全クライアントで共有します。これは `nexus http-bridge` の managed HTTP 経路の契約です。直接起動する `nexus serve` は各 HTTP リクエストを独立に処理する stateless v2 経路で、MCP セッションをサーバー側に保持しません。
 
 managed HTTP サーバーは、アクティブなセッション数が 0 になった時点で runtime を閉じ、`endpoint.json` とプロセスロックの両方を削除して終了します（`--idle-shutdown-ms` / `NEXUS_IDLE_SHUTDOWN_MS` で遅延を調整可能、デフォルト `0`）。起動後 30 秒以内に 1 つもクライアントが接続しなかった場合も、同様に自動終了します（起動 grace period）。コネクター自身も、descriptor が既定のタイムアウト（30 秒）以内に健全な状態で公開されない場合（子プロセスが早期に終了しなかった通常のタイムアウトパス）は、原因を標準エラー出力に書き込んで異常終了します。
 
@@ -149,7 +150,7 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
 
 ### 3.5. 起動時 Full Index と完了状態
 
-- `index_stats` がリインデックスの正常完了状態の唯一の情報源です。行が存在しない、または `lastIndexedAt` が `null` のときだけ未インデックスと判定します。
+- `index_stats` がリインデックスの正常完了状態の唯一の情報源です。行が存在しない、`lastIndexedAt` が `null`、または `lastError` が non-null のときは未完了として扱い、起動時 Full Index の対象にします。`lastIndexedAt` が設定済みで `lastError` が `null` の stale インデックスは自動 Full Index の対象にしません。
   `lastIndexedAt` が設定済みの stale インデックスは自動 Full Index の対象にしません。
 - stdio、`nexus serve`、managed HTTP は同じ Runtime 初期化経路を通ります。
   未インデックスなら `run({ fullScan: true, reason: 'startup-reconciliation' })` を
@@ -161,8 +162,8 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
   単一の SQLite transaction として実行します。
 - DLQ が空の場合だけ `lastIndexedAt`、`totalFiles`、`totalChunks` を保存します。
   Full reindex は `lastFullScanAt` を更新し、通常 reindex は既存値を保持します。
-  `overflowCount` は既存値を保持し、新規行では `0` です。
-- DLQ が残る、例外が起きる、または停止されたリインデックスは完了日時を保存しません。
+  `overflowCount` は既存値を保持し、新規行では `0` です。正常完了時は `lastError` を `null` にします。
+- リインデックス開始時は保存済み `lastError` を消去します。DLQ が残る、例外が起きる、または停止されたリインデックスは完了日時を保存せず、失敗内容を `lastError` に永続化します。
   DLQ 残存時は成功メトリクスを発火せず、`{ status: 'incomplete' }` を返します。
   `pipelineProgress.lastError` と `skippedFiles` に失敗内容を反映します。
   処理終了後の `pipelineProgress.status` は `idle` に戻ります。
@@ -200,8 +201,11 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
   `readRange(path, startLine, endLine)` を一意に解決できます。
 - `put`、`get`、`delete`、`exists` はグローバルに一意な content hash をキーとします。
   `readRange` はスコープされた Metadata Store を通じて path を content hash に解決します。
-- 現行のローカル実装は PathSanitizer の検証後にローカルファイルシステムから必要な範囲を読み出します。
-  外部ストレージや外部へのソースコード送信は導入しません。
+- `IContentStore` の hash-addressed CRUD は将来の content-addressed backend 契約です。
+  現行の `LocalContentStore` は Phase 4 の段階実装であり、`put` / `delete` は未実装、
+  `get` / `exists` は常に未格納を返します。実際に提供しているのは
+  PathSanitizer の検証後にローカルファイルシステムから必要な範囲を読み出す
+  `readRange` だけです。外部ストレージや外部へのソースコード送信は導入しません。
 
 ### 4.4. Compaction (コンパクション)
 
