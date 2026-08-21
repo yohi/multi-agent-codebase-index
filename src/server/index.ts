@@ -191,7 +191,7 @@ export const buildNexusRuntime = (
       }
 
       if (needsPostScan) {
-        autoReindexPromise = options.pipeline
+        const startupReindexPromise = options.pipeline
           .reindex(
             options.runReindex,
             options.loadFileContent,
@@ -212,6 +212,12 @@ export const buildNexusRuntime = (
             }
             console.error('[Nexus] Startup auto Full Index failed:', error);
           });
+        autoReindexPromise = startupReindexPromise;
+        void startupReindexPromise.finally(() => {
+          if (autoReindexPromise === startupReindexPromise) {
+            autoReindexPromise = null;
+          }
+        });
       }
     })().catch((err) => {
       // Reset initPromise on failure so initialize() can be retried later
@@ -302,6 +308,14 @@ export const buildNexusRuntime = (
       fullRebuild,
     );
     if ("status" in result) {
+      if (result.status === 'already_running' && autoReindexPromise) {
+        await autoReindexPromise;
+        const lastError = options.pipeline.getProgress().lastError;
+        if (lastError !== undefined) {
+          throw new Error(lastError);
+        }
+        return;
+      }
       const message = result.status === 'already_running'
         ? `Reindex already running: ${result.status}`
         : 'Reindex incomplete: dead-letter queue entries remain';

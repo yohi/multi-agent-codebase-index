@@ -102,6 +102,52 @@ describe('NexusRuntime automatic initial full index', () => {
     await runtime.close();
   });
 
+  it('waits for the startup auto-index before completing a manual reindex request', async () => {
+    let releaseAutoReindex: (() => void) | undefined;
+    const autoReindexDone = new Promise<void>((resolve) => {
+      releaseAutoReindex = resolve;
+    });
+    let isStartupReindex = true;
+    const options = makeOptions();
+    const reindex = vi.fn(async () => {
+      if (isStartupReindex) {
+        isStartupReindex = false;
+        await autoReindexDone;
+        return reindexResult;
+      }
+      return { status: 'already_running' as const };
+    });
+    options.pipeline.reindex = reindex;
+    const runtime = await initializeNexusRuntime(options);
+
+    const manualReindex = runtime.reindex();
+    await tick();
+    expect(reindex).toHaveBeenCalledTimes(2);
+
+    releaseAutoReindex?.();
+    await expect(manualReindex).resolves.toBeUndefined();
+    await runtime.close();
+  });
+
+  it('keeps later unrelated already-running reindexes rejected after startup completes', async () => {
+    const options = makeOptions();
+    let reindexCallCount = 0;
+    options.pipeline.reindex = vi.fn(() => {
+      reindexCallCount += 1;
+      if (reindexCallCount === 1) {
+        return Promise.resolve(reindexResult);
+      }
+      return Promise.resolve({ status: 'already_running' as const });
+    });
+    const runtime = await initializeNexusRuntime(options);
+
+    await tick();
+    await expect(runtime.reindex()).rejects.toThrow(
+      'Reindex already running: already_running',
+    );
+    await runtime.close();
+  });
+
   it('does not auto-index an already indexed project', async () => {
     const options = makeOptions();
     options.metadataStore.getIndexStats = vi.fn(async () => indexedStats);
