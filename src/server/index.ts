@@ -123,7 +123,10 @@ export const buildNexusRuntime = (
       let needsPostScan = false;
       try {
         const stats = await options.metadataStore.getIndexStats();
-        const isUnindexed = stats === null || stats.lastIndexedAt === null;
+        const isUnindexed =
+          stats === null ||
+          stats.lastIndexedAt === null ||
+          stats.lastError !== null;
         if (isUnindexed && !isShuttingDown) {
           options.eventQueue?.enterPostScanMode();
           needsPostScan = true;

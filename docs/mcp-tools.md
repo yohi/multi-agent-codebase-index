@@ -194,7 +194,8 @@ semantic search と grep search を統合した ranking search です。
     "totalChunks": 1,
     "lastIndexedAt": "2026-04-07T00:00:00.000Z",
     "lastFullScanAt": null,
-    "overflowCount": 0
+    "overflowCount": 0,
+    "lastError": null
   },
   "vectorStats": {
     "totalChunks": 1,
@@ -204,6 +205,11 @@ semantic search と grep search を統合した ranking search です。
     "lastCompactedAt": null
   },
   "skippedFiles": 0,
+  "pipelineProgress": {
+    "totalFiles": 1,
+    "processedFiles": 1,
+    "status": "idle"
+  },
   "pluginHealth": {
     "languages": {
       "registered": [
@@ -223,6 +229,54 @@ semantic search と grep search を統合した ranking search です。
 }
 ```
 
+`indexStats` が `null`、`indexStats.lastIndexedAt` が `null`、または `indexStats.lastError` が non-null の場合、そのプロジェクトには成功済みリインデックスの記録がありません。
+通常サービス起動では、この状態に対してバックグラウンド Full Index が一度だけ開始されます。
+
+`pipelineProgress.status === "running"` はインデックス処理中であることを示しますが、検索は利用できます。
+成功済みのインデックスは `indexStats.lastIndexedAt` が非nullかつ `indexStats.lastError` が null であることにより判断してください。
+`pipelineProgress.lastError` は現在のプロセスにおける診断情報として併せて参照できます。
+DLQ 残存などで `lastError` が設定された場合でも、処理終了後の `status` は `"idle"` になるため、status 単独では成功を判定できません。
+`skippedFiles` は現在の永続 DLQ エントリ数です。
+
+#### `pipelineProgress` と `skippedFiles` の契約
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `pipelineProgress.totalFiles` | number | 現在のリインデックス対象ファイル数 |
+| `pipelineProgress.processedFiles` | number | 現在までに処理したファイル数 |
+| `pipelineProgress.currentFile` | string | 処理中のファイル。未設定時はレスポンスから省略 |
+| `pipelineProgress.status` | `"idle"` \| `"running"` \| `"stopping"` | パイプライン状態 |
+| `pipelineProgress.lastError` | string | 現在のプロセスにおける失敗内容。未設定時はレスポンスから省略 |
+| `skippedFiles` | number | Metadata Store に永続化された DLQ エントリ数 |
+
+処理中は次のように `currentFile` と `status: "running"` が設定されます。
+
+```json
+{
+  "skippedFiles": 0,
+  "pipelineProgress": {
+    "totalFiles": 120,
+    "processedFiles": 42,
+    "currentFile": "src/auth.ts",
+    "status": "running"
+  }
+}
+```
+
+DLQ が残った場合は処理終了後に `status: "idle"` へ戻り、`lastError` と `skippedFiles` で不完全状態を示します。
+
+```json
+{
+  "skippedFiles": 2,
+  "pipelineProgress": {
+    "totalFiles": 120,
+    "processedFiles": 120,
+    "status": "idle",
+    "lastError": "Full reindex incomplete: 2 dead-letter queue item(s) remain"
+  }
+}
+```
+
 ## `reindex`
 
 indexing pipeline を通じて manual reindex を実行します。
@@ -236,7 +290,8 @@ indexing pipeline を通じて manual reindex を実行します。
 
 ### レスポンス
 
-成功時のレスポンス形状は pipeline の reindex result に従います。
+成功時のレスポンス形状は pipeline の reindex result に従います。手動・起動時自動・overflow recovery のいずれも、
+DLQ が空の場合だけ `index_stats` の完了状態を保存します。
 すでに reindex が実行中の場合は、次を返します。
 
 ```json
@@ -246,6 +301,10 @@ indexing pipeline を通じて manual reindex を実行します。
 ```
 
 DLQ に残存エントリがあるため完了状態を保存できなかった場合は、次を返します。`index_stats` は更新されません。
+
+この場合 `pipelineProgress.lastError` には安定メッセージ
+`Full reindex incomplete: <count> dead-letter queue item(s) remain`
+が設定されるため、クライアントはこれで不完全完了を判定できます。
 
 ```json
 {
@@ -267,11 +326,11 @@ stdio 接続のみに対応した MCP クライアント（OpenCode など）か
 nexus http-bridge
 ```
 
-同じプロジェクトに対しては常に 1 つの Nexus HTTP サーバーが共有されます。初回の Bridge 接続時にまだ HTTP サーバーが起動していなければ、OS 割当のループバックポートで自動起動します。全 MCP クライアントが切断すると、HTTP サーバーは自動的に停止し、プロジェクトの `endpoint.json` 記述子も削除されます。
+同じプロジェクトに対しては常に 1 つの Nexus HTTP サーバーが共有されます。初回の Bridge 接続時にまだ HTTP サーバーが起動していなければ、OS 割当のループバックポートで自動起動します。全 MCP クライアントが切断すると、HTTP サーバーは自動的に停止し、プロジェクトの `endpoint.json` 記述子も削除されます。これは managed HTTP 経路の説明であり、直接起動する `nexus serve` は MCP セッションを保持しない stateless v2 HTTP 経路です。
 
 managed server の descriptor は `<storage.rootDir>/endpoint.json` に保存され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。managed server の descriptor health check は `127.0.0.1` のみを受け付ける loopback-only 制限です。コネクターは、descriptor の `projectRoot` 一致、`url` が `127.0.0.1`（ループバック）であること、`pid` の生存、`GET /health` が同一 `instanceId`/`projectRoot` を返すこと、というすべての条件で健全性を判定し、いずれかを満たさない場合は descriptor を削除して再起動候補とします。起動が競合した場合、グローバル起動ロックを取得できなかった側のコネクターは新規プロセスを起動せず、取得側が公開する descriptor をポーリングで待ち受けて同じ URL に接続します。`127.0.0.1` 以外を指す URL は健全とは判定されないため、本機能はループバックのみを対象とし、ネットワーク公開や systemd 等の外部プロセス管理には依存しません。
 
-同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP セッションを持ちますが、SQLite・LanceDB・File Watcher は 1 つの managed server プロセスに集約されます。アクティブなクライアントが 0 になると、managed server は runtime を閉じて descriptor とプロセスロックを削除し終了します（`--idle-shutdown-ms` / `NEXUS_IDLE_SHUTDOWN_MS` で遅延を調整可能、デフォルト `0`）。起動後 30 秒以内にクライアントが 1 つも接続しない場合も同様に自動終了します。
+同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP transport/server instance（接続ライフサイクル）を持ちますが、SQLite・LanceDB・File Watcher は 1 つの managed server プロセスに集約されます。ここでの「セッション」はクライアント接続を追跡する単位であり、クライアントごとにインデックス状態を複製するアプリケーション状態を意味しません。アクティブなクライアントが 0 になると、managed server は runtime を閉じて descriptor とプロセスロックを削除し終了します（`--idle-shutdown-ms` / `NEXUS_IDLE_SHUTDOWN_MS` で遅延を調整可能、デフォルト `0`）。起動後 30 秒以内にクライアントが 1 つも接続しない場合も同様に自動終了します。
 
 > **トラブルシューティング**: `nexus http-bridge` 自体も、descriptor が既定のタイムアウト（30 秒）以内に健全な状態で公開されない場合、原因を標準エラー出力（stderr）に書き込んで異常終了します。接続がハングする場合は、stderr のログを確認してください。
 

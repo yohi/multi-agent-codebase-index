@@ -11,6 +11,7 @@ const indexedStats: IndexStatsRow = {
   lastIndexedAt: '2026-08-20T00:00:00.000Z',
   lastFullScanAt: null,
   overflowCount: 0,
+  lastError: null,
 };
 
 const reindexResult: ReindexResult = {
@@ -155,6 +156,19 @@ describe('NexusRuntime automatic initial full index', () => {
 
     expect(options.pipeline.reindex).not.toHaveBeenCalled();
     expect(options.eventQueue?.isPostScanActive()).toBe(false);
+    await runtime.close();
+  });
+
+  it('auto-indexes an indexed project with a persisted failure', async () => {
+    const options = makeOptions();
+    options.metadataStore.getIndexStats = vi.fn(async () => ({
+      ...indexedStats,
+      lastError: 'previous startup failure',
+    }));
+
+    const runtime = await initializeNexusRuntime(options);
+
+    expect(options.pipeline.reindex).toHaveBeenCalledOnce();
     await runtime.close();
   });
 

@@ -126,6 +126,7 @@ describe('SqliteMetadataStore', () => {
       lastIndexedAt: '2026-04-05T10:00:00.000Z',
       lastFullScanAt: '2026-04-05T09:00:00.000Z',
       overflowCount: 1,
+      lastError: null,
     };
 
     await store.setIndexStats(stats);
@@ -142,6 +143,7 @@ describe('SqliteMetadataStore', () => {
       lastIndexedAt: '2026-01-01T00:00:00.000Z',
       lastFullScanAt: '2026-01-01T00:00:00.000Z',
       overflowCount: 0,
+      lastError: null,
     };
 
     await expect(store.atomicCompletionCheck(stats)).resolves.toEqual({
@@ -161,6 +163,7 @@ describe('SqliteMetadataStore', () => {
       lastIndexedAt: '2026-01-01T00:00:00.000Z',
       lastFullScanAt: '2026-01-01T00:00:00.000Z',
       overflowCount: 0,
+      lastError: null,
     };
 
     const result = await store.atomicCompletionCheck(stats);
@@ -201,6 +204,7 @@ describe('SqliteMetadataStore', () => {
           lastIndexedAt: '2026-01-01T00:00:00.000Z',
           lastFullScanAt: null,
           overflowCount: 0,
+          lastError: null,
         }),
       ).resolves.toMatchObject({ dlqEmpty: true });
     } finally {
@@ -269,7 +273,10 @@ describe('SqliteMetadataStore', () => {
       expect(completionResults[0]?.dlqEmpty).toBe(false);
       expect(completionResults[0]?.dlqEntries).toEqual([entry]);
       await expect(store.getDeadLetterEntries()).resolves.toEqual([entry]);
-      await expect(store.getIndexStats()).resolves.toBeNull();
+      await expect(store.getIndexStats()).resolves.toMatchObject({
+        lastIndexedAt: null,
+        lastError: 'Full reindex incomplete: 1 dead-letter queue item(s) remain',
+      });
     } finally {
       releaseOnce();
       await Promise.allSettled([enqueuePromise, reindexPromise]);

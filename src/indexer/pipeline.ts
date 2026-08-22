@@ -555,6 +555,7 @@ export class IndexPipeline implements IIndexPipeline {
         this.progress.processedFiles = 0;
         this.progress.totalFiles = 0;
         this.progress.lastError = undefined;
+        await this.clearPersistedError();
         this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, 0, true); });
 
         try {
@@ -607,6 +608,7 @@ export class IndexPipeline implements IIndexPipeline {
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
           const message = error instanceof Error ? error.message : String(error);
           this.progress.lastError = message;
+          await this.persistFailure(message);
           this.safeLogProgress(`Reindex failed (${reason}): ${message}`);
           throw error;
         } finally {
@@ -640,6 +642,7 @@ export class IndexPipeline implements IIndexPipeline {
         lastIndexedAt: nowIso,
         lastFullScanAt: fullRebuild ? nowIso : (existingStats?.lastFullScanAt ?? null),
         overflowCount: existingStats?.overflowCount ?? 0,
+        lastError: null,
       };
 
       const { dlqEmpty, dlqEntries } =
@@ -647,8 +650,14 @@ export class IndexPipeline implements IIndexPipeline {
 
       const reasonLabel = reason ?? 'manual';
       if (!dlqEmpty) {
-        this.progress.lastError =
-          `Full reindex incomplete: ${dlqEntries.length} dead-letter queue item(s) remain`;
+        const errorMessage = `Full reindex incomplete: ${dlqEntries.length} dead-letter queue item(s) remain`;
+        this.progress.lastError = errorMessage;
+        await this.options.metadataStore.setIndexStats({
+          ...stats,
+          lastIndexedAt: existingStats?.lastIndexedAt ?? null,
+          lastFullScanAt: existingStats?.lastFullScanAt ?? null,
+          lastError: errorMessage,
+        });
 
         const byPath = new Map<string, { createdAt: string; errorMessage: string }>();
         for (const entry of dlqEntries) {
@@ -674,6 +683,32 @@ export class IndexPipeline implements IIndexPipeline {
       return true;
     } finally {
       release();
+    }
+  }
+
+  private async clearPersistedError(): Promise<void> {
+    const stats = await this.options.metadataStore.getIndexStats();
+    if (stats?.lastError !== null && stats?.lastError !== undefined) {
+      await this.options.metadataStore.setIndexStats({ ...stats, lastError: null });
+    }
+  }
+
+  private async persistFailure(message: string): Promise<void> {
+    try {
+      const existingStats = await this.options.metadataStore.getIndexStats();
+      await this.options.metadataStore.setIndexStats({
+        id: 'primary',
+        totalFiles: existingStats?.totalFiles ?? 0,
+        totalChunks: existingStats?.totalChunks ?? 0,
+        lastIndexedAt: existingStats?.lastIndexedAt ?? null,
+        lastFullScanAt: existingStats?.lastFullScanAt ?? null,
+        overflowCount: existingStats?.overflowCount ?? 0,
+        lastError: message,
+      });
+    } catch (persistError) {
+      this.safeLogProgress(
+        `Failed to persist reindex failure state: ${persistError instanceof Error ? persistError.message : String(persistError)}`,
+      );
     }
   }
 

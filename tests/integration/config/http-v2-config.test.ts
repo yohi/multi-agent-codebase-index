@@ -1,12 +1,28 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { lookup } from 'node:dns/promises';
+import type { LookupAddress } from 'node:dns';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('node:dns/promises', () => ({ lookup: vi.fn() }));
 
 import { loadConfig } from '../../../src/config/index.js';
 
 let projectRoot: string | undefined;
+
+const mockedLookup = lookup as unknown as {
+  mockImplementation(implementation: (hostname: string, options: { all: true; verbatim: true }) => Promise<LookupAddress[]>): void;
+  mockResolvedValue(value: LookupAddress[]): void;
+  mockResolvedValueOnce(value: LookupAddress[]): void;
+};
+
+beforeEach(() => {
+  mockedLookup.mockImplementation(async (hostname) => [
+    { address: hostname === 'localhost' ? '127.0.0.1' : '203.0.113.1', family: 4 },
+  ]);
+});
 
 afterEach(async () => {
   if (projectRoot !== undefined) {
@@ -78,6 +94,22 @@ describe('loadConfig transportMode="v2-http"', () => {
     ).rejects.toThrow(/loopback/);
   });
 
+  it('rejects a hostname when any resolved address is not loopback', async () => {
+    mockedLookup.mockResolvedValueOnce([
+      { address: '127.0.0.1', family: 4 },
+      { address: '203.0.113.7', family: 4 },
+    ]);
+
+    const root = await freshProjectRoot();
+    await expect(
+      loadConfig({
+        projectRoot: root,
+        env: { NEXUS_HTTP_HOST: 'localhost' },
+        transportMode: 'v2-http',
+      }),
+    ).rejects.toThrow(/loopback/);
+  });
+
   it('rejects external embedding providers in v2-http mode', async () => {
     const root = await freshProjectRoot();
     for (const provider of ['openai-compat', 'bedrock'] as const) {
@@ -105,6 +137,25 @@ describe('loadConfig transportMode="v2-http"', () => {
         }),
       ).rejects.toThrow(/Ollama.*loopback/);
     }
+  });
+
+  it('rejects an Ollama hostname when any resolved address is not loopback', async () => {
+    mockedLookup.mockResolvedValueOnce([
+      { address: '127.0.0.1', family: 4 },
+      { address: '203.0.113.8', family: 4 },
+    ]);
+
+    const root = await freshProjectRoot();
+    await expect(
+      loadConfig({
+        projectRoot: root,
+        env: {
+          NEXUS_EMBEDDING_PROVIDER: 'ollama',
+          NEXUS_EMBEDDING_BASE_URL: 'http://localhost:11434',
+        },
+        transportMode: 'v2-http',
+      }),
+    ).rejects.toThrow(/Ollama.*loopback/);
   });
 
   it('does not expose Ollama base URL credentials in validation errors', async () => {

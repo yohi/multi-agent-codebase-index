@@ -26,7 +26,7 @@ describe('classifyErrorMessage', () => {
     expect(classifyErrorMessage('Reindex already running: incremental')).toBe('NEXUS_INDEXING_IN_PROGRESS');
   });
 
-  it('returns undefined for unclassified messages', () => {
-    expect(classifyErrorMessage('boom')).toBeUndefined();
+  it('maps unclassified messages to NEXUS_INTERNAL_ERROR', () => {
+    expect(classifyErrorMessage('boom')).toBe('NEXUS_INTERNAL_ERROR');
   });
 });

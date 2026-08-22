@@ -48,6 +48,45 @@ Nexus は、ローカル環境で完結する高度なコードベースイン�
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### ツール登録レイヤーと依存方向 (Tool Registration Layer)
+
+- ツール定義は SDK 非依存の中立 DSL
+  (`src/server/tools/registry/schemas-neutral.ts`) で保持され、
+  v1 アダプタ (zod v3) / v2 アダプタ (zod v4) へ変換されます。
+  サポート型は string / integer / number / boolean / string[] /
+  enum の6種です。
+- v2 経路のみアダプタ層で入力上限を適用します
+  (`topK <= 100`, `maxResults <= 1000`)。
+  v1 経路の既存入力契約は変更しません。
+- 依存方向は Transport → Registry Adapters → Tool Handlers /
+  Search Orchestrator → Storage Interfaces → Storage Adapters
+  の一方向です。Transport 層から Storage Adapter への直接 import、
+  および指定モジュール外での SDK v2 直接利用は禁止します。
+- SQLite / LanceDB / Watcher / Embedding Provider
+  はプロセス起動時に一度だけ生成され、
+  MCP 接続単位では生成されません。
+
+### Local HTTP v2 (`nexus serve`)
+
+- MCP プロトコル `2026-07-28` 準拠です。
+  SDK v2 のステートレスハンドラを用い、
+  `Mcp-Session-Id` とセッション Map は廃止されています。
+- bind は loopback (`127.0.0.1` / `localhost` / `::1`) のみ許可し、
+  非 loopback host 指定は起動時 fail-closed となります。ホスト名を指定した場合は
+  DNS の全解決アドレスが loopback であることを確認します。
+- Origin / Host 検証は DNS Rebinding 対策として
+  アプリ側ミドルウェアで実施します (SDK は検証を行いません)。
+- local-only 契約: 外部 Embedding Provider
+  (`openai-compat` / `bedrock`) を設定時に拒否し、
+  Ollama の baseUrl も loopback のみ許容します。
+- `/health` と `/ready` を提供します。`/ready` はストア初期化状態を返し、
+  未準備時は 503 と `NEXUS_STORAGE_UNAVAILABLE` を返します。
+- エラーは3層で表現されます。HTTP 層 (403/400/404/413/503)、
+  ツール実行層 (`isError: true` と `structuredContent.code` への
+  NEXUS_* コード付与、一覧は `src/server/errors.ts`)、
+  内部ログ (`console.error` のみ。スタックトレースは
+  レスポンスに含めません)。
+
 ### stdio-only クライアント向け HTTP Bridge
 
 stdio 接続のみに対応した MCP クライアント（OpenCode など）から、Nexus HTTP サーバーに接続するには、`nexus http-bridge` サブコマンドを使います。Bridge は独立したローカルプロセスとして起動し、標準入出力の JSON-RPC を Nexus の Streamable HTTP エンドポイントに転送します。同一プロジェクトに対しては常に 1 つの Nexus HTTP サーバーを共有し、最後の MCP クライアントが切断すると自動的に停止します。
@@ -63,7 +102,7 @@ Bridge はデフォルトで自動的にプロジェクト専用のループバ�
 
 自動管理プロセスの descriptor は `<storage.rootDir>/endpoint.json` に一時ファイルへの書き込み後 `rename` する原子的操作で永続化され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。managed server の descriptor 検証と health 検証は loopback 専用で、コネクターは、descriptor の `projectRoot` が要求元と一致し、`url` が `127.0.0.1`（ループバック）を指し、記録された `pid` が生存し、`GET /health` が同一 `instanceId`/`projectRoot` を返す、という条件をすべて満たした場合のみ健全と判定します。いずれかを満たさない descriptor は削除され、再起動候補として扱われます。起動が競合した場合、`project-start-<hash>` ロック（§8.3）を取得できなかった側は新規プロセスを起動せず、既存の健全なプロセスを停止・削除することもありません。取得できなかった側は、ロック獲得側が公開する descriptor をポーリングで待ち受け、健全と判定できた時点で同じ URL に接続します。本機能はループバックのみを対象とし、ネットワーク公開・外部ホストからの接続・systemd 等の外部プロセス管理には依存しません。明示 URL モードではこの descriptor/health 検証を行いません。
 
-同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP サーバー/transport インスタンスを持ちますが、SQLite・LanceDB・File Watcher などのランタイムリソースは 1 つの managed HTTP サーバープロセスだけが所有し、全クライアントで共有します。
+同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP サーバー/transport インスタンスを持ちますが、SQLite・LanceDB・File Watcher などのランタイムリソースは 1 つの managed HTTP サーバープロセスだけが所有し、全クライアントで共有します。ここでいう「セッション」はクライアント接続と transport のライフサイクルを指し、クライアントごとにインデックス状態を複製するサーバー側アプリケーション状態を意味しません。これは `nexus http-bridge` の managed HTTP 経路の契約です。直接起動する `nexus serve` は各 HTTP リクエストを独立に処理する stateless v2 経路で、MCP セッションをサーバー側に保持しません。
 
 managed HTTP サーバーは、アクティブなセッション数が 0 になった時点で runtime を閉じ、`endpoint.json` とプロセスロックの両方を削除して終了します（`--idle-shutdown-ms` / `NEXUS_IDLE_SHUTDOWN_MS` で遅延を調整可能、デフォルト `0`）。起動後 30 秒以内に 1 つもクライアントが接続しなかった場合も、同様に自動終了します（起動 grace period）。コネクター自身も、descriptor が既定のタイムアウト（30 秒）以内に健全な状態で公開されない場合（子プロセスが早期に終了しなかった通常のタイムアウトパス）は、原因を標準エラー出力に書き込んで異常終了します。
 
@@ -75,6 +114,13 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
 
 - **常時稼働の Watcher**: OS レベルのファイル監視 (`chokidar`) は停止せず、変更イベントを取りこぼしません。
 - **Event Queue と Backpressure**: 変更イベントはキューでバッファリングされ、デバウンス (100ms) されます。キューサイズが閾値 (`fullScanThreshold`: 5,000) を超えた場合はオーバーフロー状態となり、新規イベントを破棄した上でフルスキャン (Reconciliation) へフォールバックし、デススパイラルを防ぎます。
+- **起動時 Full Index の post-scan queue**: 未インデックスの通常サービス起動では、
+  Watcher 開始前に post-scan モードへ入ります。
+  Full Index 中の Watcher イベントは専用キューへ退避します。
+  通常の overflow-drop は適用せず、`maxQueueSize` で容量を制限します。
+  容量超過分は drain 後に通常の overflow recovery へ引き継がれます。
+  `markFullScanComplete()` は post-scan queue を消去しません。
+  Runtime 継続時にのみ drain します。
 
 ### 3.2. Diff Detector (Merkle Tree)
 
@@ -102,6 +148,36 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
   - **L2 エラーハンドリング**: L2 (SQLite) キャッシュの読み書きに失敗した場合、暗黙的に Embedding の再計算へフォールバックすることはなく、パイプラインの既存エラー動作（DLQ への委譲等）を通じて表出されます。
 - **AWS Bedrock Provider**: `bedrock` provider（`src/plugins/embeddings/bedrock.ts`）は `InvokeModelCommand` で Titan v2 埋め込みモデルを直接呼び出します。Titan v2 はバッチ非対応（1 リクエスト = 1 テキスト）のため、`embed(texts[])` は `maxConcurrency` で束ねた N 本の並列 `InvokeModel` 呼び出しにマップします。認証は AWS SDK v3 のデフォルト認証チェーン（環境変数 → SSO → 名前付きプロファイル → IAM ロール）に委譲し、資格情報をコードに保持しません。`region` 未設定時は `us-east-1` にフォールバックし警告ログを出力します。`AccessDeniedException` / `ValidationException` / `ResourceNotFoundException` / `ExpiredTokenException` / `UnrecognizedClientException` は非リトライで即座に失敗させ、`ThrottlingException` や 5xx 相当のエラーは指数バックオフ + full jitter でリトライします（`RetryExhaustedError`）。返却次元が設定次元と異なる場合は `DimensionMismatchError` を即座に投げ、リトライしません。`healthCheck()` はエラー種別ごとに診断メッセージ（認証切れなら `aws sso login`、モデル未有効化なら Bedrock コンソールでのモデルアクセス有効化を促す等）を `console.warn` に出力してから `false` を返します。
 
+### 3.5. 起動時 Full Index と完了状態
+
+- `index_stats` がリインデックスの正常完了状態の唯一の情報源です。行が存在しない、`lastIndexedAt` が `null`、または `lastError` が non-null のときは未完了として扱い、起動時 Full Index の対象にします。`lastIndexedAt` が設定済みで `lastError` が `null` の stale インデックスは自動 Full Index の対象にしません。
+- stdio、`nexus serve`、managed HTTP は同じ Runtime 初期化経路を通ります。
+  未インデックスなら `run({ fullScan: true, reason: 'startup-reconciliation' })` を
+  バックグラウンドで一度だけ開始します。
+  `initialize()` はこの Promise を待機せず、手動実行は `reason: 'manual'` を使用します。
+- すべてのリインデックスは同じ完了条件を使用します。
+  `IndexPipeline` は post-reindex compact を試行し、失敗は非致命として記録します。
+  completion lock 下で Vector Store 統計、全永続 DLQ 項目、`index_stats` 更新を
+  単一の SQLite transaction として実行します。
+- DLQ が空の場合だけ `lastIndexedAt`、`totalFiles`、`totalChunks` を保存します。
+  Full reindex は `lastFullScanAt` を更新し、通常 reindex は既存値を保持します。
+  `overflowCount` は既存値を保持し、新規行では `0` です。正常完了時は `lastError` を `null` にします。
+- リインデックス開始時は保存済み `lastError` を消去します。DLQ が残る、例外が起きる、または停止されたリインデックスは完了日時を保存せず、失敗内容を `lastError` に永続化します。
+  DLQ 残存時は成功メトリクスを発火せず、`{ status: 'incomplete' }` を返します。
+  `pipelineProgress.lastError` と `skippedFiles` に失敗内容を反映します。
+  処理終了後の `pipelineProgress.status` は `idle` に戻ります。
+  完了可否は status 単独ではなく `lastIndexedAt` と `lastError` で判定します。
+- 自動 Full Index が既存実行と競合した場合は、mutex 解放を待ってから
+  post-scan queue を drain します。Runtime 停止時は新規 Watcher イベントを止め、
+  post-scan queue を drain せずに破棄します。
+  自動 reindex Promise の完了後に Pipeline と stores を閉じます。
+- DLQ recovery sweep が単独で項目を処理しても完了日時は記録されません。
+  失敗した Full Index からの回復には、DLQ 解消後の再リインデックスが必要です。
+- インデックス処理中も検索は待機・拒否・キューイングされません。
+- DLQ 残存時の `pipelineProgress.lastError` は安定メッセージ
+  `Full reindex incomplete: <count> dead-letter queue item(s) remain`
+  です。
+
 ## 4. ストレージ層 (Dual-Store)
 
 ### 4.1. Metadata Store (SQLite)
@@ -116,7 +192,28 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
 - **インジェクション対策**: フィルタ値には厳密なホワイトリスト検証 (`validateFilterValue`) と、SQLインジェクション対策のエスケープ (`escapeFilterValue`, `escapeLikeValue`) を行います。
 - **In-flight I/O トラッキング**: サーバー終了時 (`close()` 呼び出し時) に実行中の I/O 操作の完了を待機し、安全にリソースを解放します。
 
-### 4.3. Compaction (コンパクション)
+### 4.3. Content Store
+
+- `IContentStoreFactory` は `(workspaceId, revisionId)` に束縛された
+  `IContentStore` を返します。
+  複数の workspace や revision に同じパスがあっても、
+  `readRange(path, startLine, endLine)` を一意に解決できます。
+- `put`、`get`、`delete`、`exists` はグローバルに一意な content hash をキーとします。
+  `readRange` はスコープされた Metadata Store を通じて path を content hash に解決します。
+- `IContentStore` の hash-addressed CRUD は将来の content-addressed backend 契約です。
+  現行の `LocalContentStore` は Phase 4 の段階実装であり、`put` / `delete` は未実装、
+  `get` / `exists` は常に未格納を返します。実際に提供しているのは
+  PathSanitizer の検証後にローカルファイルシステムから必要な範囲を読み出す
+  `readRange` だけです。外部ストレージや外部へのソースコード送信は導入しません。
+- Phase 4 の content-addressed backend では、hash の共有と認可を分離します。
+  `get` / `exists` はグローバルに一意な hash の共有 blob を参照できますが、
+  呼出し元の workspace / revision に対する認可確認を先に通過していることが前提です。
+  `put` は hash の所有・登録境界で検証し、`delete` は参照中の hash を削除せず、
+  参照がなくなった共有 blob だけを GC 対象にします。workspace / revision の path 解決、
+  hash の所有権、参照管理は `IContentStore` の単純な hash CRUD だけに委ねず、
+  Metadata Store または backend 境界で一貫して実施します。
+
+### 4.4. Compaction (コンパクション)
 
 LanceDB のフラグメンテーションを防ぐため、以下のタイミングで排他制御 (`AsyncMutex`) のもとコンパクション (`optimize`) が実行されます:
 
