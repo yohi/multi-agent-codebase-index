@@ -3,6 +3,8 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { errorResult, toolResult, initializeNexusRuntime } from '../../../src/server/index.js';
 import { PathTraversalError } from '../../../src/server/path-sanitizer.js';
 import * as metricsPortUtils from '../../../src/server/metrics-port.js';
+import { buildToolHandlers } from '../../../src/server/tools/tool-support.js';
+import { withErrorCode } from '../../../src/server/tools/registry/adapters/v2-adapter.js';
 import { createMockNexusRuntimeOptions, createMockRegistry } from '../../shared/test-helpers.js';
 
 vi.mock('../../../src/observability/metrics-server.js', () => {
@@ -71,6 +73,26 @@ describe('NexusServer helpers', () => {
         content: [{ type: 'text', text: 'Error: string error' }],
         isError: true,
         structuredContent: { error: true, message: 'string error' },
+      });
+    });
+  });
+
+  describe('tool initialization errors', () => {
+    it('returns a classified error when initialization fails before a tool runs', async () => {
+      const options = createMockNexusRuntimeOptions();
+      const handlers = buildToolHandlers(options, async () => {
+        throw new Error('database is not initialized');
+      });
+
+      const result = withErrorCode(await handlers.index_status({}));
+
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          error: true,
+          message: 'database is not initialized',
+          code: 'NEXUS_STORAGE_UNAVAILABLE',
+        },
       });
     });
   });

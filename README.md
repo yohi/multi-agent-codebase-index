@@ -15,7 +15,7 @@ Semantic search、Exact grep search、File context 取得を 1 つのローカ�
 
 - **MCP ツール仕様**: v1 で公開していたツール定義・入出力形式は v2 で置き換えられました。最新の仕様は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
 - **サーバー起動オプション・設定**: `nexus serve` などの CLI オプションと `.nexus.json` の設定キーが再設計されています。設定方法は [docs/configuration.md](docs/configuration.md) を参照してください。
-- **HTTP トランスポート**: ストリーミング対応の Streamable HTTP transport が標準となり、v1 の構成とは互換性がありません。直接起動する `nexus serve` は stateless v2 HTTP、`nexus http-bridge` が管理する HTTP サーバーはクライアントごとの MCP セッションと共有ランタイムを持ちます。
+- **HTTP トランスポート**: ストリーミング対応の Streamable HTTP transport が標準となり、v1 の構成とは互換性がありません。直接起動する `nexus serve` は stateless v2 HTTP、`nexus http-bridge` が管理する HTTP サーバーはクライアント接続ごとに独立した MCP transport/server instance を生成しつつ共有ランタイムを持ちます。ここでの「セッション」は接続のライフサイクルを指し、クライアントごとにインデックス状態を複製するサーバー側セッション状態ではありません。
 
 v1 からの移行手順と前提条件は [docs/setup.md](docs/setup.md) を参照してください。
 

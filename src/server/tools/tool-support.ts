@@ -93,8 +93,8 @@ export const buildToolHandlers = (
       'semantic_search',
       options.metricsHooks,
       async (args: unknown, extra?: { signal?: AbortSignal }) => {
-        if (awaitInitialize) await awaitInitialize();
         try {
+          if (awaitInitialize) await awaitInitialize();
           const result = await executeSemanticSearch(
             options.semanticSearch,
             options.sanitizer,
@@ -112,8 +112,8 @@ export const buildToolHandlers = (
       'grep_search',
       options.metricsHooks,
       async (args: unknown, extra?: { signal?: AbortSignal }) => {
-        if (awaitInitialize) await awaitInitialize();
         try {
+          if (awaitInitialize) await awaitInitialize();
           const result = await executeGrepSearch(
             options.grepEngine,
             options.projectRoot,
@@ -132,8 +132,8 @@ export const buildToolHandlers = (
       'hybrid_search',
       options.metricsHooks,
       async (args: unknown, extra?: { signal?: AbortSignal }) => {
-        if (awaitInitialize) await awaitInitialize();
         try {
+          if (awaitInitialize) await awaitInitialize();
           const result = await executeHybridSearch(
             options.orchestrator,
             options.sanitizer,
@@ -153,8 +153,8 @@ export const buildToolHandlers = (
       'get_context',
       options.metricsHooks,
       async (args: unknown, extra?: { signal?: AbortSignal }) => {
-        if (awaitInitialize) await awaitInitialize();
         try {
+          if (awaitInitialize) await awaitInitialize();
           const result = await executeGetContext(
             readContent,
             options.sanitizer,
@@ -175,8 +175,8 @@ export const buildToolHandlers = (
       'index_status',
       options.metricsHooks,
       async () => {
-        if (awaitInitialize) await awaitInitialize();
         try {
+          if (awaitInitialize) await awaitInitialize();
           return toolResult(
             await executeIndexStatus(
               options.metadataStore,
@@ -194,8 +194,8 @@ export const buildToolHandlers = (
       'reindex',
       options.metricsHooks,
       async (args: unknown) => {
-        if (awaitInitialize) await awaitInitialize();
         try {
+          if (awaitInitialize) await awaitInitialize();
           return toolResult(
             await executeReindex(
               options.pipeline,

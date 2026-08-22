@@ -1,4 +1,4 @@
-/** Error codes exposed as structuredContent.error.code on the v2 HTTP path. */
+/** Error codes exposed as structuredContent.code on the v2 HTTP path. */
 export type NexusErrorCode =
   | 'NEXUS_INTERNAL_ERROR'
   | 'NEXUS_STORAGE_UNAVAILABLE'
@@ -14,7 +14,7 @@ export type NexusErrorCode =
   | 'NEXUS_RATE_LIMITED';
 
 /** Classify a sanitized error message without exposing implementation details. */
-export const classifyErrorMessage = (message: string): NexusErrorCode | undefined => {
+export const classifyErrorMessage = (message: string): NexusErrorCode => {
   if (message.startsWith('Invalid line range:')) {
     return 'NEXUS_CONTENT_NOT_FOUND';
   }

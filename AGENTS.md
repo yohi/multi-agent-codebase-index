@@ -9,7 +9,7 @@ private, evidence-based codebase search and context retrieval.
 - This repository is an npm workspace (`packages/*`); the only package is
   [`packages/dashboard`](packages/dashboard).
 - Prefer existing patterns and deterministic tools (linter, type checker,
-  tests) over prose style rules.
+  tests) over prose-style rules.
 - Keep local-first behavior intact: do not introduce external
   source-code transmission.
 - Do not commit credentials, tokens, machine-specific paths, or

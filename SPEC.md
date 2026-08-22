@@ -102,7 +102,7 @@ Bridge はデフォルトで自動的にプロジェクト専用のループバ�
 
 自動管理プロセスの descriptor は `<storage.rootDir>/endpoint.json` に一時ファイルへの書き込み後 `rename` する原子的操作で永続化され、`instanceId`（起動ごとのランダム UUID）、`pid`、`projectRoot`、`url` を含みます。managed server の descriptor 検証と health 検証は loopback 専用で、コネクターは、descriptor の `projectRoot` が要求元と一致し、`url` が `127.0.0.1`（ループバック）を指し、記録された `pid` が生存し、`GET /health` が同一 `instanceId`/`projectRoot` を返す、という条件をすべて満たした場合のみ健全と判定します。いずれかを満たさない descriptor は削除され、再起動候補として扱われます。起動が競合した場合、`project-start-<hash>` ロック（§8.3）を取得できなかった側は新規プロセスを起動せず、既存の健全なプロセスを停止・削除することもありません。取得できなかった側は、ロック獲得側が公開する descriptor をポーリングで待ち受け、健全と判定できた時点で同じ URL に接続します。本機能はループバックのみを対象とし、ネットワーク公開・外部ホストからの接続・systemd 等の外部プロセス管理には依存しません。明示 URL モードではこの descriptor/health 検証を行いません。
 
-同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP サーバー/transport インスタンスを持ちますが、SQLite・LanceDB・File Watcher などのランタイムリソースは 1 つの managed HTTP サーバープロセスだけが所有し、全クライアントで共有します。これは `nexus http-bridge` の managed HTTP 経路の契約です。直接起動する `nexus serve` は各 HTTP リクエストを独立に処理する stateless v2 経路で、MCP セッションをサーバー側に保持しません。
+同一プロジェクトに対して複数の MCP クライアントが同時に接続できます。各クライアントは独立した MCP サーバー/transport インスタンスを持ちますが、SQLite・LanceDB・File Watcher などのランタイムリソースは 1 つの managed HTTP サーバープロセスだけが所有し、全クライアントで共有します。ここでいう「セッション」はクライアント接続と transport のライフサイクルを指し、クライアントごとにインデックス状態を複製するサーバー側アプリケーション状態を意味しません。これは `nexus http-bridge` の managed HTTP 経路の契約です。直接起動する `nexus serve` は各 HTTP リクエストを独立に処理する stateless v2 経路で、MCP セッションをサーバー側に保持しません。
 
 managed HTTP サーバーは、アクティブなセッション数が 0 になった時点で runtime を閉じ、`endpoint.json` とプロセスロックの両方を削除して終了します（`--idle-shutdown-ms` / `NEXUS_IDLE_SHUTDOWN_MS` で遅延を調整可能、デフォルト `0`）。起動後 30 秒以内に 1 つもクライアントが接続しなかった場合も、同様に自動終了します（起動 grace period）。コネクター自身も、descriptor が既定のタイムアウト（30 秒）以内に健全な状態で公開されない場合（子プロセスが早期に終了しなかった通常のタイムアウトパス）は、原因を標準エラー出力に書き込んで異常終了します。
 
@@ -151,7 +151,6 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
 ### 3.5. 起動時 Full Index と完了状態
 
 - `index_stats` がリインデックスの正常完了状態の唯一の情報源です。行が存在しない、`lastIndexedAt` が `null`、または `lastError` が non-null のときは未完了として扱い、起動時 Full Index の対象にします。`lastIndexedAt` が設定済みで `lastError` が `null` の stale インデックスは自動 Full Index の対象にしません。
-  `lastIndexedAt` が設定済みの stale インデックスは自動 Full Index の対象にしません。
 - stdio、`nexus serve`、managed HTTP は同じ Runtime 初期化経路を通ります。
   未インデックスなら `run({ fullScan: true, reason: 'startup-reconciliation' })` を
   バックグラウンドで一度だけ開始します。
@@ -206,6 +205,13 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
   `get` / `exists` は常に未格納を返します。実際に提供しているのは
   PathSanitizer の検証後にローカルファイルシステムから必要な範囲を読み出す
   `readRange` だけです。外部ストレージや外部へのソースコード送信は導入しません。
+- Phase 4 の content-addressed backend では、hash の共有と認可を分離します。
+  `get` / `exists` はグローバルに一意な hash の共有 blob を参照できますが、
+  呼出し元の workspace / revision に対する認可確認を先に通過していることが前提です。
+  `put` は hash の所有・登録境界で検証し、`delete` は参照中の hash を削除せず、
+  参照がなくなった共有 blob だけを GC 対象にします。workspace / revision の path 解決、
+  hash の所有権、参照管理は `IContentStore` の単純な hash CRUD だけに委ねず、
+  Metadata Store または backend 境界で一貫して実施します。
 
 ### 4.4. Compaction (コンパクション)
 
