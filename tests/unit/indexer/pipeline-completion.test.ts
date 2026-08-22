@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { EventQueue } from '../../../src/indexer/event-queue.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
 import type {
   CompactionResult,
@@ -124,6 +125,33 @@ describe('IndexPipeline completion recording', () => {
       lastIndexedAt: null,
       lastError: 'scan failed',
     });
+  });
+
+  it('runs reindex cleanup when clearing a persisted error fails', async () => {
+    const { pipeline, metadataStore } = await makePipeline();
+    await metadataStore.setIndexStats({
+      id: 'primary',
+      totalFiles: 0,
+      totalChunks: 0,
+      lastIndexedAt: null,
+      lastFullScanAt: null,
+      overflowCount: 0,
+      lastError: 'previous failure',
+    });
+    const eventQueue = new EventQueue({
+      debounceMs: 0,
+      maxQueueSize: 10,
+      fullScanThreshold: 10,
+      concurrency: 1,
+    });
+    pipeline.setEventQueue(eventQueue);
+    const markFullScanComplete = vi.spyOn(eventQueue, 'markFullScanComplete');
+    vi.spyOn(metadataStore, 'setIndexStats').mockRejectedValueOnce(new Error('clear failed'));
+
+    await expect(pipeline.reindex(scanNoFiles, loadContent, true, 'manual')).rejects.toThrow('clear failed');
+
+    expect(pipeline.getProgress().status).toBe('idle');
+    expect(markFullScanComplete).toHaveBeenCalledOnce();
   });
 
   it('clears a persisted failure state when a retry starts', async () => {

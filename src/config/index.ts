@@ -215,7 +215,7 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
  * Accepts 127.0.0.0/8 dotted quads, "localhost", and "::1" (brackets optional).
  */
 export const isLoopbackHost = (host: string): boolean => {
-  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  const normalized = normalizeHost(host);
   if (normalized === 'localhost' || isLoopbackIpAddress(normalized)) {
     return true;
   }
@@ -223,7 +223,7 @@ export const isLoopbackHost = (host: string): boolean => {
 };
 
 const isLoopbackIpAddress = (host: string): boolean => {
-  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  const normalized = normalizeHost(host);
   if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') {
     return true;
   }
@@ -234,10 +234,10 @@ const isLoopbackIpAddress = (host: string): boolean => {
   return octets !== null && octets.slice(1).every((octet) => Number.parseInt(octet, 10) <= 255);
 };
 
-export const assertLoopbackHost = async (host: string, description = 'host'): Promise<void> => {
-  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+export const resolveLoopbackHost = async (host: string, description = 'host'): Promise<string> => {
+  const normalized = normalizeHost(host);
   if (isLoopbackIpAddress(normalized)) {
-    return;
+    return normalized;
   }
   if (isIP(normalized) !== 0 || /^\d+(?:\.\d+){3}$/.test(normalized)) {
     throw new Error(`${description} must resolve only to loopback addresses, but received "${host}".`);
@@ -250,10 +250,19 @@ export const assertLoopbackHost = async (host: string, description = 'host'): Pr
     throw new Error(`${description} must resolve only to loopback addresses, but "${host}" could not be resolved.`);
   }
 
-  if (addresses.length === 0 || !addresses.every(({ address }) => isLoopbackIpAddress(address))) {
+  const resolvedAddress = addresses[0]?.address;
+  if (resolvedAddress === undefined || !addresses.every(({ address }) => isLoopbackIpAddress(address))) {
     throw new Error(`${description} must resolve only to loopback addresses, but received "${host}".`);
   }
+
+  return resolvedAddress;
 };
+
+export const assertLoopbackHost = async (host: string, description = 'host'): Promise<void> => {
+  await resolveLoopbackHost(host, description);
+};
+
+const normalizeHost = (host: string): string => host.trim().toLowerCase().replace(/^\[|\]$/g, '');
 
 /**
  * Local HTTP v2 constraints (design doc §3.2 / §6.1). Runs only when the

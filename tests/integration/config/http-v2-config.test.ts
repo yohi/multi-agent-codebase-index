@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:dns/promises', () => ({ lookup: vi.fn() }));
 
-import { loadConfig } from '../../../src/config/index.js';
+import { loadConfig, resolveLoopbackHost } from '../../../src/config/index.js';
 
 let projectRoot: string | undefined;
 
@@ -37,6 +37,12 @@ const freshProjectRoot = async (): Promise<string> => {
 };
 
 describe('loadConfig transportMode="v2-http"', () => {
+  it('returns the validated loopback address for a hostname', async () => {
+    mockedLookup.mockResolvedValueOnce([{ address: '127.0.0.2', family: 4 }]);
+
+    await expect(resolveLoopbackHost('localhost', 'test host')).resolves.toBe('127.0.0.2');
+  });
+
   it('exposes http defaults only in v2-http mode', async () => {
     const root = await freshProjectRoot();
     const stdioConfig = await loadConfig({ projectRoot: root, env: {} });

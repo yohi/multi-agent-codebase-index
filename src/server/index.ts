@@ -37,6 +37,8 @@ export interface NexusRuntime {
   registrationClient?: RegistrationClient | null;
 }
 
+type AutoReindexResult = Awaited<ReturnType<NexusServerOptions['pipeline']['reindex']>>;
+
 function resolveProjectId(projectRoot: string, projectName?: string): string {
   return projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? "unknown";
 }
@@ -108,7 +110,7 @@ export const buildNexusRuntime = (
   let metricsServer: MetricsHttpServer | null = null;
   let initPromise: Promise<void> | null = null;
   let registrationClient: RegistrationClient | null = null;
-  let autoReindexPromise: Promise<void> | null = null;
+  let autoReindexPromise: Promise<AutoReindexResult | undefined> | null = null;
   let isShuttingDown = false;
 
   const initialize = (): Promise<void> => {
@@ -208,12 +210,14 @@ export const buildNexusRuntime = (
             if (!isShuttingDown) {
               options.eventQueue?.drainPostScanQueue();
             }
+            return result;
           })
           .catch((error: unknown) => {
             if (!isShuttingDown) {
               options.eventQueue?.drainPostScanQueue();
             }
             console.error('[Nexus] Startup auto Full Index failed:', error);
+            return undefined;
           });
         autoReindexPromise = startupReindexPromise;
         void startupReindexPromise.finally(() => {
@@ -312,7 +316,10 @@ export const buildNexusRuntime = (
     );
     if ("status" in result) {
       if (result.status === 'already_running' && autoReindexPromise) {
-        await autoReindexPromise;
+        const startupResult = await autoReindexPromise;
+        if (startupResult !== undefined && 'status' in startupResult && startupResult.status === 'incomplete') {
+          throw new Error('Reindex incomplete: dead-letter queue entries remain');
+        }
         const lastError = options.pipeline.getProgress().lastError;
         if (lastError !== undefined) {
           throw new Error(lastError);

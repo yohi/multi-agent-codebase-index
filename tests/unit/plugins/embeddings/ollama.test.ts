@@ -1,8 +1,20 @@
+import { lookup } from 'node:dns/promises';
+import type { LookupAddress } from 'node:dns';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RetryExhaustedError } from '../../../../src/types/index.js';
-import { OllamaEmbeddingProvider } from '../../../../src/plugins/embeddings/ollama.js';
+import {
+  OllamaEmbeddingProvider,
+  resolveLocalOllamaBaseUrl,
+} from '../../../../src/plugins/embeddings/ollama.js';
 import { TestEmbeddingProvider } from './test-embedding-provider.js';
+
+vi.mock('node:dns/promises', () => ({ lookup: vi.fn() }));
+
+const mockedLookup = lookup as unknown as {
+  mockResolvedValueOnce(value: LookupAddress[]): void;
+};
 
 const { acquireGlobalLockMock } = vi.hoisted(() => ({
   acquireGlobalLockMock: vi.fn().mockResolvedValue({ release: vi.fn().mockResolvedValue(undefined) }),
@@ -15,6 +27,14 @@ describe('OllamaEmbeddingProvider', () => {
   afterEach(() => {
     vi.useRealTimers();
     acquireGlobalLockMock.mockClear();
+  });
+
+  it('pins a local Ollama hostname to its validated loopback address', async () => {
+    mockedLookup.mockResolvedValueOnce([{ address: '127.0.0.2', family: 4 }]);
+
+    await expect(resolveLocalOllamaBaseUrl('http://localhost:11434')).resolves.toBe(
+      'http://127.0.0.2:11434/',
+    );
   });
 
   it('waits for the global lock and passes the cancellation signal', async () => {

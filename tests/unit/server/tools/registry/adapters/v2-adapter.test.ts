@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z as z3 } from 'zod';
 
 import { TOOL_DEFINITIONS } from '../../../../../../src/server/tools/registry/definitions.js';
+import type { ToolHandler } from '../../../../../../src/server/tools/types.js';
 import { toZodV3Shape } from '../../../../../../src/server/tools/registry/adapters/v1-adapter.js';
 import {
   toV2JsonSchema,
@@ -186,12 +187,6 @@ describe('v2 adapter over InMemoryTransport', () => {
     const { InMemoryTransport, McpServer } = await import('@modelcontextprotocol/server');
     const { registerV2Tools } = await import('../../../../../../src/server/tools/registry/adapters/v2-adapter.js');
     const { TOOL_DEFINITIONS } = await import('../../../../../../src/server/tools/registry/definitions.js');
-    type ToolHandler = (args: unknown, extra?: { signal?: AbortSignal }) => Promise<{
-      content: Array<{ type: 'text'; text: string }>;
-      structuredContent: Record<string, unknown>;
-      isError?: boolean;
-    }>;
-
     const receivedModes: (string | undefined)[] = [];
     const handlers: Record<string, ToolHandler> = Object.fromEntries(
       TOOL_DEFINITIONS.map((definition) => [

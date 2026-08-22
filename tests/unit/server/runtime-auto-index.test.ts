@@ -121,12 +121,43 @@ describe('NexusRuntime automatic initial full index', () => {
     options.pipeline.reindex = reindex;
     const runtime = await initializeNexusRuntime(options);
 
+    let manualReindexSettled = false;
+    const manualReindex = runtime.reindex().finally(() => {
+      manualReindexSettled = true;
+    });
+    await tick();
+    expect(reindex).toHaveBeenCalledTimes(2);
+    expect(manualReindexSettled).toBe(false);
+
+    releaseAutoReindex?.();
+    await expect(manualReindex).resolves.toBeUndefined();
+    await runtime.close();
+  });
+
+  it('rejects a manual reindex when startup completes as incomplete without a progress error', async () => {
+    let releaseAutoReindex: (() => void) | undefined;
+    const autoReindexDone = new Promise<void>((resolve) => {
+      releaseAutoReindex = resolve;
+    });
+    let isStartupReindex = true;
+    const options = makeOptions();
+    const reindex = vi.fn(async () => {
+      if (isStartupReindex) {
+        isStartupReindex = false;
+        await autoReindexDone;
+        return { status: 'incomplete' as const };
+      }
+      return { status: 'already_running' as const };
+    });
+    options.pipeline.reindex = reindex;
+    const runtime = await initializeNexusRuntime(options);
+
     const manualReindex = runtime.reindex();
     await tick();
     expect(reindex).toHaveBeenCalledTimes(2);
 
     releaseAutoReindex?.();
-    await expect(manualReindex).resolves.toBeUndefined();
+    await expect(manualReindex).rejects.toThrow('Reindex incomplete: dead-letter queue entries remain');
     await runtime.close();
   });
 

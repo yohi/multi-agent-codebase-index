@@ -555,10 +555,10 @@ export class IndexPipeline implements IIndexPipeline {
         this.progress.processedFiles = 0;
         this.progress.totalFiles = 0;
         this.progress.lastError = undefined;
-        await this.clearPersistedError();
         this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, 0, true); });
 
         try {
+          await this.clearPersistedError();
           const events = await run({ fullScan: fullRebuild, reason });
           this.progress.totalFiles = events.length;
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, events.length, true); });
