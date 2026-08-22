@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.1.0](https://github.com/yohi/nexus/compare/v2.0.0...v2.1.0) (2026-08-22)
+
+
+### Features
+
+* DLQとIndex完了記録を原子的に処理 ([9899836](https://github.com/yohi/nexus/commit/98998367551331841d3cf9ca02c4dfd72ddf2910))
+* DLQとIndex完了記録を原子的に処理 ([3d9cee8](https://github.com/yohi/nexus/commit/3d9cee850cde63fc6c989ec083933befcca507de))
+* post-scanイベントキューを追加 ([66eb71a](https://github.com/yohi/nexus/commit/66eb71a346cf31cedc4fdd1da38cd338d1fc969a))
+* post-scanイベントキューを追加 ([5314545](https://github.com/yohi/nexus/commit/53145455c428154bee79274e5a967a9449326329))
+* 起動失敗状態とローカル HTTP 検証を強化 ([6c8caa1](https://github.com/yohi/nexus/commit/6c8caa197606c9f0fdcedad1933a5682cfe826c8))
+* 起動時バックグラウンドIndexを実行 ([0cd8d01](https://github.com/yohi/nexus/commit/0cd8d01224b1ded4292735d95aed3d493dc053d0))
+* 起動時バックグラウンドIndexを実行 ([c6e0cbb](https://github.com/yohi/nexus/commit/c6e0cbb8cfa64908547710040221d0d84a5e7c1e))
+
+
+### Bug Fixes
+
+* EventQueue の full-scan 復旧を修正 ([24891f8](https://github.com/yohi/nexus/commit/24891f848f02e583b6c80692e387d2c140e07601))
+* post-scanキューの上限と転送失敗処理を修正 ([c60243c](https://github.com/yohi/nexus/commit/c60243c8d542058f569afbdd5f32c1a8387c365f))
+* reindex完了状態とDLQ競合を修正 ([51a27eb](https://github.com/yohi/nexus/commit/51a27eb3e79375eb3a8b6b121a0c228ded6f296b))
+* reindex理由を伝播してDLQ競合を検証 ([947aa96](https://github.com/yohi/nexus/commit/947aa9633e948947991dcc7ae24188548ae4fb31))
+* v2のloopback検証と再インデックス競合を修正 ([300a9d1](https://github.com/yohi/nexus/commit/300a9d10d3a4ad879f95e7760dfe891ccdb441e8))
+* バックグラウンドインデックスのライフサイクルを修正 ([8332337](https://github.com/yohi/nexus/commit/83323371ab7bd148280f13b126b19f35369dc93a))
+* バックグラウンドインデックスのライフサイクルを修正 ([20b8157](https://github.com/yohi/nexus/commit/20b815706445ef95fd81bc768c369301d8750034))
+* バックグラウンドインデックス処理の競合を解消 ([4b461c4](https://github.com/yohi/nexus/commit/4b461c4a46907b84387dfb9a0116b30445fa5d6a))
+* 初期化エラーのv2コード分類と仕様文書を更新 ([339a832](https://github.com/yohi/nexus/commit/339a832d73ac6db16aae4a17016ed4af5fe45a91))
+* 起動時自動インデックス中の手動再インデックス競合を解消 ([51de1ec](https://github.com/yohi/nexus/commit/51de1ec63ba34a2054c7c0192c2d2ec59f88132c))
+
 ## [2.0.0](https://github.com/yohi/nexus/compare/v1.31.5...v2.0.0) (2026-08-14)
 
 
