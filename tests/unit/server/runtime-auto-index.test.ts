@@ -11,6 +11,7 @@ const indexedStats: IndexStatsRow = {
   lastIndexedAt: '2026-08-20T00:00:00.000Z',
   lastFullScanAt: null,
   overflowCount: 0,
+  lastError: null,
 };
 
 const reindexResult: ReindexResult = {
@@ -52,6 +53,7 @@ const makeOptions = (overrides: Record<string, unknown> = {}): NexusRuntimeOptio
       start: vi.fn(),
       stop: vi.fn(async () => undefined),
       reindex: vi.fn(async () => reindexResult),
+      waitForActiveReindex: vi.fn(async () => undefined),
       getProgress: vi.fn(() => ({ totalFiles: 0, processedFiles: 0, status: 'idle' as const })),
       getSkippedFiles: vi.fn(() => new Map()),
     },
@@ -101,6 +103,83 @@ describe('NexusRuntime automatic initial full index', () => {
     await runtime.close();
   });
 
+  it('waits for the startup auto-index before completing a manual reindex request', async () => {
+    let releaseAutoReindex: (() => void) | undefined;
+    const autoReindexDone = new Promise<void>((resolve) => {
+      releaseAutoReindex = resolve;
+    });
+    let isStartupReindex = true;
+    const options = makeOptions();
+    const reindex = vi.fn(async () => {
+      if (isStartupReindex) {
+        isStartupReindex = false;
+        await autoReindexDone;
+        return reindexResult;
+      }
+      return { status: 'already_running' as const };
+    });
+    options.pipeline.reindex = reindex;
+    const runtime = await initializeNexusRuntime(options);
+
+    let manualReindexSettled = false;
+    const manualReindex = runtime.reindex().finally(() => {
+      manualReindexSettled = true;
+    });
+    await tick();
+    expect(reindex).toHaveBeenCalledTimes(2);
+    expect(manualReindexSettled).toBe(false);
+
+    releaseAutoReindex?.();
+    await expect(manualReindex).resolves.toBeUndefined();
+    await runtime.close();
+  });
+
+  it('rejects a manual reindex when startup completes as incomplete without a progress error', async () => {
+    let releaseAutoReindex: (() => void) | undefined;
+    const autoReindexDone = new Promise<void>((resolve) => {
+      releaseAutoReindex = resolve;
+    });
+    let isStartupReindex = true;
+    const options = makeOptions();
+    const reindex = vi.fn(async () => {
+      if (isStartupReindex) {
+        isStartupReindex = false;
+        await autoReindexDone;
+        return { status: 'incomplete' as const };
+      }
+      return { status: 'already_running' as const };
+    });
+    options.pipeline.reindex = reindex;
+    const runtime = await initializeNexusRuntime(options);
+
+    const manualReindex = runtime.reindex();
+    await tick();
+    expect(reindex).toHaveBeenCalledTimes(2);
+
+    releaseAutoReindex?.();
+    await expect(manualReindex).rejects.toThrow('Reindex incomplete: dead-letter queue entries remain');
+    await runtime.close();
+  });
+
+  it('keeps later unrelated already-running reindexes rejected after startup completes', async () => {
+    const options = makeOptions();
+    let reindexCallCount = 0;
+    options.pipeline.reindex = vi.fn(() => {
+      reindexCallCount += 1;
+      if (reindexCallCount === 1) {
+        return Promise.resolve(reindexResult);
+      }
+      return Promise.resolve({ status: 'already_running' as const });
+    });
+    const runtime = await initializeNexusRuntime(options);
+
+    await tick();
+    await expect(runtime.reindex()).rejects.toThrow(
+      'Reindex already running: already_running',
+    );
+    await runtime.close();
+  });
+
   it('does not auto-index an already indexed project', async () => {
     const options = makeOptions();
     options.metadataStore.getIndexStats = vi.fn(async () => indexedStats);
@@ -108,6 +187,19 @@ describe('NexusRuntime automatic initial full index', () => {
 
     expect(options.pipeline.reindex).not.toHaveBeenCalled();
     expect(options.eventQueue?.isPostScanActive()).toBe(false);
+    await runtime.close();
+  });
+
+  it('auto-indexes an indexed project with a persisted failure', async () => {
+    const options = makeOptions();
+    options.metadataStore.getIndexStats = vi.fn(async () => ({
+      ...indexedStats,
+      lastError: 'previous startup failure',
+    }));
+
+    const runtime = await initializeNexusRuntime(options);
+
+    expect(options.pipeline.reindex).toHaveBeenCalledOnce();
     await runtime.close();
   });
 
@@ -149,6 +241,32 @@ describe('NexusRuntime automatic initial full index', () => {
     expect(options.pipeline.stop).toHaveBeenCalledOnce();
   });
 
+  it('keeps shared runtime resources open until the background reindex settles', async () => {
+    let releaseReindex: (() => void) | undefined;
+    const reindexDone = new Promise<void>((resolve) => {
+      releaseReindex = resolve;
+    });
+    const options = makeOptions();
+    const onClose = vi.fn(async () => undefined);
+    options.onClose = onClose;
+    options.pipeline.reindex = vi.fn(async () => {
+      await reindexDone;
+      return reindexResult;
+    });
+    const runtime = await initializeNexusRuntime(options);
+
+    const closePromise = runtime.close();
+    await tick();
+
+    expect(options.watcher.stop).toHaveBeenCalledOnce();
+    expect(onClose).not.toHaveBeenCalled();
+
+    releaseReindex?.();
+    await closePromise;
+
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it('drains buffered events after a failed auto-index', async () => {
     const options = makeOptions();
     const eventQueue = options.eventQueue!;
@@ -165,29 +283,50 @@ describe('NexusRuntime automatic initial full index', () => {
     await runtime.close();
   });
 
-  it('keeps buffered events when auto-index is incomplete due to DLQ entries', async () => {
+  it('drains buffered events after an incomplete auto-index', async () => {
     const options = makeOptions();
     const eventQueue = options.eventQueue!;
-    options.pipeline.reindex = vi.fn(async () => ({ status: 'incomplete' as const }));
+    let releaseReindex: (() => void) | undefined;
+    const reindexDone = new Promise<void>((resolve) => {
+      releaseReindex = resolve;
+    });
+    options.pipeline.reindex = vi.fn(async () => {
+      await reindexDone;
+      return { status: 'incomplete' as const };
+    });
     const runtime = await initializeNexusRuntime(options);
 
     eventQueue.enqueue({ type: 'added', filePath: 'during.ts', detectedAt: new Date().toISOString() });
-    await tick();
-    expect(eventQueue.isPostScanActive()).toBe(true);
     expect(eventQueue.getPostScanQueueSize()).toBe(1);
+    releaseReindex?.();
+    await tick();
+    expect(eventQueue.isPostScanActive()).toBe(false);
+    expect(eventQueue.getPostScanQueueSize()).toBe(0);
+    expect(eventQueue.size()).toBe(1);
     await runtime.close();
   });
 
-  it('does not drain the post-scan queue when reindex is already running', async () => {
+  it('waits for an active reindex before draining the post-scan queue', async () => {
     const options = makeOptions();
     const eventQueue = options.eventQueue!;
+    let releaseActiveReindex: (() => void) | undefined;
+    const activeReindexDone = new Promise<void>((resolve) => {
+      releaseActiveReindex = resolve;
+    });
     options.pipeline.reindex = vi.fn(async () => ({ status: 'already_running' as const }));
+    options.pipeline.waitForActiveReindex = vi.fn(() => activeReindexDone);
     const runtime = await initializeNexusRuntime(options);
 
     eventQueue.enqueue({ type: 'added', filePath: 'during.ts', detectedAt: new Date().toISOString() });
     await tick();
     expect(eventQueue.isPostScanActive()).toBe(true);
     expect(eventQueue.getPostScanQueueSize()).toBe(1);
+
+    releaseActiveReindex?.();
+    await tick();
+    expect(eventQueue.isPostScanActive()).toBe(false);
+    expect(eventQueue.getPostScanQueueSize()).toBe(0);
+    expect(eventQueue.size()).toBe(1);
     await runtime.close();
   });
 

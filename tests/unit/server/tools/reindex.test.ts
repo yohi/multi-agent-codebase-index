@@ -27,6 +27,7 @@ const pipeline = {
   reconcileOnStartup: async () => ({ startedAt: '', finishedAt: '', durationMs: 0, reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 }, chunksIndexed: 0 }),
   start: () => undefined,
   stop: async () => {},
+  waitForActiveReindex: async () => {},
 } as IIndexPipeline;
 
 describe('executeReindex', () => {

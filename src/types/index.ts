@@ -321,6 +321,7 @@ export interface IIndexPipeline {
     fullRebuild?: boolean,
     reason?: ReindexOptions['reason'],
   ): Promise<ReindexResult | { status: 'already_running' } | { status: 'incomplete' }>;
+  waitForActiveReindex(): Promise<void>;
   getSkippedFiles(): ReadonlyMap<string, string>;
   reconcileOnStartup(): Promise<RuntimeInitializationResult>;
   getProgress(): PipelineProgress;

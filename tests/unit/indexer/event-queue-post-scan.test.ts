@@ -31,6 +31,26 @@ describe('EventQueue post-scan queue', () => {
     expect(queue.size()).toBe(0);
   });
 
+  it('applies the post-scan capacity bound to reindex events', () => {
+    const queue = makeQueue({ maxQueueSize: 2, fullScanThreshold: 1 });
+    queue.enterPostScanMode();
+    queue.enqueue(makeEvent('a.ts'));
+    queue.enqueue(makeEvent('b.ts'));
+
+    expect(queue.enqueueReindex({ reason: 'manual' })).toBe(false);
+    expect(queue.getDroppedEventCount()).toBe(1);
+  });
+
+  it('counts queued reindex events when accepting post-scan watcher events', () => {
+    const queue = makeQueue({ maxQueueSize: 2, fullScanThreshold: 1 });
+    queue.enterPostScanMode();
+
+    expect(queue.enqueueReindex({ reason: 'manual' })).toBe(true);
+    expect(queue.enqueue(makeEvent('a.ts'))).toBe(true);
+    expect(queue.enqueue(makeEvent('b.ts'))).toBe(false);
+    expect(queue.getDroppedEventCount()).toBe(1);
+  });
+
   it('requests a full scan after draining a post-scan queue that overflowed', async () => {
     let fullScanTriggered = false;
     const queue = makeQueue({

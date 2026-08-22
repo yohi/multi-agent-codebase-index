@@ -24,6 +24,7 @@ describe('executeIndexStatus', () => {
       lastIndexedAt: null,
       lastFullScanAt: null,
       overflowCount: 0,
+      lastError: null,
     });
     await metadataStore.upsertDeadLetterEntries([
       {

@@ -15,6 +15,7 @@ export interface IndexStatsRow {
   lastIndexedAt: string | null;
   lastFullScanAt: string | null;
   overflowCount: number;
+  lastError: string | null;
 }
 
 export interface EmbeddingCacheEntry {

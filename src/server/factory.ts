@@ -18,7 +18,7 @@ import { Chunker } from "../indexer/chunker.js";
 import { TypeScriptLanguagePlugin } from "../plugins/languages/typescript.js";
 import { PythonLanguagePlugin } from "../plugins/languages/python.js";
 import { GoLanguagePlugin } from "../plugins/languages/go.js";
-import { OllamaEmbeddingProvider } from "../plugins/embeddings/ollama.js";
+import { OllamaEmbeddingProvider, resolveLocalOllamaBaseUrl } from "../plugins/embeddings/ollama.js";
 import { InstrumentedEmbeddingProvider } from "../plugins/embeddings/instrumented.js";
 import { OpenAICompatEmbeddingProvider } from "../plugins/embeddings/openai-compat.js";
 import { BedrockEmbeddingProvider } from "../plugins/embeddings/bedrock.js";
@@ -325,7 +325,17 @@ export class NexusServerFactory {
 
     const { metadataStore, vectorStore } =
       StorageManager.initializeStores(config);
-    const pluginRegistry = this.setupPluginRegistry(config);
+    const pluginConfig =
+      config.http !== undefined && config.embedding.provider === "ollama"
+        ? {
+            ...config,
+            embedding: {
+              ...config.embedding,
+              baseUrl: await resolveLocalOllamaBaseUrl(config.embedding.baseUrl),
+            },
+          }
+        : config;
+    const pluginRegistry = this.setupPluginRegistry(pluginConfig);
     const metricsCollector = new MetricsCollector({ projectName: config.projectName || basename(projectRoot) });
     let embeddingProvider = pluginRegistry.getEmbeddingProvider();
 

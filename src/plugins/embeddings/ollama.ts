@@ -1,5 +1,6 @@
 import pLimit from 'p-limit';
 
+import { resolveLoopbackHost } from '../../config/index.js';
 import type { OllamaEmbeddingConfig } from '../../types/index.js';
 import { RetryExhaustedError, DimensionMismatchError, NonRetryableEmbeddingError } from '../../types/index.js';
 import { BaseEmbeddingProvider } from './base.js';
@@ -24,6 +25,16 @@ const defaultDependencies: OllamaDependencies = {
 };
 
 const DEFAULT_TIMEOUT_MS = 60_000; // 60 seconds
+
+export const resolveLocalOllamaBaseUrl = async (baseUrl: string | undefined): Promise<string | undefined> => {
+  if (baseUrl === undefined) {
+    return undefined;
+  }
+
+  const parsedBaseUrl = new URL(baseUrl);
+  parsedBaseUrl.hostname = await resolveLoopbackHost(parsedBaseUrl.hostname, 'Ollama embedding host');
+  return parsedBaseUrl.toString();
+};
 
 export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
   readonly dimensions: number;

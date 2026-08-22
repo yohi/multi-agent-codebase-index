@@ -43,6 +43,7 @@ const makeServerOptions = (): Omit<NexusRuntimeOptions, 'watcher'> => ({
       lastIndexedAt: '2026-08-20T00:00:00.000Z',
       lastFullScanAt: null,
       overflowCount: 0,
+      lastError: null,
     }),
     setIndexStats: async () => undefined,
   } as any,
@@ -64,6 +65,7 @@ const makeServerOptions = (): Omit<NexusRuntimeOptions, 'watcher'> => ({
       reconciliation: { added: 0, modified: 0, deleted: 0, unchanged: 0 },
       chunksIndexed: 0,
     }),
+    waitForActiveReindex: async () => {},
   } as any,
   pluginRegistry: {
     healthCheck: async () => ({ languages: ['typescript'], embeddingProvider: 'test', healthy: true }),

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { EventQueue } from '../../../src/indexer/event-queue.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
 import type {
   CompactionResult,
@@ -17,7 +18,7 @@ class CompactionFailingVectorStore extends InMemoryVectorStore {
   }
 }
 
-const makePipeline = async () => {
+const makePipeline = async (onProgress?: (message: string) => void) => {
   const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
   const pipeline = new IndexPipeline({
     metadataStore,
@@ -25,6 +26,7 @@ const makePipeline = async () => {
     chunker,
     embeddingProvider: new TestEmbeddingProvider(),
     pluginRegistry: registry,
+    onProgress,
   });
   return { pipeline, metadataStore, vectorStore };
 };
@@ -85,7 +87,10 @@ describe('IndexPipeline completion recording', () => {
     const result = await pipeline.reindex(scanNoFiles, loadContent, true, 'manual');
 
     expect(result).toEqual({ status: 'incomplete' });
-    expect(await metadataStore.getIndexStats()).toBeNull();
+    await expect(metadataStore.getIndexStats()).resolves.toMatchObject({
+      lastIndexedAt: null,
+      lastError: 'Full reindex incomplete: 1 dead-letter queue item(s) remain',
+    });
     expect(pipeline.getProgress().lastError).toBe(
       'Full reindex incomplete: 1 dead-letter queue item(s) remain',
     );
@@ -101,7 +106,82 @@ describe('IndexPipeline completion recording', () => {
       }, loadContent, true, 'manual'),
     ).rejects.toThrow('scan failed');
 
-    expect(await metadataStore.getIndexStats()).toBeNull();
+    await expect(metadataStore.getIndexStats()).resolves.toMatchObject({
+      lastIndexedAt: null,
+      lastError: 'scan failed',
+    });
+  });
+
+  it('persists a failure state when scanning throws', async () => {
+    const { pipeline, metadataStore } = await makePipeline();
+
+    await expect(
+      pipeline.reindex(async () => {
+        throw new Error('scan failed');
+      }, loadContent, true, 'startup-reconciliation'),
+    ).rejects.toThrow('scan failed');
+
+    await expect(metadataStore.getIndexStats()).resolves.toMatchObject({
+      lastIndexedAt: null,
+      lastError: 'scan failed',
+    });
+  });
+
+  it('runs reindex cleanup when clearing a persisted error fails', async () => {
+    const { pipeline, metadataStore } = await makePipeline();
+    await metadataStore.setIndexStats({
+      id: 'primary',
+      totalFiles: 0,
+      totalChunks: 0,
+      lastIndexedAt: null,
+      lastFullScanAt: null,
+      overflowCount: 0,
+      lastError: 'previous failure',
+    });
+    const eventQueue = new EventQueue({
+      debounceMs: 0,
+      maxQueueSize: 10,
+      fullScanThreshold: 10,
+      concurrency: 1,
+    });
+    pipeline.setEventQueue(eventQueue);
+    const markFullScanComplete = vi.spyOn(eventQueue, 'markFullScanComplete');
+    vi.spyOn(metadataStore, 'setIndexStats').mockRejectedValueOnce(new Error('clear failed'));
+
+    await expect(pipeline.reindex(scanNoFiles, loadContent, true, 'manual')).rejects.toThrow('clear failed');
+
+    expect(pipeline.getProgress().status).toBe('idle');
+    expect(markFullScanComplete).toHaveBeenCalledOnce();
+  });
+
+  it('clears a persisted failure state when a retry starts', async () => {
+    const { pipeline, metadataStore } = await makePipeline();
+    await metadataStore.setIndexStats({
+      id: 'primary',
+      totalFiles: 0,
+      totalChunks: 0,
+      lastIndexedAt: null,
+      lastFullScanAt: null,
+      overflowCount: 0,
+      lastError: 'previous failure',
+    });
+
+    await pipeline.reindex(scanNoFiles, loadContent, true, 'manual');
+
+    await expect(metadataStore.getIndexStats()).resolves.toMatchObject({ lastError: null });
+  });
+
+  it('logs the reindex reason when scanning throws', async () => {
+    const logs: string[] = [];
+    const { pipeline } = await makePipeline((message) => logs.push(message));
+
+    await expect(
+      pipeline.reindex(async () => {
+        throw new Error('scan failed');
+      }, loadContent, true, 'startup-reconciliation'),
+    ).rejects.toThrow('scan failed');
+
+    expect(logs).toContain('Reindex failed (startup-reconciliation): scan failed');
   });
 
   it('records completion when compaction fails', async () => {

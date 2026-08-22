@@ -15,7 +15,7 @@ Semantic search、Exact grep search、File context 取得を 1 つのローカ�
 
 - **MCP ツール仕様**: v1 で公開していたツール定義・入出力形式は v2 で置き換えられました。最新の仕様は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
 - **サーバー起動オプション・設定**: `nexus serve` などの CLI オプションと `.nexus.json` の設定キーが再設計されています。設定方法は [docs/configuration.md](docs/configuration.md) を参照してください。
-- **HTTP トランスポート**: ストリーミング対応の Streamable HTTP transport が標準となり、v1 の構成とは互換性がありません。
+- **HTTP トランスポート**: ストリーミング対応の Streamable HTTP transport が標準となり、v1 の構成とは互換性がありません。直接起動する `nexus serve` は stateless v2 HTTP、`nexus http-bridge` が管理する HTTP サーバーはクライアント接続ごとに独立した MCP transport/server instance を生成しつつ共有ランタイムを持ちます。ここでの「セッション」は接続のライフサイクルを指し、クライアントごとにインデックス状態を複製するサーバー側セッション状態ではありません。
 
 v1 からの移行手順と前提条件は [docs/setup.md](docs/setup.md) を参照してください。
 
@@ -26,6 +26,9 @@ v1 からの移行手順と前提条件は [docs/setup.md](docs/setup.md) を参
 - **低レイテンシ**: ローカル実行に特化し、ネットワーク遅延のない高速なレスポンスを実現。
 - **ストリーミング対応**: 巨大な検索結果も Streamable HTTP transport により効率的に処理。
 - **自律的メンテナンス**: ファイル監視 (Watcher) とデッドレターキュー (DLQ) による自動的なインデックス更新とリカバリ。
+- **初回バックグラウンド Full Index**: 未インデックスのプロジェクトを通常サービスとして起動すると、
+  サーバーを利用可能なまま Full Index を一度だけ開始します。
+  既存の stale インデックスは自動再構築しません。
 - **アプリケーション層 Observability**: MCP ツール利用状況、検索ヒット数、取得コンテキスト行数、Embedding API レイテンシを Prometheus メトリクスとして公開。
 - **Telemetry Aggregator**: `nexus dashboard` が複数 Nexus プロセスのメトリクスを自動登録・集約し、Grafana から `localhost:9470/metrics` をスクレイプできます。
 - **プロセス間排他制御・CPU負荷抑制**: `proper-lockfile` によるファイルベースのロックで同一プロジェクトへの複数プロセス同時起動や Ollama の CPU 奪い合いを防止（Ollama リクエストは `AbortSignal` 対応の無制限キューイングで安全に順番待ち）。さらに、Ollama への埋め込みリクエスト単位でスレッド数を制限（デフォルト 2、範囲 1〜16）し、ホストマシンのレスポンシブネスを維持します。
@@ -69,7 +72,12 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 - **Deferred Loading**: Return a summary plus file/line references first. Expand the explanation or fetch additional ranges only when the user asks for details or the initial snippets are insufficient. Never load an entire file through `get_context` merely for background.
 
 ### 4. Tool Usage Rules (Playbook)
-- **Index Status**: Run `index_status` before any Nexus search (`hybrid_search`, `grep_search`, `semantic_search`). CodeGraph exploration does not depend on the Nexus index, so `index_status` is not required before `codegraph_explore`.
+- **Index Status**: Run `index_status` before any Nexus search (`hybrid_search`,
+  `grep_search`, `semantic_search`). `pipelineProgress.status === 'running'` means
+  background indexing is active but does not block searches. Treat indexing as
+  successfully completed only when `indexStats.lastIndexedAt` is non-null and
+  `pipelineProgress.lastError` is absent. CodeGraph exploration does not depend
+  on the Nexus index, so `index_status` is not required before `codegraph_explore`.
 - **Search Strategy**:
   - Use `hybrid_search` for semantic queries, vague feature exploration, or architectural questions (combines vector & ripgrep via RRF).
   - Use `grep_search` to pinpoint exact symbols, class/function names, or error strings.
@@ -99,7 +107,12 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 
 #### 💡 運用ガイドライン (Playbook)
 
-- **インデックス状態の確認**: Nexus の検索（`hybrid_search`、`grep_search`、`semantic_search`）を実行する前に `index_status` を呼び出し、インデックス構築が完了しているか（`pipelineProgress.status === 'idle'`）を確認してください。CodeGraph のみを使う構造探索では不要です。
+- **インデックス状態の確認**: Nexus の検索（`hybrid_search`、`grep_search`、
+  `semantic_search`）を実行する前に `index_status` を呼び出してください。
+  `pipelineProgress.status === 'running'` はバックグラウンドのインデックス処理中であることを示しますが、検索は利用できます。正常完了の判定には
+  `indexStats.lastIndexedAt !== null` と
+  `pipelineProgress.lastError` が未設定であることを併せて確認してください。
+  CodeGraph のみを使う構造探索では不要です。
 - **スキルのロード**: コード調査や設計把握のタスクでは、検索実行前にプロジェクトローカルの `.agents/skills/code-search.md` を読み込んでください。そこに標準パイプライン、One-Call パターン、Deferred Loading の手順が定義されています。
 - **構造・コールツリーの追跡**: リポジトリに `.codegraph/` ディレクトリが存在する場合は、構造追跡に `codegraph_explore` を優先してください。CodeGraph が存在しない場合は、`index_status` を確認してから Nexus の検索ツールでカバーします。
 - **検索の使い分け**:
@@ -136,7 +149,7 @@ stdio-only の MCP クライアント（OpenCode など）から使う場合は�
 
 引数なしで実行すると、プロジェクトごとに 1 つの loopback HTTP Nexus プロセスを自動的に発見または起動し、最後の MCP クライアントが切断すると自動的に停止します。descriptor は `<storage.rootDir>/endpoint.json` に保存され、デフォルトは `.nexus/endpoint.json` です。`NEXUS_STORAGE_ROOT_DIR` または `.nexus.json` の `storage.rootDir` で保存先を変更できます。ポート番号や URL を手動で管理する必要はありません。
 
-同一プロジェクトに対して複数の MCP クライアント（複数のエディタウィンドウやエージェントなど）が同時に接続でき、それぞれ独立した MCP セッションを持ちながら同じインデックス（SQLite/LanceDB）や File Watcher を共有します。
+同一プロジェクトに対して複数の MCP クライアント（複数のエディタウィンドウやエージェントなど）が同時に接続でき、それぞれ独立した MCP transport/server instance（接続単位のセッション・ライフサイクル）を持ちながら、同じインデックス（SQLite/LanceDB）や File Watcher などの共有ランタイム状態を共有します。ここでの「セッション」は接続のライフサイクルを指し、クライアントごとにインデックス状態を複製するサーバー側状態ではありません。
 
 ```json
 {
@@ -266,7 +279,17 @@ server.listen(3000, '127.0.0.1');
 
 ### インデックスの手動更新
 
-`nexus --reindex` を実行すると、即座に 1 回だけインデックスを再構築して終了します。`--full` を付けると incremental ではなく clean full rebuild で実行します。
+`nexus --reindex` を実行すると、即座に 1 回だけインデックスを再構築して終了します。
+`--full` を付けると incremental ではなく clean full rebuild で実行します。
+
+通常サービスは、`index_stats` 行が存在しない、`lastIndexedAt` が `null`、または `lastError` が設定されたプロジェクトで起動時にバックグラウンド Full Index を開始します。
+この処理はサーバーの初期化や検索を待たせず、同一 Runtime では再試行しません。
+`lastIndexedAt` が設定済みで `lastError` がない stale インデックスは自動再構築の対象外です。
+
+手動・自動を問わず、リインデックスの正常完了には DLQ が空であることが必要です。
+DLQ が残ると `index_stats` の完了日時は更新されず、`reindex` は `incomplete` を返します。
+`index_status` の `indexStats.lastError`、`pipelineProgress.lastError`、`skippedFiles` を確認して原因を解消してから再実行してください。`indexStats.lastError` は再起動後も保持され、再試行開始時に消去されます。
+DLQ 自動リカバリの成功だけでは完了日時は更新されないため、原因解消後の再リインデックスが必要です。
 
 ## ⚙️ 設定
 

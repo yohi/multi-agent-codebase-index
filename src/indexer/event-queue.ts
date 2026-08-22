@@ -53,7 +53,7 @@ export class EventQueue {
 
   enqueue(event: IndexEvent): boolean {
     if (this.postScanActive) {
-      if (this.postScanQueue.length >= this.options.maxQueueSize) {
+      if (this.postScanQueue.length + this.size() >= this.options.maxQueueSize) {
         // Keep the post-scan buffer bounded. The dropped event is recovered by
         // the full-scan path once the accepted post-scan events are drained.
         this.postScanOverflowed = true;
@@ -132,6 +132,11 @@ export class EventQueue {
   }
 
   enqueueReindex(options: ReindexOptions): boolean {
+    if (this.postScanActive && this.postScanQueue.length + this.size() >= this.options.maxQueueSize) {
+      this.postScanOverflowed = true;
+      return this.recordDroppedEvent();
+    }
+
     if (this.state !== 'normal') {
       return this.recordDroppedEvent();
     }

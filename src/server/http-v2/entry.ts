@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 
+import { resolveLoopbackHost } from '../../config/index.js';
 import { createRequestListener } from './routes.js';
 import { createMcpNodeHandler, type FetchLikeHandler } from './transport.js';
 
@@ -17,12 +18,13 @@ export interface HttpV2ServerDeps {
 }
 
 export const startHttpV2Server = async (deps: HttpV2ServerDeps): Promise<HttpV2ServerHandle> => {
+  const resolvedHost = await resolveLoopbackHost(deps.host, 'HTTP v2 server host');
   const nodeHandler = createMcpNodeHandler(deps.handler);
   const server = createServer(createRequestListener({ mcpHandler: nodeHandler, isReady: deps.isReady }));
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(deps.port, deps.host, resolve);
+    server.listen(deps.port, resolvedHost, resolve);
   });
 
   return {

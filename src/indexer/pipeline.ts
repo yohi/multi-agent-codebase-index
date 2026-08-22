@@ -558,6 +558,7 @@ export class IndexPipeline implements IIndexPipeline {
         this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, 0, true); });
 
         try {
+          await this.clearPersistedError();
           const events = await run({ fullScan: fullRebuild, reason });
           this.progress.totalFiles = events.length;
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(0, events.length, true); });
@@ -605,7 +606,10 @@ export class IndexPipeline implements IIndexPipeline {
         } catch (error) {
           this.progress.status = 'idle';
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, false); });
-          this.progress.lastError = error instanceof Error ? error.message : String(error);
+          const message = error instanceof Error ? error.message : String(error);
+          this.progress.lastError = message;
+          await this.persistFailure(message);
+          this.safeLogProgress(`Reindex failed (${reason}): ${message}`);
           throw error;
         } finally {
           if (fullRebuild && this.eventQueue) {
@@ -638,6 +642,7 @@ export class IndexPipeline implements IIndexPipeline {
         lastIndexedAt: nowIso,
         lastFullScanAt: fullRebuild ? nowIso : (existingStats?.lastFullScanAt ?? null),
         overflowCount: existingStats?.overflowCount ?? 0,
+        lastError: null,
       };
 
       const { dlqEmpty, dlqEntries } =
@@ -645,8 +650,14 @@ export class IndexPipeline implements IIndexPipeline {
 
       const reasonLabel = reason ?? 'manual';
       if (!dlqEmpty) {
-        this.progress.lastError =
-          `Full reindex incomplete: ${dlqEntries.length} dead-letter queue item(s) remain`;
+        const errorMessage = `Full reindex incomplete: ${dlqEntries.length} dead-letter queue item(s) remain`;
+        this.progress.lastError = errorMessage;
+        await this.options.metadataStore.setIndexStats({
+          ...stats,
+          lastIndexedAt: existingStats?.lastIndexedAt ?? null,
+          lastFullScanAt: existingStats?.lastFullScanAt ?? null,
+          lastError: errorMessage,
+        });
 
         const byPath = new Map<string, { createdAt: string; errorMessage: string }>();
         for (const entry of dlqEntries) {
@@ -672,6 +683,32 @@ export class IndexPipeline implements IIndexPipeline {
       return true;
     } finally {
       release();
+    }
+  }
+
+  private async clearPersistedError(): Promise<void> {
+    const stats = await this.options.metadataStore.getIndexStats();
+    if (stats?.lastError !== null && stats?.lastError !== undefined) {
+      await this.options.metadataStore.setIndexStats({ ...stats, lastError: null });
+    }
+  }
+
+  private async persistFailure(message: string): Promise<void> {
+    try {
+      const existingStats = await this.options.metadataStore.getIndexStats();
+      await this.options.metadataStore.setIndexStats({
+        id: 'primary',
+        totalFiles: existingStats?.totalFiles ?? 0,
+        totalChunks: existingStats?.totalChunks ?? 0,
+        lastIndexedAt: existingStats?.lastIndexedAt ?? null,
+        lastFullScanAt: existingStats?.lastFullScanAt ?? null,
+        overflowCount: existingStats?.overflowCount ?? 0,
+        lastError: message,
+      });
+    } catch (persistError) {
+      this.safeLogProgress(
+        `Failed to persist reindex failure state: ${persistError instanceof Error ? persistError.message : String(persistError)}`,
+      );
     }
   }
 
@@ -706,6 +743,11 @@ export class IndexPipeline implements IIndexPipeline {
 
   getSkippedFiles(): ReadonlyMap<string, string> {
     return this.skippedFiles;
+  }
+
+  async waitForActiveReindex(): Promise<void> {
+    const release = await this.mutex.acquire();
+    release();
   }
 
   setEventQueue(eventQueue: EventQueue): void {

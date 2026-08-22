@@ -37,6 +37,8 @@ export interface NexusRuntime {
   registrationClient?: RegistrationClient | null;
 }
 
+type AutoReindexResult = Awaited<ReturnType<NexusServerOptions['pipeline']['reindex']>>;
+
 function resolveProjectId(projectRoot: string, projectName?: string): string {
   return projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? "unknown";
 }
@@ -108,7 +110,7 @@ export const buildNexusRuntime = (
   let metricsServer: MetricsHttpServer | null = null;
   let initPromise: Promise<void> | null = null;
   let registrationClient: RegistrationClient | null = null;
-  let autoReindexPromise: Promise<void> | null = null;
+  let autoReindexPromise: Promise<AutoReindexResult | undefined> | null = null;
   let isShuttingDown = false;
 
   const initialize = (): Promise<void> => {
@@ -123,7 +125,10 @@ export const buildNexusRuntime = (
       let needsPostScan = false;
       try {
         const stats = await options.metadataStore.getIndexStats();
-        const isUnindexed = stats === null || stats.lastIndexedAt === null;
+        const isUnindexed =
+          stats === null ||
+          stats.lastIndexedAt === null ||
+          stats.lastError !== null;
         if (isUnindexed && !isShuttingDown) {
           options.eventQueue?.enterPostScanMode();
           needsPostScan = true;
@@ -191,27 +196,35 @@ export const buildNexusRuntime = (
       }
 
       if (needsPostScan) {
-        autoReindexPromise = options.pipeline
+        const startupReindexPromise = options.pipeline
           .reindex(
             options.runReindex,
             options.loadFileContent,
             true,
             'startup-reconciliation',
           )
-          .then((result) => {
-            if ('status' in result && (result.status === 'already_running' || result.status === 'incomplete')) {
-              return;
+          .then(async (result) => {
+            if ('status' in result && result.status === 'already_running') {
+              await options.pipeline.waitForActiveReindex();
             }
             if (!isShuttingDown) {
               options.eventQueue?.drainPostScanQueue();
             }
+            return result;
           })
           .catch((error: unknown) => {
             if (!isShuttingDown) {
               options.eventQueue?.drainPostScanQueue();
             }
             console.error('[Nexus] Startup auto Full Index failed:', error);
+            return undefined;
           });
+        autoReindexPromise = startupReindexPromise;
+        void startupReindexPromise.finally(() => {
+          if (autoReindexPromise === startupReindexPromise) {
+            autoReindexPromise = null;
+          }
+        });
       }
     })().catch((err) => {
       // Reset initPromise on failure so initialize() can be retried later
@@ -255,14 +268,6 @@ export const buildNexusRuntime = (
     }
 
 
-    if (options.onClose) {
-      try {
-        await options.onClose();
-      } catch (error) {
-        shutdownErrors.push(error);
-      }
-    }
-
     try {
       await options.watcher.stop();
     } catch (error) {
@@ -272,6 +277,14 @@ export const buildNexusRuntime = (
     if (autoReindexPromise) {
       try {
         await autoReindexPromise;
+      } catch (error) {
+        shutdownErrors.push(error);
+      }
+    }
+
+    if (options.onClose) {
+      try {
+        await options.onClose();
       } catch (error) {
         shutdownErrors.push(error);
       }
@@ -302,6 +315,17 @@ export const buildNexusRuntime = (
       fullRebuild,
     );
     if ("status" in result) {
+      if (result.status === 'already_running' && autoReindexPromise) {
+        const startupResult = await autoReindexPromise;
+        if (startupResult !== undefined && 'status' in startupResult && startupResult.status === 'incomplete') {
+          throw new Error('Reindex incomplete: dead-letter queue entries remain');
+        }
+        const lastError = options.pipeline.getProgress().lastError;
+        if (lastError !== undefined) {
+          throw new Error(lastError);
+        }
+        return;
+      }
       const message = result.status === 'already_running'
         ? `Reindex already running: ${result.status}`
         : 'Reindex incomplete: dead-letter queue entries remain';

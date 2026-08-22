@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z as z3 } from 'zod';
 
 import { TOOL_DEFINITIONS } from '../../../../../../src/server/tools/registry/definitions.js';
+import type { ToolHandler } from '../../../../../../src/server/tools/types.js';
 import { toZodV3Shape } from '../../../../../../src/server/tools/registry/adapters/v1-adapter.js';
 import {
   toV2JsonSchema,
@@ -93,7 +94,7 @@ describe('withErrorCode', () => {
     });
   });
 
-  it('preserves non-error and unclassified error results by identity', () => {
+  it('preserves non-error results by identity and classifies unknown errors', () => {
     const ok = { content: [{ type: 'text' as const, text: '{}' }], structuredContent: { results: [] } };
     const unknownError = {
       content: [{ type: 'text' as const, text: 'Error: boom' }],
@@ -101,7 +102,14 @@ describe('withErrorCode', () => {
       structuredContent: { error: true, message: 'boom' },
     };
     expect(withErrorCode(ok)).toBe(ok);
-    expect(withErrorCode(unknownError)).toBe(unknownError);
+    expect(withErrorCode(unknownError)).toEqual({
+      ...unknownError,
+      structuredContent: {
+        error: true,
+        message: 'boom',
+        code: 'NEXUS_INTERNAL_ERROR',
+      },
+    });
   });
 });
 
@@ -179,12 +187,11 @@ describe('v2 adapter over InMemoryTransport', () => {
     const { InMemoryTransport, McpServer } = await import('@modelcontextprotocol/server');
     const { registerV2Tools } = await import('../../../../../../src/server/tools/registry/adapters/v2-adapter.js');
     const { TOOL_DEFINITIONS } = await import('../../../../../../src/server/tools/registry/definitions.js');
-
     const receivedModes: (string | undefined)[] = [];
-    const handlers = Object.fromEntries(
+    const handlers: Record<string, ToolHandler> = Object.fromEntries(
       TOOL_DEFINITIONS.map((definition) => [
         definition.name,
-        async () => ({
+        async (_args: unknown) => ({
           content: [{ type: 'text' as const, text: '' }],
           structuredContent: {},
         }),

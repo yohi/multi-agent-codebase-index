@@ -63,7 +63,7 @@ describe('OpenAICompatEmbeddingProvider', () => {
       { fetch: mockFetch, sleep: vi.fn() },
     );
     await providerV1Embeddings.embed(['test']);
-    expect(mockFetch.mock.calls[0][0]).toBe('https://xxx.com/v1/embeddings');
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('https://xxx.com/v1/embeddings');
 
     mockFetch.mockClear();
 
@@ -73,7 +73,7 @@ describe('OpenAICompatEmbeddingProvider', () => {
       { fetch: mockFetch, sleep: vi.fn() },
     );
     await providerEmbeddings.embed(['test']);
-    expect(mockFetch.mock.calls[0][0]).toBe('https://gateway.truefoundry.ai/embeddings');
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('https://gateway.truefoundry.ai/embeddings');
   });
 
   it('sends custom headers if configured', async () => {
