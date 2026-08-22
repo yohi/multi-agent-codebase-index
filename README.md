@@ -149,7 +149,7 @@ stdio-only の MCP クライアント（OpenCode など）から使う場合は�
 
 引数なしで実行すると、プロジェクトごとに 1 つの loopback HTTP Nexus プロセスを自動的に発見または起動し、最後の MCP クライアントが切断すると自動的に停止します。descriptor は `<storage.rootDir>/endpoint.json` に保存され、デフォルトは `.nexus/endpoint.json` です。`NEXUS_STORAGE_ROOT_DIR` または `.nexus.json` の `storage.rootDir` で保存先を変更できます。ポート番号や URL を手動で管理する必要はありません。
 
-同一プロジェクトに対して複数の MCP クライアント（複数のエディタウィンドウやエージェントなど）が同時に接続でき、それぞれ独立した MCP セッションを持ちながら同じインデックス（SQLite/LanceDB）や File Watcher を共有します。
+同一プロジェクトに対して複数の MCP クライアント（複数のエディタウィンドウやエージェントなど）が同時に接続でき、それぞれ独立した MCP transport/server instance（接続単位のセッション・ライフサイクル）を持ちながら、同じインデックス（SQLite/LanceDB）や File Watcher などの共有ランタイム状態を共有します。ここでの「セッション」は接続のライフサイクルを指し、クライアントごとにインデックス状態を複製するサーバー側状態ではありません。
 
 ```json
 {
