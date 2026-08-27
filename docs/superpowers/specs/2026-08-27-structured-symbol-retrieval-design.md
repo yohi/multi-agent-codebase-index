@@ -69,8 +69,10 @@ blast radiusは引き続きCodeGraphの責務とする。
 | Symbol storage | SQLite Symbol Catalog |
 | Search storage | LanceDBは検索chunkとembeddingに限定する |
 | Exact source | Freshなworking-tree bytesをhash検証後にsliceする |
-| Python/Go parser | Tree-sitter based structured parserへ置換する |
+| Python/Go parser | `tree-sitter@0.25.1`と公式grammarへ置換する |
 | TypeScript parser | TypeScript Compiler APIを維持・拡張する |
+| Tokenizer package | `js-tiktoken@1.0.21`の`cl100k_base`を使う |
+| Verification hash | Exact UTF-8 bytesに対するSHA-256を使う |
 | Upgrade | 明示的full reindexを要求し、自動migrationしない |
 
 ## 5. Architecture
@@ -154,7 +156,8 @@ bytesとして読み、indexed file hashとの一致確認後、catalogのbyte r
 
 ### 6.1 File generation
 
-File catalog更新はgeneration単位で行う。Generation IDは次のcanonical inputのhashとする。
+File catalog更新はgeneration単位で行う。Generation IDは次のcanonical JSON arrayを
+UTF-8 encodeし、SHA-256 digestをbase64url化した値とする。
 
 - structured schema version
 - parser IDとparser version
@@ -162,21 +165,25 @@ File catalog更新はgeneration単位で行う。Generation IDは次のcanonical
 
 同じfile contentでもparser contractが変われば別generationになる。
 
+ここでcanonical JSON arrayはreplacerとspacingを指定しないECMAScript
+`JSON.stringify(array)`の出力を意味する。Base64urlはRFC 4648準拠、paddingなしとする。
+
+File content hash、symbol source hash、import source hashは、trimやline-ending変換を
+行わないexact UTF-8 bytesに対するSHA-256を64文字のlowercase hexadecimalで保存する。
+Existing Merkle treeのxxhash contractは変更しない。
+
 Conceptual tablesは次のとおりである。
 
 #### `structured_files`
 
+このtableはfileごとのgeneration pointerだけを保持する。Parse結果やhash等の
+generation依存情報は保持しない。
+
 | Column | Purpose |
 | --- | --- |
 | `file_path` | Project-relative canonical path、primary key |
-| `language` | Language ID |
-| `active_generation` | Retrievalに利用できるgeneration |
-| `pending_generation` | Cross-store更新中のgeneration |
-| `parse_status` | `exact`, `degraded`, `unsupported` |
-| `coverage` | `complete`, `partial`, `none` |
-| `content_hash` | Active catalog作成元fileのhash |
-| `parser_id` | Parser implementation ID |
-| `parser_version` | Parser contract version |
+| `active_generation` | Retrievalに利用できるgeneration、nullable |
+| `pending_generation` | Cross-store更新中のgeneration、nullable |
 
 #### `symbol_generations`
 
@@ -185,7 +192,13 @@ Conceptual tablesは次のとおりである。
 | `file_path` | Owner file |
 | `generation` | Generation ID |
 | `state` | `pending`, `active`, `retired` |
+| `language` | Language ID |
 | `content_hash` | Parsed bytesのhash |
+| `parse_status` | `exact`, `degraded`, `unsupported` |
+| `coverage` | `complete`, `partial`, `none` |
+| `parser_id` | Parser implementation ID |
+| `parser_version` | Parser contract version |
+| `diagnostics` | Stable reason codesのJSON array |
 | `created_at` | Generation作成日時 |
 
 #### `symbols`
@@ -210,7 +223,8 @@ Primary keyは`file_path`, `generation`, `symbol_id`の組み合わせとする�
 #### `imports`
 
 Import declarationの完全source range、binding、alias、module specifierをgeneration単位で
-保持する。Import source本文は保持せず、byte rangeとhashを保持する。
+保持する。Import source本文は保持せず、byte rangeとlowercase hexadecimal SHA-256
+`source_hash`を保持する。
 
 #### `symbol_imports`
 
@@ -221,6 +235,10 @@ Symbolと確実に参照されたimport bindingの関係を保持する。推測
 Retired symbol ID、元file path、retired reason、retired timestampを保持する。
 同じIDが再登場した場合はtombstoneを削除する。Tombstone履歴がない任意IDは
 `not_found`として扱う。
+
+Tombstoneはincremental indexingをまたいで保持し、successful full rebuildのactivate後に
+pruneする。したがってfull rebuild後、過去IDの結果は`stale_identity`から
+`not_found`へ変わり得る。
 
 ### 6.2 Stable identity
 
@@ -246,7 +264,7 @@ SHA-256 inputはcanonical JSON arrayとする。
 各要素は次を表す。
 
 1. Identity schema version
-2. POSIX separatorへ正規化したproject-relative file path
+2. Canonical project-relative file path
 3. Qualified name
 4. Symbol kind
 5. Language-specific normalized signature discriminator
@@ -255,16 +273,62 @@ SHA-256 inputはcanonical JSON arrayとする。
 Body hash、doc comment、line、byte offsetはidentityへ含めない。そのためbody変更、line移動、
 周辺コード変更、通常reindexではIDを維持する。
 
+Identity用pathはexisting index scopeが生成するcanonical project-relative pathを使用する。
+Separatorは`/`へ統一し、leading `./`、空segment、`.`、`..`を許可しない。CaseとUnicode
+code pointは変更しない。
+
 Rename、file move、signature変更はlogical identity変更として新IDになる。完全に同一の
 qualified name、kind、signatureが重複する場合、source順occurrenceを使用する。
-同一重複集合の追加・削除・並べ替えはdisambiguation setの変更であり、該当IDの変更を許容する。
+Occurrenceは同一canonical identity内のlogical slot identityである。Identical declarationsの
+並べ替えはslotのbody変更としてIDを維持する。Identical declarationの挿入または削除で
+ordinalが変わるslotは、disambiguation setの変更としてID変更を許容する。
+
+#### Signature canonicalization
+
+`signature_discriminator`はparserが生成したheader token列からcommentとtriviaを除去し、
+single ASCII spaceで連結する。Identifier token valueだけをUnicode NFCへ正規化する。
+String、template、numeric literal、punctuationはraw token textを保持し、literal内容を
+Unicode正規化しない。Decoratorは除外し、それ以外のdeclaration modifier tokenはheaderへ
+含める。通常のbody tokenは下記で明示した型構文を除き、identity inputから除外する。
+
+TypeScript familyでは次をheader tokenとする。
+
+- Declaration kind、name、type parameters
+- Decorator以外のdeclaration modifier
+- Parameter order、name、rest/optional marker、type、default value
+- Return type、heritage clause
+- Type aliasではaliased type expression
+- Variable/constantではidentifierとdeclared typeだけを含み、initializerを除外
+
+Pythonでは次をheader tokenとする。
+
+- `async`、`def`、`class`、name、type parameters
+- Parameter order、name、kind、annotation、default value
+- Return annotation
+- Class baseとkeyword arguments
+
+Goでは次をheader tokenとする。
+
+- Declaration kind、name、type parameters
+- Function/method receiver、parameters、result types
+- Type declarationではname、type parameters、alias marker、underlying type
+- Interface methodではmethod signature
+
+TypeScript anonymous/default exportにはuser identifierと衝突しない次のreserved nameを使う。
+
+- `[[default:function]]`
+- `[[default:class]]`
+- `[[anonymous:function]]`
+- `[[anonymous:class]]`
+
+Anonymous symbolが同一parent内で重複する場合は通常のoccurrence規則で区別する。
 
 ### 6.3 Qualified names
 
 - TypeScript: `Namespace.Class.method`
 - Python: `Class.method`、top-level declarationはsimple name
 - Go: `Receiver.Method`、top-level declarationはsimple name
-- Anonymous/default export: language adapterが決定論的なreserved nameを与える
+- Anonymous/default export: 上記reserved nameを使用する
 
 ## 7. Parser design
 
@@ -280,6 +344,16 @@ interface StructuredParseResult {
 }
 ```
 
+有効なfile-level parse stateは次の組み合わせだけとする。
+
+| Status | Coverage | Catalog behavior | Outline behavior |
+| --- | --- | --- | --- |
+| `exact` | `complete` | 全exact declarations | `ok` |
+| `degraded` | `partial` | Exact subsetのみ | `degraded` |
+| `unsupported` | `none` | Public symbol IDなし | `unsupported` |
+
+その他の組み合わせはinternal invariant violationとする。
+
 `StructuredDeclaration`は次を含む。
 
 - `name`, `qualifiedName`, `kind`
@@ -293,6 +367,9 @@ interface StructuredParseResult {
 - 確実に参照したimport binding IDs
 
 Parser artifactはindexing中だけsource本文を保持できる。本文はSQLiteへ保存しない。
+Parser exception、parser backend unavailable、strict UTF-8 decode failureは
+indexing failureとする。New generationをactivateせずexisting active generationを維持し、
+既存DLQ/incomplete contractへ送る。Fixed-line fallbackからpublic symbol IDを生成しない。
 
 ### 7.2 TypeScript family
 
@@ -320,7 +397,8 @@ TypeScriptのUTF-16 source positionはfile単位のoffset mapでUTF-8 byte offse
 
 ### 7.3 Python
 
-Structured parserはNode版`tree-sitter`と公式`tree-sitter-python` grammarを使う。
+Structured parserは`tree-sitter@0.25.1`と
+`tree-sitter-python@0.25.0`を使う。
 
 対象は次とする。
 
@@ -332,31 +410,51 @@ Structured parserはNode版`tree-sitter`と公式`tree-sitter-python` grammarを
 decorator列をsource startへ含める。Docstringはbody内に含まれるためcomplete sourceへ
 自然に含まれる。Preceding `#` commentはPython doc contractではないため自動付加しない。
 
+Multi-target assignmentとdestructuring assignmentはexact variable symbolの対象外とする。
+
 ### 7.4 Go
 
-Structured parserはNode版`tree-sitter`と公式`tree-sitter-go` grammarを使う。
+Structured parserは`tree-sitter@0.25.1`と`tree-sitter-go@0.25.0`を使う。
 
 対象は次とする。
 
 - type declaration
 - function
 - receiver method
-- interface member等、grammarが安全な境界を返すdeclaration
+- interface method specification
 
-Declarationへ直接attachされた連続doc commentをsource startへ含める。Receiver methodの
-parentは同一file内でreceiver typeを解決できる場合のみ設定する。別fileの場合はparentを
-nullとし、qualified nameにはreceiverを含める。
+Declarationの直前にblank lineなしで連続するdoc comment groupをsource startへ含める。
+同じgroup内でdeclarationへ適用される`//go:` compiler directiveも含める。Blank lineで
+分離されたcommentは含めない。Receiver methodのparentは同一file内でreceiver typeを
+解決できる場合のみ設定する。別fileの場合はparentをnullとし、qualified nameには
+receiverを含める。
+
+Grouped type declarationはwrapperなしではstandalone declarationにならないため、個々の
+type specをexact symbolとして扱わない。Embedded interface elementも今回のexact対象外とする。
 
 ### 7.5 Exactness and partial parse
 
-ERROR/MISSING nodeを含まず、ancestor chain、boundary、signatureを確定できるdeclarationだけを
+対象declaration subtreeと、scope・qualified nameの確定に必要なancestor chainの双方に
+ERROR/MISSING nodeがなく、boundaryとsignatureを確定できるdeclarationだけを
 `retrievability: exact`としてcatalog化する。
+
+Coverageは「そのlanguageで本設計の対象としたdeclaration formsを、file全体から漏れなく
+発見できたか」を表す。Parser diagnosticsとcoverage reason codesはgeneration単位で
+`symbol_generations.diagnostics`へ保存する。
 
 File内の一部にsyntax errorがある場合、file coverageは`partial`、outline statusは
 `degraded`となる。Outlineはexact subsetだけを返せる。Exact subsetのsymbol IDは、
 freshnessとsource hash検証に成功すれば個別のexact retrievalを`ok`にできる。
 
 不確実なdeclarationにはpublic IDを付与せず、fixed-line searchだけに残す。
+
+TypeScript variable/constantは、単一identifier declaratorだけをexact対象とする。
+Multi-declarator statementとdestructuring declaratorは、keywordやwrapperを含む独立した
+complete sourceを切り出せないためexact対象外とする。
+
+TypeScriptのassociated JSDocはCompiler APIが対象nodeへattachしたJSDoc nodeだけを含める。
+Decoratorとmodifierはdeclaration nodeの構文範囲に含める。Blank line越しのline comment、
+`@ts-ignore`等のcompiler directive、unattached commentは含めない。
 
 ### 7.6 Related import analysis
 
@@ -379,12 +477,15 @@ Related import判定は同一file内の保守的なlexical binding解析に限�
 2. File bytesとcontent hashを取得する。
 3. Language parserがstructured artifactを生成する。
 4. Identity generatorがexact declarationへstable IDを付与する。
-5. SQLiteへnew generationを`pending`としてstageする。
+5. 1つのSQLite transactionでnew generationを`pending`としてstageし、fileの
+   `pending_generation` pointerを設定する。
 6. Chunkerがsearch chunksと任意`symbolId`を生成する。
 7. LanceDBの対象file chunksを置換する。
-8. SQLite transactionでnew generationを`active`へ切り替える。
-9. Old generationをretireし、消えたIDをtombstoneへ記録する。
-10. Retired generationのcatalog rowsをGCする。
+8. 1つのSQLite transactionでnew generationを`active`へ切り替える。
+9. 同じtransactionでold generationをretireする。
+10. 同じtransactionで消えたIDをtombstoneへ記録する。
+11. 同じtransactionで`pending_generation` pointerをclearする。
+12. Commit後にretired generationのcatalog rowsをGCする。
 
 ### 8.2 Cross-store failure
 
@@ -396,6 +497,7 @@ SQLiteとLanceDBを跨ぐdistributed transactionは導入しない。Pending/act
 - Searchがpending IDを返した場合: retrievalは`index_incomplete`を返す
 - Active IDとpending IDが同一でもcurrent fileがpending contentの場合:
   pending generationを検出し、old sourceを返さず`index_incomplete`を返す
+- Process restart後に残るpending generation: 自動activateせず、retryまたはfull reindexを要求する
 
 Failureは既存DLQ、`lastError`、reindex completion contractへ統合する。
 
@@ -413,12 +515,13 @@ Embeddingはexisting content-hash cacheを再利用し、同一contentでのprov
 Responsibilitiesは次に限定する。
 
 1. Path sanitizationとexisting index scope検証
-2. Active generationまたはtombstoneによるstrict identity resolution
-3. Current file bytesのsingle read
-4. Indexed file hashとのfreshness比較
-5. Byte range sliceとsymbol hash再検証
-6. Import selectionとtoken budget packing
-7. Machine-readable statusとtrust metadata構築
+2. Pending、active、tombstoneの順によるstrict identity resolution
+3. Pending generationを含むfileのfail-closed判定
+4. Current file bytesのsingle read
+5. Indexed file hashとのfreshness比較
+6. Byte range sliceとsymbol hash再検証
+7. Import selectionとtoken budget packing
+8. Machine-readable statusとtrust metadata構築
 
 Name、line、類似signatureによるfallbackは行わない。
 
@@ -426,22 +529,59 @@ Name、line、類似signatureによるfallbackは行わない。
 
 Exact sourceとbounded contextでは次の順序を固定する。
 
-1. Active symbol recordをresolveする。
-2. Current fileを1つの`Uint8Array`として読む。
-3. Buffer全体のhashをactive generation content hashと比較する。
-4. 不一致ならsourceなし`stale`を返す。
-5. 同じbufferから`startByte:endByte`をsliceする。
-6. Slice hashをsymbol source hashと比較する。
-7. 一致時だけ`ok`とcomplete sourceを返す。
+1. IDがpending generationに存在すれば`index_incomplete`を返す。
+2. Active symbol recordをresolveする。
+3. Active fileにpending pointerがあれば`index_incomplete`を返す。
+4. Activeになければtombstoneを確認し、`stale_identity`または`not_found`を返す。
+5. Current fileを1つの`Uint8Array`として読む。
+6. Buffer全体のhashをactive generation content hashと比較する。
+7. 不一致ならsourceなし`stale`を返す。
+8. 同じbufferから`startByte:endByte`をsliceする。
+9. Slice hashをsymbol source hashと比較する。
+10. 不一致ならsourceなし`index_incomplete`を返す。
+11. 一致時だけ`ok`とcomplete sourceを返す。
 
 同じbufferを検証とsliceに使うため、hash確認後の再readによるTOCTOUを避ける。
 
 Current fileが消失しているがcatalogがまだactiveの場合は`stale`を返す。Watcherがdeleteを
 処理した後はIDがtombstone化され、`stale_identity`を返す。
 
+`get_symbol_context`ではfile hashとsymbol hashの検証後、budget候補となる全importについて
+range boundsとslice hashを同じfile bufferから検証する。1件でも不一致ならcontextを返さず、
+`index_incomplete`, `reasonCode: INDEX_IMPORT_HASH_MISMATCH`を返す。Token packingは全candidateの
+検証後に行う。
+
 ## 10. MCP tools
 
 既存6 toolは維持する。次の3 toolを追加する。
+
+全toolでpositionは次の形とする。
+
+```ts
+interface SymbolPosition {
+  startLine: number;
+  endLine: number;
+  startByte: number;
+  endByte: number;
+}
+
+interface SymbolMetadata {
+  symbolId: string;
+  filePath: string;
+  language: string;
+  name: string;
+  qualifiedName: string;
+  kind: SymbolKind;
+  signature: string;
+  position: SymbolPosition;
+  parentSymbolId: string | null;
+  retrievability: 'exact';
+}
+```
+
+`filePath`はproject-relative pathに限定する。`symbolId`は
+`^symbol_v1_[A-Za-z0-9_-]{43}$`、`tokenBudget`は1から100,000のintegerとしてMCP input
+schemaで検証する。
 
 ### 10.1 `get_file_outline`
 
@@ -457,6 +597,33 @@ Outputはfile sourceを含まない。Freshなcomplete fileでは`status: ok`、
 `status: degraded`とexact subset、`coverage: partial`を返す。Stale fileでは古い位置情報を
 返さない。
 
+Outline successは次のdiscriminated unionとする。
+
+```ts
+type FileOutlineResult =
+  | {
+      status: 'ok';
+      freshness: 'fresh';
+      reindexRequired: false;
+      reasonCode?: never;
+      file: OutlineFile & { parseStatus: 'exact'; coverage: 'complete' };
+      symbols: SymbolMetadata[];
+    }
+  | {
+      status: 'degraded';
+      freshness: 'fresh';
+      reindexRequired: false;
+      reasonCode:
+        | 'PARSER_COVERAGE_PARTIAL'
+        | 'PARSER_BOUNDARY_UNCERTAIN';
+      file: OutlineFile & { parseStatus: 'degraded'; coverage: 'partial' };
+      symbols: SymbolMetadata[];
+    }
+  | StructuredRetrievalFailure;
+```
+
+`OutlineFile`は`filePath`, `language`, `parserId`, `parserVersion`を持つ。
+
 Symbol entryは次を含む。
 
 - `symbolId`
@@ -467,7 +634,8 @@ Symbol entryは次を含む。
 - `position`
 - `parentSymbolId`
 
-Entriesはpreorder DFSで返し、parentの直後にchildrenを配置する。
+Entriesはpreorder DFSで返し、parentの直後にchildrenを配置する。Siblingは
+`startByte`, `kind`, `qualifiedName`, `symbolId`の順で安定sortする。
 
 ### 10.2 `get_symbol_source`
 
@@ -480,6 +648,27 @@ Input:
 ```
 
 成功時だけcomplete `source`を返す。Non-`ok` responseには`source` key自体を含めない。
+
+```ts
+{
+  status: 'ok';
+  freshness: 'fresh';
+  reindexRequired: false;
+  symbol: SymbolMetadata;
+  parser: {
+    parserId: string;
+    parserVersion: string;
+    fileStatus: 'exact' | 'degraded';
+    coverage: 'complete' | 'partial';
+  };
+  source: string;
+  verification: {
+    fileHashMatched: true;
+    symbolHashMatched: true;
+    complete: true;
+  };
+}
+```
 
 ### 10.3 `get_symbol_context`
 
@@ -501,37 +690,85 @@ Packing orderは次のとおりである。
 2. Source orderに並べた、確実に関連するimport declarations
 
 Import declarationは途中切断しない。次のimportがbudgetへ収まらない場合は省略する。
+その後のsource-order candidate評価は継続し、budgetに収まる小さいimportは採用できる。
 全importへのfallbackは行わない。
 
 Token usageは、採用importsをsource orderで連結し、blank lineを1つ挟んでsymbol sourceを
 置いたcanonical context textに対して計測する。MetadataとJSON serialization overheadは
 budget対象外とする。
 
+Contentをresponse内で重複させないため、bounded contextはcanonical textを`context`へ
+1回だけ返す。Symbolとimport entryは`context`内のUTF-8 byte rangeを持つ。
+
+```ts
+{
+  status: 'ok';
+  freshness: 'fresh';
+  reindexRequired: false;
+  context: string;
+  symbol: SymbolMetadata & {
+    contextStartByte: number;
+    contextEndByte: number;
+  };
+  parser: {
+    parserId: string;
+    parserVersion: string;
+    fileStatus: 'exact' | 'degraded';
+    coverage: 'complete' | 'partial';
+  };
+  imports: Array<{
+    filePosition: SymbolPosition;
+    contextStartByte: number;
+    contextEndByte: number;
+    moduleSpecifier: string;
+    referencedBindings: string[];
+  }>;
+  importsCompleteness: 'complete' | 'partial' | 'unavailable';
+  verification: {
+    fileHashMatched: true;
+    symbolHashMatched: true;
+    importHashesMatched: true;
+    complete: true;
+  };
+  budget: {
+    tokenizer: 'cl100k_base';
+    tokenizerVersion: 'js-tiktoken@1.0.21';
+    requestedTokens: number;
+    actualTokens: number;
+    exceeded: boolean;
+    omittedForBudget: number;
+  };
+}
+```
+
 ## 11. Token accounting
 
-Tokenizerは`js-tiktoken/lite`とlocal `cl100k_base` ranksを使用する。
+Tokenizerは`js-tiktoken@1.0.21`の`js-tiktoken/lite`とlocal `cl100k_base` ranksを使用する。
 
 - Runtime network fetchなし
 - WASM assetなし
 - Encodingは`cl100k_base`
-- Package versionは`package-lock.json`で固定
+- Package versionは`package.json`と`package-lock.json`でexact pinする
 - Special tokenは通常textとして扱う
 
-Responseは次を含む。
+Canonical contextは次の式で一意に構築する。`rawSource`はindexed byte rangeをUTF-8 decodeした
+値で、trim、改行変換、dedentを行わない。同一import declarationは一度だけ採用する。
 
 ```ts
-{
-  tokenizer: 'cl100k_base';
-  tokenizerVersion: 'js-tiktoken@<locked-version>';
-  requestedTokens: number;
-  actualTokens: number;
-  exceeded: boolean;
-  omittedImports: number;
-}
+const importText = includedImports.map((item) => item.rawSource).join('\n');
+const context = importText.length > 0
+  ? `${importText}\n\n${symbolSource}`
+  : symbolSource;
 ```
 
 `actualTokens`は下流LLMの実token使用量ではなく、この固定Nexus accounting contractに
-おけるcanonical context textの正確なtoken数である。
+おける最終`context`の正確なtoken数である。Candidate importは一件追加するたび、追加後の
+canonical context全体を再encodeして採否を決める。
+
+`omittedForBudget`は関連性を確実に判定できたimport candidatesのうち、budget理由だけで
+省略した件数である。曖昧または解析不能でcandidateにならなかったimportは数えない。
+`exceeded`はsymbol-only contextが`tokenBudget`を超える場合だけ`true`とする。Symbolがbudgetを
+超えた場合はimportsを0件にし、complete symbol sourceを返す。
 
 ## 12. Response and error contract
 
@@ -565,34 +802,158 @@ type StructuredRetrievalStatus =
 ### 12.2 Common trust metadata
 
 ```ts
-interface RetrievalTrust {
-  status: StructuredRetrievalStatus;
-  freshness: 'fresh' | 'stale' | 'unknown';
-  reindexRequired: boolean;
-  sourceAvailable: boolean;
-}
+type RetrievalTrust =
+  | {
+      status: 'ok';
+      freshness: 'fresh';
+      reindexRequired: false;
+      reasonCode?: never;
+    }
+  | {
+      status: 'degraded';
+      freshness: 'fresh';
+      reindexRequired: false;
+      reasonCode:
+        | 'PARSER_COVERAGE_PARTIAL'
+        | 'PARSER_BOUNDARY_UNCERTAIN';
+    }
+  | StructuredRetrievalFailure;
 ```
 
 - `status: ok`は必ず`freshness: fresh`
-- `stale`は必ず`sourceAvailable: false`
+- Outlineはsourceを返さないため`sourceAvailable`という共通fieldを持たない
 - Non-`ok` exact/context responseはsource fieldを持たない
 - Hash値は通常responseへ露出しない
 - Parser/index診断はstable `reasonCode`で返す
 - Internal exception messageとstack traceは返さない
 
-### 12.3 Expected domain outcomes versus MCP errors
+Stable reason codeは次に限定する。
+
+```ts
+type StructuredRetrievalReasonCode =
+  | 'FILE_NOT_FOUND'
+  | 'SYMBOL_NOT_FOUND'
+  | 'SYMBOL_RETIRED'
+  | 'STRUCTURED_INDEX_MISSING'
+  | 'STRUCTURED_SCHEMA_UNSUPPORTED'
+  | 'PATH_EXCLUDED'
+  | 'LANGUAGE_UNSUPPORTED'
+  | 'PARSER_COVERAGE_PARTIAL'
+  | 'PARSER_BOUNDARY_UNCERTAIN'
+  | 'INDEX_FILE_HASH_MISMATCH'
+  | 'INDEX_PENDING_GENERATION'
+  | 'INDEX_SYMBOL_HASH_MISMATCH'
+  | 'INDEX_IMPORT_HASH_MISMATCH'
+  | 'INDEX_GENERATION_MISSING';
+```
+
+### 12.3 Tool-specific status and payload matrix
+
+| Status | Outline | Source | Context | Source-bearing payload |
+| --- | --- | --- | --- | --- |
+| `ok` | Yes | Yes | Yes | Source/context only |
+| `degraded` | Exact subset | No | No | None |
+| `not_found` | Yes | Yes | Yes | None |
+| `stale_identity` | No | Yes | Yes | None |
+| `not_indexed` | Yes | Yes | Yes | None |
+| `excluded` | Yes | Yes | Yes | None |
+| `unsupported` | Yes | Yes | Yes | None |
+| `stale` | Yes | Yes | Yes | None |
+| `index_incomplete` | Yes | Yes | Yes | None |
+
+Outlineの`degraded`だけがexact subsetを持つ。その他のnon-`ok`/non-`degraded` responseは
+`RetrievalTrust`とfile pathまたはsymbol IDだけを返し、position、symbol metadata、source、
+context、importsを含めない。Source/contextのactive symbolがpartial file由来でも、そのsymbol
+自身が`retrievability: exact`でhash検証を通れば`ok`を返す。
+
+全新規toolはinputとpath/symbol IDのsecurity validation直後に共通global gateを適用する。
+
+1. Future schema: `unsupported` + `STRUCTURED_SCHEMA_UNSUPPORTED`
+2. Full rebuild実行中: `index_incomplete` + `INDEX_PENDING_GENERATION`
+3. Legacy/missing schemaまたは終了済みfailed rebuild:
+   `not_indexed` + `STRUCTURED_INDEX_MISSING`
+4. Ready schema: tool-specific precedenceへ進む
+
+Global gate通過後のtool-specific判定順を固定する。
+
+`get_file_outline`:
+
+1. Existing scope/ignore判定: `excluded`
+2. Current file existence: `not_found`
+3. Language support: `unsupported`
+4. Structured file/generation existence:
+   - `structured_files` rowなし、または`active_generation`がnull:
+     `not_indexed` + `STRUCTURED_INDEX_MISSING`
+   - `active_generation`の参照先generationなし:
+     `index_incomplete` + `INDEX_GENERATION_MISSING`
+5. Pending generation: `index_incomplete`
+6. File hash: `stale`
+7. Parse coverage: `degraded`または`ok`
+
+`get_symbol_source`と`get_symbol_context`:
+
+1. Pending generation lookup: `index_incomplete`
+2. Symbol rowまたはactive pointerがmissing generationを参照する場合:
+   `index_incomplete` + `INDEX_GENERATION_MISSING`
+3. Active lookup。未解決ならtombstone: `stale_identity`、それ以外: `not_found`
+4. Associated pathのscope/ignore: `excluded`
+5. Language support: `unsupported`
+6. Active fileのpending pointer: `index_incomplete`
+7. Current file existenceまたはfile hash mismatch: `stale`
+8. Symbol hash mismatch: `index_incomplete`
+9. Verified response: `ok`
+
+`freshness`は`ok`とoutline `degraded`で`fresh`、`stale`で`stale`、その他で`unknown`とする。
+`reasonCode`は`ok`以外で必須とする。
+
+| Status | Primary reason code | `reindexRequired` |
+| --- | --- | --- |
+| `not_found` | `FILE_NOT_FOUND` / `SYMBOL_NOT_FOUND` | `false` |
+| `stale_identity` | `SYMBOL_RETIRED` | `false` |
+| `not_indexed` | `STRUCTURED_INDEX_MISSING` | `true` |
+| `excluded` | `PATH_EXCLUDED` | `false` |
+| `unsupported` | `LANGUAGE_UNSUPPORTED` | `false` |
+| `degraded` | `PARSER_COVERAGE_PARTIAL` | `false` |
+| `stale` | `INDEX_FILE_HASH_MISMATCH` | `true` |
+| `index_incomplete` | `INDEX_PENDING_GENERATION` | `true` |
+
+`degraded`では原因に応じて`PARSER_BOUNDARY_UNCERTAIN`も使う。
+`index_incomplete`では原因に応じて`INDEX_SYMBOL_HASH_MISMATCH`または
+`INDEX_IMPORT_HASH_MISMATCH`、`INDEX_GENERATION_MISSING`も使う。
+Future structured schemaでは`unsupported`と
+`STRUCTURED_SCHEMA_UNSUPPORTED`を組み合わせる。
+
+共通failure shapeは次とする。
+
+```ts
+interface StructuredRetrievalFailure {
+  status: Exclude<StructuredRetrievalStatus, 'ok' | 'degraded'>;
+  freshness: 'stale' | 'unknown';
+  reindexRequired: boolean;
+  reasonCode: StructuredRetrievalReasonCode;
+  request: { filePath: string } | { symbolId: string };
+}
+```
+
+### 12.4 Expected domain outcomes versus MCP errors
 
 Stale、unsupported、not found等は解釈可能なdomain outcomeとしてstructured responseを返す。
-Tool call transport自体を失敗させない。ただし`status !== ok`であり、exact retrieval成功ではない。
+Tool call transport自体を失敗させない。ただし`status !== ok`であり、
+exact retrieval成功ではない。
 
 次は既存方式の`isError: true`とstable `NEXUS_*` codeを使用する。
 
-- Input schema違反
-- Path traversalまたはsymlink escape
-- SQLite/file I/O failure
-- Storage unavailable
-- Cancellation
-- Internal invariant violation
+| Failure | MCP error code |
+| --- | --- |
+| Input schema、symbol ID format違反 | `NEXUS_INVALID_ARGUMENT` |
+| Path traversal、symlink escape、permission denied | `NEXUS_ACCESS_DENIED` |
+| SQLite、LanceDB、required file I/O failure | `NEXUS_STORAGE_UNAVAILABLE` |
+| Cancellation | `NEXUS_REQUEST_CANCELLED` |
+| Internal invariant violation | `NEXUS_INTERNAL_ERROR` |
+
+`NEXUS_INVALID_ARGUMENT`と`NEXUS_REQUEST_CANCELLED`を
+`NexusErrorCode`へ追加する。Current fileの`ENOENT`はtransport errorではなく、
+上記status precedenceに従い`not_found`または`stale`とする。
 
 ## 13. Backward compatibility
 
@@ -619,7 +980,16 @@ semantic/hybrid resultだけが値を持つ。JSON clientは未知fieldを無視
 
 ### 13.3 Legacy index compatibility mode
 
-Structured schema versionをSQLiteへ保存する。Old/missing schema検出時は次の挙動とする。
+`index_stats.structured_schema_version`へactive structured schema versionを保存する。Valueは
+`number | null`で、target versionは`1`とする。`null`またはtarget未満をlegacy、target超過を
+unsupported future schemaとして扱う。Future schemaでは`index_status`を`degraded`、new 3 toolを
+`unsupported`, `reasonCode: STRUCTURED_SCHEMA_UNSUPPORTED`とし、dataを変更しない。
+Old/missing schema検出時は次の挙動とする。
+
+`structured_schema_version`とpersisted rebuild state用control columns、および空のstructured
+catalog tablesは、idempotentなcontrol-schema bootstrapとしてstartup時に作成できる。この
+bootstrapはlegacy index dataのmigrationではなく、existing LanceDB data、search rows、既存6
+toolのbehaviorを変更しない。
 
 - 自動migrationしない
 - 自動full rebuildしない
@@ -629,8 +999,26 @@ Structured schema versionをSQLiteへ保存する。Old/missing schema検出時�
 - Legacy LanceDB tableへのincremental writeはlegacy column setを維持する
 - New `symbolId` columnをlegacy tableへ混在させない
 
-Userはexisting `reindex({ fullRebuild: true })`を実行する。Full rebuildはnew LanceDB schemaと
-structured catalogを同時に構築する。成功後にstructured schema versionをreadyとして保存する。
+Userはexisting `reindex({ fullRebuild: true })`を実行する。Full rebuildは次のcommit protocolで
+new LanceDB schemaとstructured catalogを同時構築する。
+
+1. Persisted rebuild stateを`building`にし、全catalog generationをinactive `pending`として
+   stageする。
+2. Shadow LanceDB tableを構築する。
+3. 全file、DLQ empty、catalog/chunk generation整合性を検証する。
+4. LanceDB tableをswapする。この時点でもglobal gateは`building`であり、新3 toolは
+   `index_incomplete`, `reasonCode: INDEX_PENDING_GENERATION`を返す。
+5. 最後のSQLite transactionで全generationをactivateし、旧generationをretireし、pending
+   pointerをclearし、schema version `1`とrebuild state `idle`を保存する。
+
+Existing 6 toolはswapまでpre-rebuild active LanceDB tableを使う。Swap前の失敗では旧tableを
+維持する。Swap後かつfinal SQLite transaction前の失敗ではstaged catalogをactivateせず、
+swapped tableを既存6 toolで利用可能にし、persisted rebuild stateを`failed`として残す。
+
+いずれのfailureでもschema versionを開始前の値のまま維持し、`index_status`を`degraded`、
+`reindexRequired: true`とする。Rebuild終了後の新3 toolはglobal gateにより`not_indexed`,
+`reasonCode: STRUCTURED_INDEX_MISSING`を返す。Restart時に`building`が残っていた場合も`failed`へ
+遷移させ、pending generationを自動activateせず、次のexplicit full rebuildを要求する。
 
 ## 14. `index_status` extension
 
@@ -638,8 +1026,11 @@ Existing responseへ任意`structuredIndex` fieldを追加する。
 
 ```ts
 structuredIndex: {
-  schemaVersion: 1;
+  schemaVersion: number | null;
+  targetSchemaVersion: 1;
   status: 'ready' | 'building' | 'reindex_required' | 'degraded';
+  rebuildState: 'idle' | 'building' | 'failed';
+  lastErrorCode: string | null;
   totalFiles: number;
   totalSymbols: number;
   exactFiles: number;
@@ -650,6 +1041,16 @@ structuredIndex: {
 ```
 
 Existing clientはこの追加fieldを無視できる。
+
+Status aggregationは次の優先順で決める。
+
+1. Full rebuild実行中: `building`
+2. Structured build error、pending generation、DLQあり: `degraded`
+3. Schema version missing/mismatch: `reindex_required`
+4. 上記以外: `ready`
+
+Partial parser coverageだけではglobal statusを`degraded`にしない。`degradedFiles`とparser metricsで
+可視化し、exact subset retrievalを利用可能に保つ。
 
 ## 15. Observability
 
@@ -688,6 +1089,11 @@ Datasetsは次とする。
 review可能なreportとして残す。Existing search/indexingに明確な悪化が見える場合は
 release blockerとして原因を解消する。
 
+Reportはdataset、Node/OS/CPU、warm-up回数、measurement回数、中央値、p95、変更前後の
+absolute値とpercentage差分を記録する。各regressionにはaccepted、mitigated、blockedの判定と
+根拠を付ける。数値閾値を事前固定しない理由は、parser精度向上に必要なindexing costと
+machine varianceを区別しながら、reviewerが差分を明示的に承認できるようにするためである。
+
 ## 17. Test strategy
 
 ### 17.1 Parser fixtures
@@ -700,8 +1106,10 @@ Languageごとに次を検証する。
 - UTF-8/CJK/emoji byte offsets
 - Qualified name、signature、parent-child
 - Overload、same-name symbol、duplicate signature
+- Anonymous/default exportとduplicate logical slot identity
 - Import alias、namespace import、shadowing、ambiguous import
 - Partial syntax error coverage
+- Multi-declarator、destructuring、grouped Go type等のexcluded exact forms
 - Unsupported/fallbackがexact symbolを生成しないこと
 
 ### 17.2 Identity
@@ -709,6 +1117,7 @@ Languageごとに次を検証する。
 - Body変更、line移動、周辺comment変更、reindexでID維持
 - Rename、file move、signature変更でID変更
 - OverloadごとにIDが異なる
+- Duplicate declarationの並べ替え、挿入、削除に対するslot identity規則
 - Canonical inputとversionのdeterminism
 - Retired IDで類似symbolへfallbackしない
 
@@ -732,6 +1141,8 @@ SQLite implementationとtest doubleの双方へ同じcontract suiteを適用す�
 - Single buffer readからのhash verificationとbyte slice
 - Symbolがbudget超過してもcomplete source維持
 - Import-unit packing、budget omission、partial completeness
+- Canonical context text、fixed tokenizer count、symbol-only overflow
+- 全status precedenceとnon-success payload source absence
 - Cancellation and path sanitization
 
 ### 17.5 MCP integration
@@ -743,6 +1154,7 @@ SQLite implementationとtest doubleの双方へ同じcontract suiteを適用す�
 - v1/v2 neutral schema registration
 - Existing 6 tool schemaとexisting response fieldが不変
 - Excluded fileとparser failureのmachine-readable response
+- Legacy、building、failed full rebuildのstructured status遷移
 
 AC-1からAC-17をtest caseへ一対一でtraceする。
 
