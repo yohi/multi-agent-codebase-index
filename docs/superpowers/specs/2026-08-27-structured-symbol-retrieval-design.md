@@ -144,6 +144,7 @@ LanceDBは次だけを保持する。
 - existing `CodeChunk`
 - embedding vector
 - structured declaration由来chunkの任意`symbolId`
+- structured tableではfile pathと`generationId`を保持し、active generationだけを検索対象にする
 
 LanceDBをoutline、hierarchy、freshness、complete sourceの正本にはしない。
 
@@ -283,6 +284,12 @@ Occurrenceは同一canonical identity内のlogical slot identityである。Iden
 並べ替えはslotのbody変更としてIDを維持する。Identical declarationの挿入または削除で
 ordinalが変わるslotは、disambiguation setの変更としてID変更を許容する。
 
+Goのinterface methodはmethod nameだけをqualified nameへ使用しない。同じmethod nameと
+signatureを持つinterfaceが同一fileまたは同一package内に複数ある場合でも、ownerを含めて
+`<owning interface qualified name>.<method name>`とする。Canonical identity inputにはこの
+owner-qualified nameを入れ、`parentSymbolId`だけに識別性を依存しない。例えば
+`Reader.Read`と`Writer.Read`はsignatureが同じでも別IDになる。
+
 #### Signature canonicalization
 
 `signature_discriminator`はparserが生成したheader token列からcommentとtriviaを除去し、
@@ -327,7 +334,8 @@ Anonymous symbolが同一parent内で重複する場合は通常のoccurrence規
 
 - TypeScript: `Namespace.Class.method`
 - Python: `Class.method`、top-level declarationはsimple name
-- Go: `Receiver.Method`、top-level declarationはsimple name
+- Go: receiver methodは`Receiver.Method`、interface methodは
+  `<Interface qualified name>.<Method>`、top-level declarationはsimple name
 - Anonymous/default export: 上記reserved nameを使用する
 
 ## 7. Parser design
@@ -429,6 +437,11 @@ Declarationの直前にblank lineなしで連続するdoc comment groupをsource
 解決できる場合のみ設定する。別fileの場合はparentをnullとし、qualified nameには
 receiverを含める。
 
+Interface method specificationのparentは、同一file内で解決できるowning interfaceとする。
+Interfaceのqualified nameを確定できる場合は、それをmethodのqualified nameへ必ず含める。
+Interface名の解決ができない場合はinterface methodへpublic IDを付与せず、fixed-line
+fallbackへ残す。Embedded interface elementは引き続きexact対象外とする。
+
 Grouped type declarationはwrapperなしではstandalone declarationにならないため、個々の
 type specをexact symbolとして扱わない。Embedded interface elementも今回のexact対象外とする。
 
@@ -480,28 +493,65 @@ Related import判定は同一file内の保守的なlexical binding解析に限�
 5. 1つのSQLite transactionでnew generationを`pending`としてstageし、fileの
    `pending_generation` pointerを設定する。
 6. Chunkerがsearch chunksと任意`symbolId`を生成する。
-7. LanceDBの対象file chunksを置換する。
-8. 1つのSQLite transactionでnew generationを`active`へ切り替える。
-9. 同じtransactionでold generationをretireする。
-10. 同じtransactionで消えたIDをtombstoneへ記録する。
-11. 同じtransactionで`pending_generation` pointerをclearする。
-12. Commit後にretired generationのcatalog rowsをGCする。
+7. LanceDBへ`generationId`付きのpending rowsをstageする。Activation前にactive
+   generationのrowsを削除しない。
+8. 全pending rows、catalog、file hash、chunk hashの整合性を検証する。
+9. 1つのSQLite transactionで、期待するpending pointerをCASし、new generationを`active`
+   へ切り替える。
+10. 同じtransactionでold generationをretireし、消えたIDをtombstoneへ記録し、
+    `pending_generation` pointerをclearする。
+11. Commit後にretired generationのcatalog rowsとLanceDB rowsをGCする。GCはactivationの
+    成否から独立したidempotent処理とし、失敗してもactive generationを変更しない。
+12. Read pathは常にSQLiteのactive generationと一致するLanceDB rowsだけを検索する。
+
+Structured file replacementでは、active LanceDB rowsを先に削除してからnew rowsを追加する
+delete-first方式を禁止する。Pending stageが一部batchで失敗した場合も、`generationId`で
+pending rowsだけを識別して削除し、active rowsとactive catalogを維持する。
 
 ### 8.2 Cross-store failure
 
 SQLiteとLanceDBを跨ぐdistributed transactionは導入しない。Pending/active generationにより
-中間状態を明示する。
+中間状態を明示する。各operationはgeneration単位で再実行可能にし、部分的なLanceDB書き込み
+やprocess restart後も、SQLiteのpointerとLanceDBのgeneration markerから同じ結果へ収束させる。
 
-- ParserまたはLanceDB更新失敗: active generationを維持し、new generationをactivateしない
-- LanceDB成功後のactivation失敗: pendingを残し、対象fileをDLQ/incomplete状態にする
+- Parser失敗: active generationとactive LanceDB rowsを維持し、new generationをactivateしない
+- LanceDB stage失敗（batch途中を含む）: pending generationのrowsだけを取り除き、active
+  generationを維持する。Cleanup失敗時もpending rowsはread pathから不可視とし、次回
+  reconciliationで再試行する
+- LanceDB stage成功後のactivation失敗: pending pointerを残し、active generationとactive
+  LanceDB rowsを維持し、対象fileをDLQ/incomplete状態にする
+- Activation後のold generation rows削除失敗: active pointerとactive rowsを維持し、old rowsを
+  read pathから除外したまま、idempotent GCで再試行する
 - Searchがpending IDを返した場合: retrievalは`index_incomplete`を返す
 - Active IDとpending IDが同一でもcurrent fileがpending contentの場合:
   pending generationを検出し、old sourceを返さず`index_incomplete`を返す
-- Process restart後に残るpending generation: 自動activateせず、retryまたはfull reindexを要求する
+- Process restart後に残るpending generation: 自動activateせず、SQLiteとLanceDBのmarkerを
+  照合するreconciliationでstage、cleanup、またはretryをidempotently実行する。検証不能な
+  pendingは自動activateせず、retryまたはfull reindexを要求する
 
 Failureは既存DLQ、`lastError`、reindex completion contractへ統合する。
 
-### 8.3 Delete and move
+### 8.3 Incremental/full rebuild serialization
+
+Watcherの`processEvents`、incremental reindex、startup full rebuild、manual full rebuild、
+generation GCは、同一projectに対する共有のproject write lockを取得して書き込む。
+Per-file mutexは通常のfile generation stage/activateを直列化し、full rebuild barrierは
+全per-file writerを停止してshadow tableのswapと最終SQLite transactionを含む全commit
+protocolを保護する。
+
+Watcher eventはfull rebuild中に捨てずqueueする。Full rebuildはrebuild epochを開始時に
+incrementし、各pending stage/activate/clearは`filePath`、期待するactive generation、
+pending generation、epochを条件にしたCASとする。期待値が変わったwriterはlatest activeを
+上書きせず、pendingをactivateまたはclearせず、reconciliationへ戻す。これにより
+`processEvents`から`reindex`へのhandoff、またはその逆順でも、古いwriterが新しいpending
+generationを消去することを防ぐ。
+
+LanceDBのincremental pending rowsとfull rebuildのshadow table swapは同じproject write
+lockの下で実行する。Shadow table swapから最終SQLite activation transactionまでの間に
+incremental writeを許可しない。Lock解放後にqueue済みeventをcurrent epochへ再評価し、
+active generationとLanceDB generation markerを再照合してから処理する。
+
+### 8.4 Delete and move
 
 Delete処理はLanceDB chunksとactive catalogを削除し、retired IDsをtombstoneへ記録する。
 
@@ -529,7 +579,8 @@ Name、line、類似signatureによるfallbackは行わない。
 
 Exact sourceとbounded contextでは次の順序を固定する。
 
-1. IDがpending generationに存在すれば`index_incomplete`を返す。
+1. IDがpending generationに存在すれば`index_incomplete`,
+   `reasonCode: INDEX_PENDING_GENERATION`を返す。
 2. Active symbol recordをresolveする。
 3. Active fileにpending pointerがあれば`index_incomplete`を返す。
 4. Activeになければtombstoneを確認し、`stale_identity`または`not_found`を返す。
@@ -543,8 +594,9 @@ Exact sourceとbounded contextでは次の順序を固定する。
 
 同じbufferを検証とsliceに使うため、hash確認後の再readによるTOCTOUを避ける。
 
-Current fileが消失しているがcatalogがまだactiveの場合は`stale`を返す。Watcherがdeleteを
-処理した後はIDがtombstone化され、`stale_identity`を返す。
+Current fileが消失しているがcatalogがまだactiveの場合は`stale`,
+`reasonCode: INDEX_FILE_MISSING`を返す。Watcherがdeleteを処理した後はIDがtombstone化され、
+`stale_identity`を返す。これはoutline、source、contextで共通のmissing-file precedenceとする。
 
 `get_symbol_context`ではfile hashとsymbol hashの検証後、budget候補となる全importについて
 range boundsとslice hashを同じfile bufferから検証する。1件でも不一致ならcontextを返さず、
@@ -581,7 +633,8 @@ interface SymbolMetadata {
 
 `filePath`はproject-relative pathに限定する。`symbolId`は
 `^symbol_v1_[A-Za-z0-9_-]{43}$`、`tokenBudget`は1から100,000のintegerとしてMCP input
-schemaで検証する。
+schemaで検証する。これらの制約はneutral schemaに表現し、v1/v2 adapterの両方へ同じ
+runtime validationとして伝播させる。
 
 ### 10.1 `get_file_outline`
 
@@ -741,6 +794,43 @@ Contentをresponse内で重複させないため、bounded contextはcanonical t
 }
 ```
 
+### 10.4 Neutral schema validation parity
+
+Neutral schema DSLはstring fieldの`pattern`とinteger fieldの`minimum`/`maximum`を表現
+できなければならない。Structured retrievalのfield定義は次の制約を持つ。
+
+最低限、次のfield形状をneutral typeへ追加する。
+
+```ts
+| { kind: 'string'; pattern?: string; optional?: boolean; description?: string }
+| {
+    kind: 'integer';
+    minimum?: number;
+    maximum?: number;
+    optional?: boolean;
+    description?: string;
+  }
+```
+
+| Field | Neutral constraint |
+| :--- | :--- |
+| `filePath` | string、project-relative path |
+| `symbolId` | string、pattern `^symbol_v1_[A-Za-z0-9_-]{43}$` |
+| `tokenBudget` | integer、minimum `1`、maximum `100000` |
+
+Runtime boundaryは`filePath`をPath sanitizerでscope、traversal、symlink検証し、
+`symbolId`をschema検証後にcatalog lookupへ渡し、`tokenBudget`をbudget packing前に検証する。
+
+v1 adapterはpatternをZod v3の`regex`、minimum/maximumを`min`/`max`へ変換する。
+v2 adapterは同じ値をJSON Schemaの`pattern`/`minimum`/`maximum`とZod v4 runtime
+schemaへ変換する。v2の`topK`/`maxResults`用operation limitはstructured fieldの
+宣言済みmaximumを上書きしない。両adapterで境界外入力をhandlerへ渡さず、既存の
+`NEXUS_INVALID_ARGUMENT`として返す。
+
+既存6 toolのschema、既存maximum、既存input/response contractは変更しない。Parity testは
+同一neutral definitionから生成したv1/v2 schemaについて、valid boundary、invalid boundary、
+invalid `symbolId`、invalid `filePath` shapeを同じ結果にすることを確認する。
+
 ## 11. Token accounting
 
 Tokenizerは`js-tiktoken@1.0.21`の`js-tiktoken/lite`とlocal `cl100k_base` ranksを使用する。
@@ -840,6 +930,7 @@ type StructuredRetrievalReasonCode =
   | 'LANGUAGE_UNSUPPORTED'
   | 'PARSER_COVERAGE_PARTIAL'
   | 'PARSER_BOUNDARY_UNCERTAIN'
+  | 'INDEX_FILE_MISSING'
   | 'INDEX_FILE_HASH_MISMATCH'
   | 'INDEX_PENDING_GENERATION'
   | 'INDEX_SYMBOL_HASH_MISMATCH'
@@ -879,32 +970,43 @@ Global gate通過後のtool-specific判定順を固定する。
 `get_file_outline`:
 
 1. Existing scope/ignore判定: `excluded`
-2. Current file existence: `not_found`
-3. Language support: `unsupported`
-4. Structured file/generation existence:
+2. Structured file/generation existence:
    - `structured_files` rowなし、または`active_generation`がnull:
-     `not_indexed` + `STRUCTURED_INDEX_MISSING`
+     active catalogなしとして次のcurrent file判定へ進む
    - `active_generation`の参照先generationなし:
      `index_incomplete` + `INDEX_GENERATION_MISSING`
-5. Pending generation: `index_incomplete`
-6. File hash: `stale`
-7. Parse coverage: `degraded`または`ok`
+3. Pending generationまたはpending pointer: `index_incomplete` + `INDEX_PENDING_GENERATION`
+   （current fileの存在・hash判定より優先する）
+4. Current file existence:
+   - active catalog recordありで`ENOENT`: `stale` + `INDEX_FILE_MISSING`
+   - active catalog recordなしで`ENOENT`: `not_found` + `FILE_NOT_FOUND`
+5. Language support: `unsupported`
+6. Active catalogなし: `not_indexed` + `STRUCTURED_INDEX_MISSING`
+7. File hash: `stale` + `INDEX_FILE_HASH_MISMATCH`
+8. Parse coverage: `degraded`または`ok`
 
 `get_symbol_source`と`get_symbol_context`:
 
-1. Pending generation lookup: `index_incomplete`
+1. Pending generation lookup: `index_incomplete` + `INDEX_PENDING_GENERATION`
 2. Symbol rowまたはactive pointerがmissing generationを参照する場合:
    `index_incomplete` + `INDEX_GENERATION_MISSING`
 3. Active lookup。未解決ならtombstone: `stale_identity`、それ以外: `not_found`
 4. Associated pathのscope/ignore: `excluded`
 5. Language support: `unsupported`
 6. Active fileのpending pointer: `index_incomplete`
-7. Current file existenceまたはfile hash mismatch: `stale`
+7. Current file:
+   - `ENOENT`: `stale` + `INDEX_FILE_MISSING`
+   - file hash mismatch: `stale` + `INDEX_FILE_HASH_MISMATCH`
 8. Symbol hash mismatch: `index_incomplete`
 9. Verified response: `ok`
 
 `freshness`は`ok`とoutline `degraded`で`fresh`、`stale`で`stale`、その他で`unknown`とする。
 `reasonCode`は`ok`以外で必須とする。
+
+Full rebuildのglobal gateは全fileへ適用する。一方、watcherによるincremental updateの
+pending generationは対象file単位のgateとし、対象fileについてだけcurrent fileの存在・hash
+判定より先に`index_incomplete`を返す。したがって、watcherが変更をまだstageしていない間は
+`stale`、stage済みの間は`index_incomplete`となり、同じ編集でstatusが競合しない。
 
 | Status | Primary reason code | `reindexRequired` |
 | --- | --- | --- |
@@ -914,7 +1016,7 @@ Global gate通過後のtool-specific判定順を固定する。
 | `excluded` | `PATH_EXCLUDED` | `false` |
 | `unsupported` | `LANGUAGE_UNSUPPORTED` | `false` |
 | `degraded` | `PARSER_COVERAGE_PARTIAL` | `false` |
-| `stale` | `INDEX_FILE_HASH_MISMATCH` | `true` |
+| `stale` | `INDEX_FILE_MISSING` / `INDEX_FILE_HASH_MISMATCH` | `true` |
 | `index_incomplete` | `INDEX_PENDING_GENERATION` | `true` |
 
 `degraded`では原因に応じて`PARSER_BOUNDARY_UNCERTAIN`も使う。
@@ -952,8 +1054,9 @@ exact retrieval成功ではない。
 | Internal invariant violation | `NEXUS_INTERNAL_ERROR` |
 
 `NEXUS_INVALID_ARGUMENT`と`NEXUS_REQUEST_CANCELLED`を
-`NexusErrorCode`へ追加する。Current fileの`ENOENT`はtransport errorではなく、
-上記status precedenceに従い`not_found`または`stale`とする。
+`NexusErrorCode`へ追加する。Current fileの`ENOENT`はtransport errorではなく、active catalog
+recordが残っている場合は`stale`, `reasonCode: INDEX_FILE_MISSING`、active catalog recordが
+ない場合は`not_found`, `reasonCode: FILE_NOT_FOUND`とする。
 
 ## 13. Backward compatibility
 
@@ -1002,6 +1105,11 @@ toolのbehaviorを変更しない。
 Userはexisting `reindex({ fullRebuild: true })`を実行する。Full rebuildは次のcommit protocolで
 new LanceDB schemaとstructured catalogを同時構築する。
 
+Full rebuildは8.3のproject write lockとfull-rebuild barrierを取得して開始し、開始時に
+rebuild epochをincrementする。以下の全stage、shadow table swap、最終SQLite transaction、
+失敗時のstate保存は同じlockの下で行い、watcher eventはqueueしてlock解放後にcurrent epoch
+へ再評価する。
+
 1. Persisted rebuild stateを`building`にし、全catalog generationをinactive `pending`として
    stageする。
 2. Shadow LanceDB tableを構築する。
@@ -1014,6 +1122,10 @@ new LanceDB schemaとstructured catalogを同時構築する。
 Existing 6 toolはswapまでpre-rebuild active LanceDB tableを使う。Swap前の失敗では旧tableを
 維持する。Swap後かつfinal SQLite transaction前の失敗ではstaged catalogをactivateせず、
 swapped tableを既存6 toolで利用可能にし、persisted rebuild stateを`failed`として残す。
+この分岐では旧active table、staged table、rebuild epochをcontrol stateへ記録し、structured
+read pathを`ready`へ遷移させない。Reconciliationは同じlock内で旧active tableへ戻すか、
+staged tableと旧catalogをactive pairとして扱わずにfull rebuild待ちへ固定する。最終transaction
+なしにnew catalogだけ、またはnew tableだけをactiveとして公開してはならない。
 
 いずれのfailureでもschema versionを開始前の値のまま維持し、`index_status`を`degraded`、
 `reindexRequired: true`とする。Rebuild終了後の新3 toolはglobal gateにより`not_indexed`,
@@ -1111,6 +1223,23 @@ Languageごとに次を検証する。
 - Partial syntax error coverage
 - Multi-declarator、destructuring、grouped Go type等のexcluded exact forms
 - Unsupported/fallbackがexact symbolを生成しないこと
+- Go fixtureで同じ`Read` methodを持つ`Reader`/`Writer` interfaceを並べ、
+  `Reader.Read`と`Writer.Read`のqualified nameと`symbolId`が異なること
+
+Fixtureの最小例は次の形とする。
+
+```go
+type Reader interface {
+  Read(p []byte) (int, error)
+}
+
+type Writer interface {
+  Read(p []byte) (int, error)
+}
+```
+
+両methodは同一signatureでもowner-qualified nameが異なり、parent identityとpublic
+`symbolId`の双方が衝突してはならない。
 
 ### 17.2 Identity
 
@@ -1131,12 +1260,25 @@ SQLite implementationとtest doubleの双方へ同じcontract suiteを適用す�
 - Scope behavior
 - Concurrent read/write
 - Incomplete cross-store state
+- Failure injection: pending stage前、LanceDB batch途中、stage後のactivation失敗、process
+  restart後のreconciliation
+- Interleaving: `processEvents`とincremental/full `reindex`を各順序で同時実行し、project
+  write lock、full-rebuild barrier、epoch付きCASが最新active/pendingを保護すること
+- どのfailureでもactive catalogとactive LanceDB rowsが一致し、pending rowsがread pathへ
+  漏れないこと。Full rebuildのswap後failureではstructured read pathが必ずgatedされ、
+  active pairを誤って報告しないこと
+- Retry/reconciliationを繰り返しても、active generation/table pairまたは明示的な
+  full-rebuild-required stateのどちらかへ決定論的に収束すること
 
 ### 17.4 Retrieval service
 
 - Fresh exact source
 - Current file hash mismatchでsourceなし`stale`
+- Active catalogが残るfileの`ENOENT`でsourceなし`stale`,
+  `reasonCode: INDEX_FILE_MISSING`
 - Symbol hash mismatchでsourceなし`index_incomplete`
+- Watcherが変更をstageする前の`stale`と、pending pointer stage後の
+  `index_incomplete`のstatus precedence
 - `not_found`, `stale_identity`, `excluded`, `degraded`
 - Single buffer readからのhash verificationとbyte slice
 - Symbolがbudget超過してもcomplete source維持
@@ -1152,6 +1294,8 @@ SQLite implementationとtest doubleの双方へ同じcontract suiteを適用す�
 - File outlineからsource/contextへ進む
 - Embedding provider unavailableでもnew 3 toolが動作する
 - v1/v2 neutral schema registration
+- `symbolId` pattern、`tokenBudget`の1/100000 boundary、上限超過、invalid `filePath`を
+  v1/v2 adapterが同じく拒否し、handlerを呼び出さないこと
 - Existing 6 tool schemaとexisting response fieldが不変
 - Excluded fileとparser failureのmachine-readable response
 - Legacy、building、failed full rebuildのstructured status遷移
@@ -1201,10 +1345,14 @@ Compiler、lint、unit/integration tests、benchmarkとは別に、実際のMCP 
 2. Outlineからexact sourceを取得する。
 3. Bounded contextを通常budgetで取得する。
 4. Symbol自体がbudget超過するcaseでcomplete sourceを確認する。
-5. Working tree編集後にsourceなし`stale`を確認する。
-6. Reindex後に`fresh`へ復帰することを確認する。
-7. Embedding unavailable時にstructured retrievalを確認する。
-8. Unsupported/excluded fileのnon-success statusを確認する。
+5. Watcherを停止またはpending stage前に固定した状態でworking treeを編集し、active catalogが
+   残るfileについてsourceなし`stale`, `INDEX_FILE_HASH_MISMATCH`を確認する。
+6. Watcherがpending generationをstageした状態をテスト用barrierで固定し、同じfileについて
+   sourceなし`index_incomplete`, `INDEX_PENDING_GENERATION`を確認する。無関係なfileの
+   retrievalはこのper-file pendingで阻害されないことも確認する。
+7. Reindex後に`fresh`へ復帰することを確認する。
+8. Embedding provider unavailable時にstructured retrievalを確認する。
+9. Unsupported/excluded fileのnon-success statusを確認する。
 
 ## 20. Rejected alternatives
 
