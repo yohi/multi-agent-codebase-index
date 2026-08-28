@@ -1454,9 +1454,22 @@ it("moves from semantic search to complete source through one symbol ID", async 
 
 it("keeps structured retrieval usable when embeddings are unavailable", async () => {
   runtime.embeddingProvider.failHealthCheck();
-  await expect(
-    callTool("get_file_outline", { filePath: "src/auth.ts" }),
-  ).resolves.toMatchObject({ status: "ok" });
+
+  const outline = await callTool("get_file_outline", {
+    filePath: "src/auth.ts",
+  });
+  expect(outline).toMatchObject({ status: "ok" });
+
+  const source = await callTool("get_symbol_source", {
+    symbolId: outline.symbols[0].symbolId,
+  });
+  expect(source).toMatchObject({ status: "ok" });
+
+  const context = await callTool("get_symbol_context", {
+    symbolId: outline.symbols[0].symbolId,
+    tokenBudget: 2000,
+  });
+  expect(context).toMatchObject({ status: "ok" });
 });
 ```
 
