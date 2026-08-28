@@ -958,6 +958,16 @@ it("keeps the active catalog and vectors visible when Lance staging fails mid-ba
   expect(await catalog.resolveFile("src/auth.ts")).toMatchObject({
     pendingGeneration: null,
   });
+  // Failed-generation Lance rows must be deleted or hidden from search.
+  // The prior active generation remains visible, but no symbol IDs from the
+  // failed pending generation may surface in vector search results.
+  const searchResults = await vectorStore.search(vector, 100);
+  const visibleFailedSymbolIds = new Set(
+    searchResults
+      .map((r) => r.chunk.symbolId)
+      .filter((id): id is string => id !== undefined && id !== firstSymbol.symbolId),
+  );
+  expect(visibleFailedSymbolIds.size).toBe(0);
   expect(await vectorStore.search(vector, 10)).toContainEqual(
     expect.objectContaining({
       chunk: expect.objectContaining({ symbolId: firstSymbol.symbolId }),
@@ -1467,8 +1477,8 @@ Add the following acceptance traceability matrix. Each named test must be implem
 | AC-11 | Fresh result                                      | `tests/integration/structured-retrieval.test.ts`        | `marks matching working-tree bytes as fresh`                                         | A matching file returns `ok` with `freshness: "fresh"`.                                                                                                      |
 | AC-12 | Stale result                                      | `tests/integration/structured-retrieval.test.ts`        | `fails closed for changed working-tree bytes`                                        | Changed bytes return source-free `stale` with `INDEX_FILE_HASH_MISMATCH`.                                                                                    |
 | AC-13 | Parser failure                                    | `tests/integration/structured-retrieval.test.ts`        | `reports parser failure without exposing fixed-line chunks as symbols`               | The result is machine-readable unavailable or degraded and exposes no fallback `symbolId`.                                                                   |
-| AC-14 | Embedding independence                            | `tests/integration/structured-retrieval.test.ts`        | `keeps structured retrieval usable when embeddings are unavailable`                  | Outline, source, and context return structured results while embedding health fails.                                                                         |
-| AC-15 | Existing-tool compatibility                       | `tests/integration/mcp-protocol.test.ts`                | `keeps the existing six tool contracts unchanged while registering structured tools` | Existing schemas and response fields remain unchanged; all three new tools register in v1 and v2.                                                            |
+| AC-14 | Embedding independence                            | `tests/integration/structured-retrieval.test.ts`        | `keeps structured retrieval usable when embeddings are unavailable`                  | `get_file_outline`, `get_symbol_source`, and `get_symbol_context` all return successful (`ok`) structured results while embedding health fails. |
+| AC-15 | Existing-tool compatibility                       | `tests/integration/mcp-protocol.test.ts`                | `keeps existing six tool contracts and registers structured tools in both v1 and v2` | Existing v1 and v2 schemas/response fields for the six legacy tools remain unchanged; `get_file_outline`, `get_symbol_source`, and `get_symbol_context` register in both `createNexusServer` (v1) and `createV2McpHandler` (v2) tool lists and can be invoked successfully. |
 | AC-16 | Retrieval scope consistency                       | `tests/integration/structured-retrieval.test.ts`        | `returns excluded status for an index-excluded file`                                 | An excluded file returns source-free `excluded` with `PATH_EXCLUDED`.                                                                                        |
 | AC-17 | Agent guidance                                    | `tests/unit/docs/structured-retrieval-guidance.test.ts` | `documents the canonical symbol-aware retrieval flow`                                | README, SPEC, MCP documentation, and code-search guidance all direct symbol-aware results to source/context retrieval and preserve `get_context` exceptions. |
 
