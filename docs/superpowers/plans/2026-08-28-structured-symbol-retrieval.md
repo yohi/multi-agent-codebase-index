@@ -146,11 +146,14 @@ Use `gh stack rebase --upstack --remote origin` after changing a lower layer, re
 - Create: `src/structured/hash.ts`
 - Create: `src/structured/identity.ts`
 - Modify: `src/types/index.ts:19-29`
+- Create: `tests/unit/structured/hash.test.ts`
 - Create: `tests/unit/structured/identity.test.ts`
 
 **Interfaces:**
 
-- Produces: `StructuredSource` (canonical file path, language, original `Uint8Array` bytes, and fatal-decoded text), `StructuredParseResult`, `StructuredDeclaration`, `StructuredImport`, `StructuredGeneration`, `StructuredRetrievalStatus`, `StructuredRetrievalReasonCode`, `SymbolPosition`, `SymbolMetadata`, `sha256Hex(bytes)`, `decodeUtf8(bytes)`, `createGenerationId(input)`, and `createSymbolId(input)`.
+- Produces from `contracts.ts`: `StructuredSource` (canonical file path, language, original `Uint8Array` bytes, and fatal-decoded text), `StructuredParseResult`, `StructuredDeclaration`, `StructuredImport`, `StructuredGeneration`, `StructuredRetrievalStatus`, `StructuredRetrievalReasonCode`, `SymbolPosition`, and `SymbolMetadata`.
+- Produces from `hash.ts`: `sha256Hex(bytes)` and `decodeUtf8(bytes)`.
+- Produces from `identity.ts`: `createGenerationId(input)` and `createSymbolId(input)`.
 - Produces: `CodeChunk.symbolId?: string` and internal `VectorSearchResult.generationId?: string`; no existing public `CodeChunk` property changes type or meaning.
 
 - [ ] **Step 1: Write failing identity and byte-hash tests**
@@ -158,11 +161,7 @@ Use `gh stack rebase --upstack --remote origin` after changing a lower layer, re
 ```ts
 import { describe, expect, it } from "vitest";
 
-import {
-  createGenerationId,
-  createSymbolId,
-  sha256Hex,
-} from "../../../src/structured/identity.js";
+import { createSymbolId } from "../../../src/structured/identity.js";
 
 describe("structured identity", () => {
   const base = {
@@ -191,29 +190,55 @@ describe("structured identity", () => {
       }),
     );
   });
+});
+```
 
+`tests/unit/structured/hash.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+
+import { decodeUtf8, sha256Hex } from "../../../src/structured/hash.js";
+
+describe("structured byte helpers", () => {
   it("hashes exact UTF-8 bytes rather than normalized text", () => {
     expect(sha256Hex(Buffer.from("cafe\u0301", "utf8"))).not.toBe(
       sha256Hex(Buffer.from("café", "utf8")),
     );
+  });
+
+  it("rejects malformed UTF-8 instead of replacing bytes", () => {
+    expect(() => decodeUtf8(new Uint8Array([0xc3, 0x28]))).toThrow();
   });
 });
 ```
 
 - [ ] **Step 2: Run the test to verify it fails because the structured module is absent**
 
-Run: `npx vitest run tests/unit/structured/identity.test.ts`
+Run: `npx vitest run tests/unit/structured/hash.test.ts tests/unit/structured/identity.test.ts`
 
-Expected: FAIL with a module-resolution error for `src/structured/identity.js`.
+Expected: FAIL with module-resolution errors for `src/structured/hash.js` and `src/structured/identity.js`.
 
 - [ ] **Step 3: Add the canonical domain contract and deterministic helpers**
 
+`src/structured/hash.ts`:
+
 ```ts
-// src/structured/identity.ts
 import { createHash } from "node:crypto";
 
 export const sha256Hex = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
+
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+
+export const decodeUtf8 = (bytes: Uint8Array): string =>
+  utf8Decoder.decode(bytes);
+```
+
+`src/structured/identity.ts`:
+
+```ts
+import { createHash } from "node:crypto";
 
 export const createGenerationId = (input: {
   schemaVersion: 1;
@@ -263,14 +288,14 @@ Define `StructuredSource` so structured parsers always receive the exact byte bu
 
 - [ ] **Step 4: Run the focused test and the existing chunker test**
 
-Run: `npx vitest run tests/unit/structured/identity.test.ts tests/unit/indexer/chunker.test.ts`
+Run: `npx vitest run tests/unit/structured/hash.test.ts tests/unit/structured/identity.test.ts tests/unit/indexer/chunker.test.ts`
 
 Expected: PASS; existing chunks without a structured artifact still have no `symbolId`.
 
 - [ ] **Step 5: Commit the foundation contract**
 
 ```bash
-git add src/structured/contracts.ts src/structured/hash.ts src/structured/identity.ts src/types/index.ts tests/unit/structured/identity.test.ts
+git add src/structured/contracts.ts src/structured/hash.ts src/structured/identity.ts src/types/index.ts tests/unit/structured/hash.test.ts tests/unit/structured/identity.test.ts
 git commit -m "feat: structured symbol 契約を追加"
 ```
 
@@ -287,7 +312,7 @@ git commit -m "feat: structured symbol 契約を追加"
 
 **Interfaces:**
 
-- Consumes: exact source strings and source-order `StructuredImport` candidates from `src/structured/contracts.ts`.
+- Consumes: exact source strings and source-order import candidates materialized in memory at retrieval time; persisted catalog rows never carry source text.
 - Produces: `TokenCounter.count(text: string): number`, `buildCanonicalContext(importSources, symbolSource)`, and `packRelatedImports(input): PackedContext`.
 
 - [ ] **Step 1: Write failing tests for canonical text, overflow, and import-unit packing**
@@ -397,6 +422,7 @@ git commit -m "feat: structured context のトークン計測を追加"
 
 - Consumes: `StructuredGeneration`, `StructuredDeclaration`, `StructuredImport`, and identity types from `src/structured/contracts.ts`.
 - Produces: `IStructuredCatalog` methods `bootstrapStructuredSchema()`, `getStructuredIndexState()`, `stageGeneration(input)`, `activateGeneration(input)`, `clearPendingGeneration(input)`, `retireFile(input)`, `resolveFile(filePath)`, `getActiveGenerationMap(filePaths)`, `resolveSymbol(symbolId)`, `getPendingSymbol(symbolId)`, `getTombstone(symbolId)`, `getStructuredCounts()`, and `reconcileStructuredState()`.
+- Requires: `clearPendingGeneration` to compare `filePath`, expected active generation, expected pending generation, and rebuild epoch atomically, so a stale cleanup cannot remove a newer pending generation.
 
 - [ ] **Step 1: Write one reusable contract suite before adding SQLite SQL**
 
@@ -422,7 +448,7 @@ export const structuredCatalogContract = (
 };
 ```
 
-Add cases for activation CAS rejection, retirement tombstones, tombstone removal on reappearance, deleted-file retirement, stale pending cleanup, and a fully rebuilt catalog pruning historical tombstones only after successful activation.
+Add cases for activation CAS rejection, retirement tombstones, tombstone removal on reappearance, deleted-file retirement, stale pending cleanup, and a fully rebuilt catalog pruning historical tombstones only after successful activation. Assert that a clear using a stale pending generation or epoch returns `{ cleared: false }` and leaves a newer pending generation unchanged.
 
 - [ ] **Step 2: Run the contract test to verify the new contract is absent**
 
@@ -433,6 +459,13 @@ Expected: FAIL with a module-resolution error for `src/storage/interfaces/struct
 - [ ] **Step 3: Define a storage-neutral catalog API and implement it in memory**
 
 ```ts
+export interface StructuredPendingClear {
+  filePath: string;
+  expectedActiveGeneration: string | null;
+  expectedPendingGeneration: string;
+  expectedRebuildEpoch: number;
+}
+
 export interface IStructuredCatalog {
   bootstrapStructuredSchema(): Promise<void>;
   getStructuredIndexState(): Promise<StructuredIndexState>;
@@ -440,7 +473,9 @@ export interface IStructuredCatalog {
   activateGeneration(
     input: StructuredGenerationActivation,
   ): Promise<StructuredActivationResult>;
-  clearPendingGeneration(input: StructuredPendingClear): Promise<void>;
+  clearPendingGeneration(
+    input: StructuredPendingClear,
+  ): Promise<{ cleared: boolean }>;
   retireFile(input: StructuredFileRetirement): Promise<void>;
   resolveFile(filePath: string): Promise<StructuredFileResolution>;
   getActiveGenerationMap(
@@ -456,7 +491,7 @@ export interface IStructuredCatalog {
 }
 ```
 
-Compose this contract into `IMetadataStore` rather than creating a second SQLite connection. Extend the in-memory implementation with maps keyed by `filePath`, `[filePath, generation, symbolId]`, and `symbolId`, and preserve the same pending/active/tombstone precedence as the SQLite implementation. Contract-test `getActiveGenerationMap` with mixed active, pending, and missing files so search can validate a candidate set in one catalog read.
+Compose this contract into `IMetadataStore` rather than creating a second SQLite connection. Extend the in-memory implementation with maps keyed by `filePath`, `[filePath, generation, symbolId]`, and `symbolId`, and preserve the same pending/active/tombstone precedence as the SQLite implementation. `clearPendingGeneration` returns `{ cleared: false }` without changing either pointer when any expected value no longer matches. Contract-test `getActiveGenerationMap` with mixed active, pending, and missing files so search can validate a candidate set in one catalog read.
 
 - [ ] **Step 4: Run the contract against the in-memory store**
 
@@ -538,7 +573,7 @@ CREATE TABLE IF NOT EXISTS symbols (
 );
 ```
 
-Add all columns required by the approved design, including parser metadata, line ranges, parent IDs, import completeness, diagnostics JSON, and tombstone timestamps. Use immediate SQLite transactions for stage/activate/retire operations. Activation must compare the expected active generation, expected pending generation, and rebuild epoch before changing pointers. It must retire disappearing IDs and clear the pending pointer atomically. Do not write source text to any table.
+Add all columns required by the approved design, including parser metadata, line ranges, parent IDs, import completeness, diagnostics JSON, and tombstone timestamps. Use immediate SQLite transactions for stage/activate/retire/clear operations. Activation must compare the expected active generation, expected pending generation, and rebuild epoch before changing pointers. `clearPendingGeneration` must compare the same values and return `{ cleared: false }` without changing pointers on a CAS conflict. Activation must retire disappearing IDs and clear the pending pointer atomically. Do not write source text to any table.
 
 - [ ] **Step 4: Run the contract against SQLite and existing metadata tests**
 
@@ -635,7 +670,7 @@ Set `exact/complete` only when compiler diagnostics do not intersect a declarati
 
 Run: `npx vitest run tests/unit/structured/typescript-parser.test.ts tests/unit/plugins/languages/typescript.test.ts tests/unit/structured/identity.test.ts`
 
-Expected: PASS; legacy `parse()` behavior remains available to `Chunker` and structured artifacts contain no raw source in persistence-facing data.
+Expected: PASS; legacy `parse()` behavior remains available to `Chunker`; parser artifacts may hold source only while indexing, while persistence-facing catalog projections contain no raw source.
 
 - [ ] **Step 5: Commit TypeScript structured parsing**
 
@@ -920,6 +955,9 @@ it("keeps the active catalog and vectors visible when Lance staging fails mid-ba
   expect(await catalog.resolveSymbol(firstSymbol.symbolId)).toMatchObject({
     kind: "active",
   });
+  expect(await catalog.resolveFile("src/auth.ts")).toMatchObject({
+    pendingGeneration: null,
+  });
   expect(await vectorStore.search(vector, 10)).toContainEqual(
     expect.objectContaining({
       chunk: expect.objectContaining({ symbolId: firstSymbol.symbolId }),
@@ -955,15 +993,15 @@ read bytes once -> fatal-decode once -> parse artifact -> assign IDs -> SQLite s
 
 Change the internal `ContentLoader`/`IIndexPipeline`/reindex-tool/test-helper path to load a `Uint8Array` once. Build `LoadedSource` from that buffer, compute the structured file hash from it, and derive the legacy `FileToChunk.content` only from the fatal-decoded text. Do not hash a re-encoded string or re-read the file for structured parsing.
 
-On parser failure, strict UTF-8 failure, or unavailable parser, leave the prior active structured generation and active vectors unchanged; route the event through existing DLQ/incomplete behavior. On a partial Lance stage failure, delete only matching pending rows. If vector visibility activation fails, leave the catalog pointer unchanged and clean up/reconcile the new generation; if the SQLite CAS fails after vector visibility changes, catalog filtering keeps that generation hidden until cleanup. On delete, retire active IDs, remove file rows, and keep tombstones. Treat a move as delete plus add for identity purposes while retaining the existing content-hash embedding-cache reuse.
+Parser failure, strict UTF-8 failure, and an unavailable parser occur before SQLite stages a new pending generation. Leave the prior active structured generation and active vectors unchanged, do not clear an existing pending pointer owned by another attempt, and route the event through existing DLQ/incomplete behavior. On a partial Lance stage failure, delete only rows for the failed pending generation, then call `clearPendingGeneration` with that attempt's expected active generation, pending generation, and epoch. If that CAS returns `{ cleared: false }`, leave both catalog pointers unchanged and defer to reconciliation so a stale writer cannot remove newer pending work. If vector visibility activation fails, retain the pending pointer, retain the prior active catalog/vector pair, and mark the file DLQ/incomplete for reconciliation; do not auto-activate or clear it. If the SQLite activation CAS fails after vector visibility changes, catalog filtering keeps that generation hidden until reconciliation. On delete, retire active IDs, remove file rows, and keep tombstones. Treat a move as delete plus add for identity purposes while retaining the existing content-hash embedding-cache reuse.
 
-Use a project-wide write coordinator shared by watcher processing, incremental reindex, startup full rebuild, manual full rebuild, and generation garbage collection. Make it the sole write-serialization boundary, or acquire it before the existing `IndexPipeline` mutex on every path; never introduce opposing lock order. Pair per-file stage/activation with an epoch-aware expected active/pending CAS so a stale writer cannot clear a newer pending generation.
+Use a project-wide write coordinator shared by watcher processing, incremental reindex, startup full rebuild, manual full rebuild, and generation garbage collection. Make it the sole write-serialization boundary, or acquire it before the existing `IndexPipeline` mutex on every path; never introduce opposing lock order. Pair every per-file stage, activation, and pending clear with an epoch-aware expected active/pending CAS. A mismatch must leave pointers unchanged and enter reconciliation, so a stale writer cannot clear a newer pending generation.
 
 - [ ] **Step 4: Run lifecycle, pipeline, and rename regression tests**
 
 Run: `npx vitest run tests/unit/structured/structured-index-coordinator.test.ts tests/unit/indexer/pipeline-completion.test.ts tests/unit/indexer/pipeline-windowed.test.ts tests/unit/indexer/rename-detection.test.ts tests/integration/pipeline.test.ts`
 
-Expected: PASS; pending rows never reach search and active rows survive every injected pre-activation failure.
+Expected: PASS; pending rows never reach search, a partial stage clears only its own pending pointer, and active rows survive every injected pre-activation failure.
 
 - [ ] **Step 5: Commit incremental generation coordination**
 
@@ -1096,9 +1134,26 @@ it("reads one buffer, rejects a changed file, and omits source", async () => {
   });
   expect(result).not.toHaveProperty("source");
 });
+
+it("returns the old active source after failed stage cleanup when its bytes are current", async () => {
+  await indexer.index(firstFileVersion);
+  vectorStore.failOnBatch(2);
+  await expect(indexer.index(secondFileVersion)).rejects.toThrow(
+    "batch 2 failed",
+  );
+
+  fileSystem.write("src/auth.ts", firstFileVersion.content);
+  await expect(
+    service.getSymbolSource({ symbolId: firstSymbol.symbolId }),
+  ).resolves.toMatchObject({
+    status: "ok",
+    freshness: "fresh",
+    source: firstSymbol.rawSource,
+  });
+});
 ```
 
-Cover all status precedence: future schema, full rebuild, legacy schema, excluded file, missing catalog file, pending file, missing current file, stale file hash, symbol hash mismatch, tombstone, unknown ID, unsupported language, partial outline, and an exact symbol in a partial file. Explicitly assert that a nonexistent requested path with no active catalog record returns `not_found`/`FILE_NOT_FOUND`, while an `ENOENT` for a file with active catalog metadata returns `stale`/`INDEX_FILE_MISSING` rather than a transport error.
+Cover all status precedence: future schema, full rebuild, legacy schema, excluded file, missing catalog file, pending file, missing current file, stale file hash, symbol hash mismatch, tombstone, unknown ID, unsupported language, partial outline, and an exact symbol in a partial file. Verify that a failed pending-stage cleanup removes only the failed attempt's pointer and that the prior active source is retrievable only after current bytes again match its active file hash; replacement bytes must remain source-free and fail closed. Explicitly assert that a nonexistent requested path with no active catalog record returns `not_found`/`FILE_NOT_FOUND`, while an `ENOENT` for a file with active catalog metadata returns `stale`/`INDEX_FILE_MISSING` rather than a transport error.
 
 - [ ] **Step 2: Run the service test to verify the implementation is absent**
 
@@ -1126,7 +1181,7 @@ export class SymbolRetrievalService {
 }
 ```
 
-For source/context resolve in this exact order: pending ID, active/missing-generation check, active symbol, tombstone, scope/symlink validation, active-file pending pointer, one `readFile` to a `Uint8Array`, complete-file SHA-256, byte-range bounds, slice SHA-256, then decode the verified slice. Use the same buffer for verification and slicing to avoid TOCTOU. Return `stale` for `ENOENT` while active catalog metadata exists and `stale_identity` only after the watcher has retired the identity. Do not use name, line, signature, or similarity fallback.
+For source/context resolve in this exact order: pending ID, active/missing-generation check, active symbol, tombstone, scope/symlink validation, active-file pending pointer, one `readFile` to a `Uint8Array`, complete-file SHA-256, byte-range bounds, slice SHA-256, then `decodeUtf8` from `src/structured/hash.ts` on the verified slice. Use the same buffer for verification and slicing to avoid TOCTOU. Return `stale` for `ENOENT` while active catalog metadata exists and `stale_identity` only after the watcher has retired the identity. Do not use name, line, signature, or similarity fallback.
 
 Split path handling into lexical project-relative validation and existing-path symlink resolution. After lexical validation, map `ENOENT` into the specified domain outcome while preserving `NEXUS_ACCESS_DENIED` for traversal, an existing escaping symlink, or permission denial. For outlines, apply global schema/rebuild gates, verify current file bytes before returning position metadata, sort exact symbols as preorder DFS and siblings by `startByte`, `kind`, `qualifiedName`, and `symbolId`. Return source-free exact subsets only for a fresh `degraded/partial` file.
 
@@ -1156,7 +1211,7 @@ git commit -m "feat: 検証済みsymbol source取得を追加"
 
 **Interfaces:**
 
-- Consumes: the verified symbol buffer from Task 11 and the token packer from Task 2.
+- Consumes: the verified symbol buffer from Task 11 and the token packer from Task 2. Catalog-selected import records contain byte ranges, hashes, bindings, and metadata only; `rawSource` exists only on an in-memory candidate created after validation.
 - Produces: an `ok` context response with one `context` string, byte ranges in that context, verified imports, import completeness, and the fixed budget object.
 
 - [ ] **Step 1: Add failing tests for import hash verification and budget details**
@@ -1176,6 +1231,16 @@ it("fails closed before packing when one candidate import no longer matches its 
   expect(result).not.toHaveProperty("context");
 });
 
+it("derives an import rawSource from its verified UTF-8 byte slice", async () => {
+  const result = await service.getSymbolContext({
+    symbolId: activeSymbolId,
+    tokenBudget: 100,
+  });
+
+  expect(result).toMatchObject({ status: "ok" });
+  expect(result.context).toContain('import { café } from "./dep.js";');
+});
+
 it("keeps source order and later small imports after a too-large earlier import", async () => {
   const result = await service.getSymbolContext({
     symbolId: activeSymbolId,
@@ -1188,6 +1253,8 @@ it("keeps source order and later small imports after a too-large earlier import"
 });
 ```
 
+Back the second test with a Unicode fixture whose persisted import record has only `startByte`, `endByte`, and `sourceHash`; it must not expose `rawSource` on its catalog type or SQLite row.
+
 - [ ] **Step 2: Run the tests to verify context only has a source-level implementation**
 
 Run: `npx vitest run tests/unit/structured/retrieval-service.test.ts tests/unit/structured/tokenizer.test.ts`
@@ -1196,7 +1263,7 @@ Expected: FAIL because import range verification and metadata offsets are absent
 
 - [ ] **Step 3: Validate every candidate before budget decisions**
 
-Use the already-read verified file buffer to bounds-check and SHA-256-check every catalog-selected import. If any candidate fails, return `INDEX_IMPORT_HASH_MISMATCH` before counting tokens. Build the response exactly once from canonical source-order text:
+Use the already-read verified file buffer to bounds-check and SHA-256-check every catalog-selected import. If any candidate fails, return `INDEX_IMPORT_HASH_MISMATCH` before counting tokens. For each valid import, create its in-memory `rawSource` only with `decodeUtf8(buffer.subarray(startByte, endByte))` after the matching slice hash is verified. Do not put `rawSource` in SQLite, catalog row types, or catalog-resolution results; parser artifacts may retain source only during indexing. Build the response exactly once from canonical source-order text:
 
 ```ts
 const importText = includedImports.map((item) => item.rawSource).join("\n");
@@ -1210,7 +1277,7 @@ Compute `contextStartByte` and `contextEndByte` with `Buffer.byteLength` against
 
 Run: `npx vitest run tests/unit/structured/retrieval-service.test.ts tests/unit/structured/tokenizer.test.ts`
 
-Expected: PASS; complete symbol text is preserved under all budgets and canonical token totals are reproducible.
+Expected: PASS; complete symbol text is preserved under all budgets, each included import originates from its validated byte slice, and canonical token totals are reproducible.
 
 - [ ] **Step 5: Commit bounded context retrieval**
 
@@ -1343,6 +1410,7 @@ git commit -m "feat: structured retrieval MCP toolを公開"
 **Files:**
 
 - Create: `tests/integration/structured-retrieval.test.ts`
+- Create: `tests/unit/docs/structured-retrieval-guidance.test.ts`
 - Create: `tests/benchmarks/structured-retrieval.bench.ts`
 - Modify: `src/observability/types.ts`
 - Modify: `src/observability/metrics-collector.ts`
@@ -1382,11 +1450,45 @@ it("keeps structured retrieval usable when embeddings are unavailable", async ()
 });
 ```
 
-Cover each AC explicitly: split chunk ID reuse, outline-to-source/context, complete source metadata, ID stability, same-name disambiguation, retired identity safety, decorators/doc comments, import context, token overflow, fresh/stale states, parser failure, embedding independence, six-tool compatibility, excluded scope, and updated guidance. Add a real-server surface scenario for stale-before-pending, pending-file-only gating, reindex recovery, unsupported files, and a 100,000-token input boundary.
+Add the following acceptance traceability matrix. Each named test must be implemented as written, and its assertion must cover the stated expected result.
+
+| AC ID | Requirement                                       | Test file                                               | Test name                                                                            | Expected result                                                                                                                                              |
+| ----- | ------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| AC-1  | Search to exact retrieval                         | `tests/integration/structured-retrieval.test.ts`        | `moves from semantic search to complete source through one symbol ID`                | A structured search result has `symbolId`; `get_symbol_source` returns the complete source with `ok`/`fresh` without a name lookup.                          |
+| AC-2  | Split search chunks are hidden by exact retrieval | `tests/integration/structured-retrieval.test.ts`        | `reuses one symbol ID across split chunks and retrieves one complete declaration`    | Every split chunk has one ID and that ID resolves to the whole declaration.                                                                                  |
+| AC-3  | Outline to exact retrieval                        | `tests/integration/structured-retrieval.test.ts`        | `navigates from a file outline to source and context`                                | A source-free outline ID resolves through both structured retrieval tools.                                                                                   |
+| AC-4  | Outline metadata and no source                    | `tests/integration/structured-retrieval.test.ts`        | `returns source-free outline metadata with hierarchy`                                | Each exact outline item includes identity, qualified name, kind, signature, position, and parent relationship, but no source text.                           |
+| AC-5  | Reindex identity stability                        | `tests/integration/structured-retrieval.test.ts`        | `preserves a logical ID across body and position-only reindexing`                    | The ID is unchanged after body and line-position changes.                                                                                                    |
+| AC-6  | Same-name disambiguation                          | `tests/integration/structured-retrieval.test.ts`        | `retrieves same-named overloads by their distinct IDs`                               | Each ID returns only its corresponding declaration.                                                                                                          |
+| AC-7  | Retired identity safety                           | `tests/integration/structured-retrieval.test.ts`        | `reports a retired ID without a similarity fallback`                                 | The response is source-free `stale_identity` with `SYMBOL_RETIRED`.                                                                                          |
+| AC-8  | Complete declaration source                       | `tests/integration/structured-retrieval.test.ts`        | `includes attached decorators and documentation in exact source`                     | Exact source includes attached declaration elements and excludes unrelated comments.                                                                         |
+| AC-9  | Bounded import context                            | `tests/integration/structured-retrieval.test.ts`        | `packs verified related imports before a complete symbol`                            | Context contains only verified related imports and the complete symbol.                                                                                      |
+| AC-10 | Token budget overflow                             | `tests/integration/structured-retrieval.test.ts`        | `keeps an overflowing symbol complete and reports its budget state`                  | The complete symbol is returned with accurate requested, actual, and overflow fields.                                                                        |
+| AC-11 | Fresh result                                      | `tests/integration/structured-retrieval.test.ts`        | `marks matching working-tree bytes as fresh`                                         | A matching file returns `ok` with `freshness: "fresh"`.                                                                                                      |
+| AC-12 | Stale result                                      | `tests/integration/structured-retrieval.test.ts`        | `fails closed for changed working-tree bytes`                                        | Changed bytes return source-free `stale` with `INDEX_FILE_HASH_MISMATCH`.                                                                                    |
+| AC-13 | Parser failure                                    | `tests/integration/structured-retrieval.test.ts`        | `reports parser failure without exposing fixed-line chunks as symbols`               | The result is machine-readable unavailable or degraded and exposes no fallback `symbolId`.                                                                   |
+| AC-14 | Embedding independence                            | `tests/integration/structured-retrieval.test.ts`        | `keeps structured retrieval usable when embeddings are unavailable`                  | Outline, source, and context return structured results while embedding health fails.                                                                         |
+| AC-15 | Existing-tool compatibility                       | `tests/integration/mcp-protocol.test.ts`                | `keeps the existing six tool contracts unchanged while registering structured tools` | Existing schemas and response fields remain unchanged; all three new tools register in v1 and v2.                                                            |
+| AC-16 | Retrieval scope consistency                       | `tests/integration/structured-retrieval.test.ts`        | `returns excluded status for an index-excluded file`                                 | An excluded file returns source-free `excluded` with `PATH_EXCLUDED`.                                                                                        |
+| AC-17 | Agent guidance                                    | `tests/unit/docs/structured-retrieval-guidance.test.ts` | `documents the canonical symbol-aware retrieval flow`                                | README, SPEC, MCP documentation, and code-search guidance all direct symbol-aware results to source/context retrieval and preserve `get_context` exceptions. |
+
+Add these real-server surface scenarios to the same acceptance plan:
+
+| Related AC   | Test file                                        | Test name                                                               | Expected result                                                                                        |
+| ------------ | ------------------------------------------------ | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| AC-12        | `tests/integration/structured-retrieval.test.ts` | `returns stale before watcher staging begins`                           | A changed active file is source-free `stale` before its pending pointer is staged.                     |
+| AC-11, AC-12 | `tests/integration/structured-retrieval.test.ts` | `gates only the pending file while unrelated active files remain fresh` | The pending file is source-free `index_incomplete`; an unrelated active file remains `ok`/`fresh`.     |
+| AC-11, AC-12 | `tests/integration/structured-retrieval.test.ts` | `recovers fresh retrieval after a successful reindex`                   | A stale or pending file becomes `ok`/`fresh` only after reindex completes.                             |
+| AC-13, AC-16 | `tests/integration/structured-retrieval.test.ts` | `returns machine-readable unsupported and excluded outcomes`            | Unsupported and excluded files return their respective source-free statuses without a fallback symbol. |
+| AC-9, AC-10  | `tests/integration/structured-retrieval.test.ts` | `accepts tokenBudget 100000 at the real-server surface`                 | The real server accepts the inclusive boundary and returns the normal bounded-context result.          |
+
+Retain `accepts tokenBudget 100000 and rejects 100001 before handler invocation` in `tests/integration/mcp-protocol.test.ts` as the v1/v2 schema-parity regression for the same AC-9/AC-10 boundary.
+
+`tests/unit/docs/structured-retrieval-guidance.test.ts` must read the four public guidance files and assert the two canonical flows plus the retained `get_context` exceptions, so AC-17 is mechanically checked rather than inferred from an integration scenario.
 
 - [ ] **Step 2: Run acceptance tests to verify the end-to-end flow has gaps**
 
-Run: `npx vitest run tests/integration/structured-retrieval.test.ts`
+Run: `npx vitest run tests/integration/structured-retrieval.test.ts tests/integration/mcp-protocol.test.ts tests/unit/docs/structured-retrieval-guidance.test.ts`
 
 Expected: FAIL until all prior layers are connected through an actual runtime and MCP client.
 
@@ -1430,7 +1532,7 @@ Expected: PASS; the benchmark emits a reviewable report and no test exposes stal
 - [ ] **Step 6: Commit verification, observability, and documentation**
 
 ```bash
-git add tests/integration/structured-retrieval.test.ts tests/benchmarks/structured-retrieval.bench.ts src/observability/types.ts src/observability/metrics-collector.ts tests/unit/observability/metrics-collector.test.ts README.md SPEC.md docs/mcp-tools.md .agents/skills/code-search.md
+git add tests/integration/structured-retrieval.test.ts tests/integration/mcp-protocol.test.ts tests/unit/docs/structured-retrieval-guidance.test.ts tests/benchmarks/structured-retrieval.bench.ts src/observability/types.ts src/observability/metrics-collector.ts tests/unit/observability/metrics-collector.test.ts README.md SPEC.md docs/mcp-tools.md .agents/skills/code-search.md
 git commit -m "docs: structured retrievalの利用方法を追加"
 ```
 
