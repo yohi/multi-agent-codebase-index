@@ -19,6 +19,7 @@ import type {
   StructuredTombstone,
 } from './interfaces/structured-catalog.js';
 import type { StructuredDeclaration } from '../structured/contracts.js';
+import { sha256Hex } from '../structured/hash.js';
 
 export interface SqliteMetadataStoreOptions {
   databasePath: string;
@@ -50,6 +51,11 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     new Promise((resolve) => {
       setImmediate(resolve);
     });
+
+  private immediateTransaction<T>(operation: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE');
+    try { const result = operation(); this.db.exec('COMMIT'); return result; } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
 
   constructor(options: SqliteMetadataStoreOptions) {
     this.db = new Database(options.databasePath);
@@ -115,7 +121,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
         active_generation TEXT,
         pending_generation TEXT
       );
-      CREATE TABLE IF NOT EXISTS structured_generations (
+      CREATE TABLE IF NOT EXISTS symbol_generations (
         file_path TEXT NOT NULL,
         generation TEXT NOT NULL,
         schema_version INTEGER NOT NULL,
@@ -130,13 +136,20 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
         name TEXT NOT NULL, qualified_name TEXT NOT NULL, kind TEXT NOT NULL,
         signature_discriminator TEXT NOT NULL, start_line INTEGER NOT NULL,
         start_column INTEGER NOT NULL, end_line INTEGER NOT NULL, end_column INTEGER NOT NULL,
-        source_hash TEXT NOT NULL,
+        start_byte INTEGER NOT NULL DEFAULT 0, end_byte INTEGER NOT NULL DEFAULT 0,
+        parent_symbol_id TEXT, source_hash TEXT NOT NULL,
         PRIMARY KEY (file_path, generation, symbol_id)
       );
       CREATE TABLE IF NOT EXISTS imports (
         file_path TEXT NOT NULL, generation TEXT NOT NULL, source TEXT NOT NULL,
         imported_names TEXT NOT NULL, start_line INTEGER NOT NULL, start_column INTEGER NOT NULL,
-        end_line INTEGER NOT NULL, end_column INTEGER NOT NULL
+        end_line INTEGER NOT NULL, end_column INTEGER NOT NULL, source_hash TEXT NOT NULL,
+        is_complete INTEGER NOT NULL DEFAULT 1, diagnostics_json TEXT
+      );
+      CREATE TABLE IF NOT EXISTS symbol_imports (
+        file_path TEXT NOT NULL, generation TEXT NOT NULL, symbol_id TEXT NOT NULL,
+        source TEXT NOT NULL, source_hash TEXT NOT NULL,
+        PRIMARY KEY (file_path, generation, symbol_id, source)
       );
       CREATE TABLE IF NOT EXISTS symbol_tombstones (
         symbol_id TEXT PRIMARY KEY, file_path TEXT NOT NULL, generation TEXT NOT NULL,
@@ -157,7 +170,8 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       this.db.exec('ALTER TABLE index_stats ADD COLUMN last_error TEXT');
     }
     for (const [name, definition] of [['structured_schema_version', 'INTEGER'], ['structured_rebuild_state', 'TEXT'], ['structured_rebuild_epoch', 'INTEGER'], ['structured_last_error_code', 'TEXT']] as const) {
-      if (!indexStatsColumns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE index_stats ADD COLUMN ${name} ${definition}`);
+      const currentColumns = this.db.pragma('table_info(index_stats)') as Array<{ name: string }>;
+      if (!currentColumns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE index_stats ADD COLUMN ${name} ${definition}`);
     }
     this.db.prepare('INSERT OR IGNORE INTO index_stats (id,total_files,total_chunks,last_indexed_at,last_full_scan_at,overflow_count,last_error,structured_rebuild_epoch) VALUES (?,?,?,?,?,?,?,?)').run(PRIMARY_STATS_ID, 0, 0, null, null, 0, null, 0);
   }
@@ -169,28 +183,28 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
   async getStructuredIndexState(): Promise<StructuredIndexState> {
     await this.asyncBoundary();
     const rows = this.db.prepare('SELECT file_path, active_generation FROM structured_files WHERE active_generation IS NOT NULL').all() as Array<{ file_path: string; active_generation: string }>;
-    const epoch = this.db.prepare('SELECT structured_rebuild_epoch AS epoch FROM index_stats WHERE id = ?').get(PRIMARY_STATS_ID) as { epoch: number | null } | undefined;
-    return { rebuildEpoch: epoch?.epoch ?? 0, activeGenerations: new Map(rows.map((row) => [row.file_path, row.active_generation])) };
+    const state = this.db.prepare('SELECT structured_schema_version AS schemaVersion, structured_rebuild_state AS rebuildState, structured_rebuild_epoch AS rebuildEpoch, structured_last_error_code AS lastErrorCode FROM index_stats WHERE id = ?').get(PRIMARY_STATS_ID) as { schemaVersion: number | null; rebuildState: string | null; rebuildEpoch: number | null; lastErrorCode: string | null } | undefined;
+    return { schemaVersion: state?.schemaVersion ?? null, rebuildState: state?.rebuildState ?? null, rebuildEpoch: state?.rebuildEpoch ?? 0, lastErrorCode: state?.lastErrorCode ?? null, counts: await this.getStructuredCounts(), activeGenerations: new Map(rows.map((row) => [row.file_path, row.active_generation])) };
   }
 
   async stageGeneration(input: StructuredGenerationStage): Promise<void> {
     await this.asyncBoundary();
     const transaction = this.db.transaction(() => {
-      this.db.prepare('INSERT INTO structured_generations (file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch) VALUES (?,?,?,?,?,?,?) ON CONFLICT(file_path,generation) DO UPDATE SET content_hash=excluded.content_hash').run(input.filePath, input.generation.generationId, input.generation.schemaVersion, input.generation.parserId, input.generation.parserVersion, input.generation.contentHash, input.rebuildEpoch);
+      this.db.prepare('INSERT INTO symbol_generations (file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch) VALUES (?,?,?,?,?,?,?) ON CONFLICT(file_path,generation) DO UPDATE SET content_hash=excluded.content_hash').run(input.filePath, input.generation.generationId, input.generation.schemaVersion, input.generation.parserId, input.generation.parserVersion, input.generation.contentHash, input.rebuildEpoch);
       this.db.prepare('DELETE FROM symbols WHERE file_path = ? AND generation = ?').run(input.filePath, input.generation.generationId);
       const symbol = this.db.prepare('INSERT INTO symbols (file_path,generation,symbol_id,name,qualified_name,kind,signature_discriminator,start_line,start_column,end_line,end_column,source_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
-      for (const declaration of input.declarations) symbol.run(input.filePath, input.generation.generationId, declaration.symbolId, declaration.name, declaration.qualifiedName, declaration.kind, declaration.signatureDiscriminator, declaration.position.startLine, declaration.position.startColumn, declaration.position.endLine, declaration.position.endColumn, input.generation.contentHash);
-      const importRow = this.db.prepare('INSERT INTO imports (file_path,generation,source,imported_names,start_line,start_column,end_line,end_column) VALUES (?,?,?,?,?,?,?,?)');
-      for (const imported of input.imports) importRow.run(input.filePath, input.generation.generationId, imported.source, JSON.stringify(imported.importedNames), imported.position.startLine, imported.position.startColumn, imported.position.endLine, imported.position.endColumn);
+      for (const declaration of input.declarations) symbol.run(input.filePath, input.generation.generationId, declaration.symbolId, declaration.name, declaration.qualifiedName, declaration.kind, declaration.signatureDiscriminator, declaration.position.startLine, declaration.position.startColumn, declaration.position.endLine, declaration.position.endColumn, sha256Hex(new TextEncoder().encode(declaration.content)));
+      const importRow = this.db.prepare('INSERT INTO imports (file_path,generation,source,imported_names,start_line,start_column,end_line,end_column,source_hash) VALUES (?,?,?,?,?,?,?,?,?)');
+      for (const imported of input.imports) importRow.run(input.filePath, input.generation.generationId, imported.source, JSON.stringify(imported.importedNames), imported.position.startLine, imported.position.startColumn, imported.position.endLine, imported.position.endColumn, sha256Hex(new TextEncoder().encode(imported.source)));
       this.db.prepare('INSERT INTO structured_files (file_path,pending_generation) VALUES (?,?) ON CONFLICT(file_path) DO UPDATE SET pending_generation=excluded.pending_generation').run(input.filePath, input.generation.generationId);
       this.db.prepare('UPDATE index_stats SET structured_rebuild_epoch=? WHERE id=?').run(input.rebuildEpoch, PRIMARY_STATS_ID);
     });
-    transaction();
+    this.immediateTransaction(transaction);
   }
 
   async activateGeneration(input: StructuredGenerationActivation): Promise<StructuredActivationResult> {
     await this.asyncBoundary();
-    const transaction = this.db.transaction((): StructuredActivationResult => {
+    const transaction = (): StructuredActivationResult => {
       const file = this.db.prepare('SELECT active_generation,pending_generation FROM structured_files WHERE file_path = ?').get(input.filePath) as { active_generation: string | null; pending_generation: string | null } | undefined;
       if (!file || file.pending_generation !== input.generationId) return { activated: false, reason: 'missing_generation' };
       if (file.active_generation !== input.expectedActiveGeneration) return { activated: false, reason: 'stale_active_generation' };
@@ -199,30 +213,30 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       if (file.active_generation) this.db.prepare('INSERT OR REPLACE INTO symbol_tombstones SELECT symbol_id,file_path,generation,? FROM symbols WHERE file_path=? AND generation=? AND symbol_id NOT IN (SELECT symbol_id FROM symbols WHERE file_path=? AND generation=?)').run(input.expectedRebuildEpoch, input.filePath, file.active_generation, input.filePath, input.generationId);
       this.db.prepare('UPDATE structured_files SET active_generation = ?, pending_generation = NULL WHERE file_path = ?').run(input.generationId, input.filePath);
       return { activated: true };
-    });
-    return transaction();
+    };
+    return this.immediateTransaction(transaction);
   }
 
   async clearPendingGeneration(input: StructuredPendingClear): Promise<{ cleared: boolean }> {
     await this.asyncBoundary();
-    const transaction = this.db.transaction(() => {
+    const transaction = () => {
       const row = this.db.prepare('SELECT active_generation,pending_generation FROM structured_files WHERE file_path=?').get(input.filePath) as { active_generation: string | null; pending_generation: string | null } | undefined;
       const epoch = this.db.prepare('SELECT structured_rebuild_epoch AS value FROM index_stats WHERE id=?').get(PRIMARY_STATS_ID) as { value: number | null } | undefined;
       if (!row || row.active_generation !== input.expectedActiveGeneration || row.pending_generation !== input.expectedPendingGeneration || (epoch?.value ?? 0) !== input.expectedRebuildEpoch) return { cleared: false };
       this.db.prepare('UPDATE structured_files SET pending_generation=NULL WHERE file_path=?').run(input.filePath); return { cleared: true };
-    });
-    return transaction();
+    };
+    return this.immediateTransaction(transaction);
   }
 
   async retireFile(input: StructuredFileRetirement): Promise<void> {
     await this.asyncBoundary();
-    const transaction = this.db.transaction(() => {
+    const transaction = () => {
       const row = this.db.prepare('SELECT active_generation FROM structured_files WHERE file_path=?').get(input.filePath) as { active_generation: string | null } | undefined;
       if (!row || row.active_generation !== input.expectedActiveGeneration) return;
       this.db.prepare('INSERT OR REPLACE INTO symbol_tombstones SELECT symbol_id,file_path,generation,? FROM symbols WHERE file_path=? AND generation=?').run(input.rebuildEpoch, input.filePath, row.active_generation);
       this.db.prepare('UPDATE structured_files SET active_generation=NULL,pending_generation=NULL WHERE file_path=?').run(input.filePath);
-    });
-    transaction();
+    };
+    this.immediateTransaction(transaction);
   }
 
   async resolveFile(filePath: string) { await this.asyncBoundary(); const row = this.db.prepare('SELECT active_generation,pending_generation FROM structured_files WHERE file_path=?').get(filePath) as { active_generation: string | null; pending_generation: string | null } | undefined; if (row?.active_generation) return { kind: 'active' as const, generationId: row.active_generation }; if (row?.pending_generation) return { kind: 'pending' as const, generationId: row.pending_generation }; return { kind: 'missing' as const }; }

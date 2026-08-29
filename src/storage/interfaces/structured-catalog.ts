@@ -33,7 +33,11 @@ export interface StructuredFileRetirement {
 }
 
 export interface StructuredIndexState {
+  readonly schemaVersion: number | null;
+  readonly rebuildState: string | null;
   readonly rebuildEpoch: number;
+  readonly lastErrorCode: string | null;
+  readonly counts: StructuredIndexCounts;
   readonly activeGenerations: ReadonlyMap<string, string>;
 }
 
