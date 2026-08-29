@@ -48,7 +48,7 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   async bootstrapStructuredSchema(): Promise<void> {}
 
   async getStructuredIndexState(): Promise<StructuredIndexState> {
-    return { rebuildEpoch: this.rebuildEpoch, activeGenerations: await this.getActiveGenerationMap([...this.active.keys()]) };
+    return { schemaVersion: null, rebuildState: null, rebuildEpoch: this.rebuildEpoch, lastErrorCode: null, counts: await this.getStructuredCounts(), activeGenerations: await this.getActiveGenerationMap([...this.active.keys()]) };
   }
 
   async stageGeneration(input: StructuredGenerationStage): Promise<void> {
