@@ -40,4 +40,14 @@ describe('SQLite structured catalog', () => {
     expect(result).toEqual({ cleared: false });
     expect((await store.resolveFile('src/a.ts')).kind).toBe('pending');
   });
+
+  it('restages the same generation idempotently', async () => {
+    await store.initialize();
+    const first = { ...stage('src/a.ts', 'g1', 'one'), imports: [{ id: 'import-1', moduleSpecifier: 'pkg', startByte: 0, endByte: 3, sourceHash: '', completeness: 'complete' as const, position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 }}] };
+    const second = { ...first, declarations: [{ name: 'two', symbolId: 'two', qualifiedName: 'two', kind: 'function' as const, signatureDiscriminator: 'sig', position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 }, startByte: 0, endByte: 3, sourceHash: '', languageId: 'typescript', isExact: true }] };
+    await store.stageGeneration(first);
+    await expect(store.stageGeneration(second)).resolves.toBeUndefined();
+    expect((await store.getPendingSymbol('one')).kind).toBe('missing');
+    expect((await store.getPendingSymbol('two')).kind).toBe('pending');
+  });
 });
