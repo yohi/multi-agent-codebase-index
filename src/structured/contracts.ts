@@ -24,12 +24,23 @@ export interface SymbolMetadata {
 export interface StructuredDeclaration extends SymbolMetadata {
   readonly name: string;
   readonly symbolId: string;
-  readonly content: string;
+  readonly startByte: number;
+  readonly endByte: number;
+  readonly sourceHash: string;
+  readonly parentSymbolId?: string;
+  readonly languageId: string;
+  readonly isExact: boolean;
 }
 
 export interface StructuredImport {
-  readonly source: string;
-  readonly importedNames: readonly string[];
+  readonly id: string;
+  readonly moduleSpecifier?: string;
+  readonly bindingName?: string;
+  readonly startByte: number;
+  readonly endByte: number;
+  readonly sourceHash: string;
+  readonly completeness: 'complete' | 'partial';
+  readonly diagnostics?: readonly unknown[];
   readonly position: SymbolPosition;
 }
 
@@ -38,7 +49,9 @@ export interface StructuredGeneration {
   readonly schemaVersion: 1;
   readonly parserId: string;
   readonly parserVersion: string;
-  readonly contentHash: string;
+  readonly fileHash: string;
+  readonly fileCompleteness: 'complete' | 'partial';
+  readonly fileDiagnostics?: readonly unknown[];
 }
 
 export const structuredRetrievalStatus = {

@@ -137,7 +137,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
         signature_discriminator TEXT NOT NULL, start_line INTEGER NOT NULL,
         start_column INTEGER NOT NULL, end_line INTEGER NOT NULL, end_column INTEGER NOT NULL,
         start_byte INTEGER NOT NULL DEFAULT 0, end_byte INTEGER NOT NULL DEFAULT 0,
-        parent_symbol_id TEXT, source_hash TEXT NOT NULL,
+        parent_symbol_id TEXT, language_id TEXT NOT NULL DEFAULT '', is_exact INTEGER NOT NULL DEFAULT 1, source_hash TEXT NOT NULL,
         PRIMARY KEY (file_path, generation, symbol_id)
       );
       CREATE TABLE IF NOT EXISTS imports (
@@ -153,7 +153,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       );
       CREATE TABLE IF NOT EXISTS symbol_tombstones (
         symbol_id TEXT PRIMARY KEY, file_path TEXT NOT NULL, generation TEXT NOT NULL,
-        retired_at_rebuild_epoch INTEGER NOT NULL
+        retired_at_rebuild_epoch INTEGER NOT NULL, retired_at INTEGER NOT NULL DEFAULT 0
       );
     `);
 
@@ -174,6 +174,17 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       if (!currentColumns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE index_stats ADD COLUMN ${name} ${definition}`);
     }
     this.db.prepare('INSERT OR IGNORE INTO index_stats (id,total_files,total_chunks,last_indexed_at,last_full_scan_at,overflow_count,last_error,structured_rebuild_epoch) VALUES (?,?,?,?,?,?,?,?)').run(PRIMARY_STATS_ID, 0, 0, null, null, 0, null, 0);
+    const importColumns = this.db.pragma('table_info(imports)') as Array<{ name: string }>;
+    if (!importColumns.some((column) => column.name === 'source_hash')) this.db.exec("ALTER TABLE imports ADD COLUMN source_hash TEXT NOT NULL DEFAULT ''");
+    if (!importColumns.some((column) => column.name === 'is_complete')) this.db.exec('ALTER TABLE imports ADD COLUMN is_complete INTEGER NOT NULL DEFAULT 1');
+    if (!importColumns.some((column) => column.name === 'diagnostics_json')) this.db.exec('ALTER TABLE imports ADD COLUMN diagnostics_json TEXT');
+    const symbolColumns = this.db.pragma('table_info(symbols)') as Array<{ name: string }>;
+    for (const [name, definition] of [['start_byte', 'INTEGER NOT NULL DEFAULT 0'], ['end_byte', 'INTEGER NOT NULL DEFAULT 0'], ['parent_symbol_id', 'TEXT'], ['language_id', "TEXT NOT NULL DEFAULT ''"], ['is_exact', 'INTEGER NOT NULL DEFAULT 1']] as const) {
+      if (!symbolColumns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE symbols ADD COLUMN ${name} ${definition}`);
+    }
+    const tombstoneColumns = this.db.pragma('table_info(symbol_tombstones)') as Array<{ name: string }>;
+    if (!tombstoneColumns.some((column) => column.name === 'retired_at')) this.db.exec('ALTER TABLE symbol_tombstones ADD COLUMN retired_at INTEGER NOT NULL DEFAULT 0');
+    if (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='structured_generations'").get()) this.db.exec('INSERT OR IGNORE INTO symbol_generations SELECT file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch FROM structured_generations');
   }
 
   async bootstrapStructuredSchema(): Promise<void> {
@@ -189,16 +200,17 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
 
   async stageGeneration(input: StructuredGenerationStage): Promise<void> {
     await this.asyncBoundary();
-    const transaction = this.db.transaction(() => {
-      this.db.prepare('INSERT INTO symbol_generations (file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch) VALUES (?,?,?,?,?,?,?) ON CONFLICT(file_path,generation) DO UPDATE SET content_hash=excluded.content_hash').run(input.filePath, input.generation.generationId, input.generation.schemaVersion, input.generation.parserId, input.generation.parserVersion, input.generation.contentHash, input.rebuildEpoch);
+    const transaction = () => {
+      this.db.prepare('INSERT INTO symbol_generations (file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch) VALUES (?,?,?,?,?,?,?) ON CONFLICT(file_path,generation) DO UPDATE SET content_hash=excluded.content_hash').run(input.filePath, input.generation.generationId, input.generation.schemaVersion, input.generation.parserId, input.generation.parserVersion, input.generation.fileHash, input.rebuildEpoch);
       this.db.prepare('DELETE FROM symbols WHERE file_path = ? AND generation = ?').run(input.filePath, input.generation.generationId);
-      const symbol = this.db.prepare('INSERT INTO symbols (file_path,generation,symbol_id,name,qualified_name,kind,signature_discriminator,start_line,start_column,end_line,end_column,source_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
-      for (const declaration of input.declarations) symbol.run(input.filePath, input.generation.generationId, declaration.symbolId, declaration.name, declaration.qualifiedName, declaration.kind, declaration.signatureDiscriminator, declaration.position.startLine, declaration.position.startColumn, declaration.position.endLine, declaration.position.endColumn, sha256Hex(new TextEncoder().encode(declaration.content)));
-      const importRow = this.db.prepare('INSERT INTO imports (file_path,generation,source,imported_names,start_line,start_column,end_line,end_column,source_hash) VALUES (?,?,?,?,?,?,?,?,?)');
-      for (const imported of input.imports) importRow.run(input.filePath, input.generation.generationId, imported.source, JSON.stringify(imported.importedNames), imported.position.startLine, imported.position.startColumn, imported.position.endLine, imported.position.endColumn, sha256Hex(new TextEncoder().encode(imported.source)));
+      const symbol = this.db.prepare('INSERT INTO symbols (file_path,generation,symbol_id,name,qualified_name,kind,signature_discriminator,start_line,start_column,end_line,end_column,start_byte,end_byte,parent_symbol_id,language_id,is_exact,source_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      for (const declaration of input.declarations) symbol.run(input.filePath, input.generation.generationId, declaration.symbolId, declaration.name, declaration.qualifiedName, declaration.kind, declaration.signatureDiscriminator, declaration.position.startLine, declaration.position.startColumn, declaration.position.endLine, declaration.position.endColumn, declaration.startByte, declaration.endByte, declaration.parentSymbolId ?? null, declaration.languageId, declaration.isExact ? 1 : 0, sha256Hex(input.bytes.subarray(declaration.startByte, declaration.endByte)));
+      const importRow = this.db.prepare('INSERT INTO imports (file_path,generation,source,imported_names,start_line,start_column,end_line,end_column,source_hash,is_complete,diagnostics_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+      const bindingRow = this.db.prepare('INSERT INTO symbol_imports (file_path,generation,symbol_id,source,source_hash) VALUES (?,?,?,?,?)');
+      for (const imported of input.imports) { importRow.run(input.filePath, input.generation.generationId, imported.moduleSpecifier ?? '', imported.bindingName ?? '', imported.position.startLine, imported.position.startColumn, imported.position.endLine, imported.position.endColumn, sha256Hex(input.bytes.subarray(imported.startByte, imported.endByte)), imported.completeness === 'complete' ? 1 : 0, JSON.stringify(imported.diagnostics ?? [])); bindingRow.run(input.filePath, input.generation.generationId, imported.id, imported.moduleSpecifier ?? '', sha256Hex(input.bytes.subarray(imported.startByte, imported.endByte))); }
       this.db.prepare('INSERT INTO structured_files (file_path,pending_generation) VALUES (?,?) ON CONFLICT(file_path) DO UPDATE SET pending_generation=excluded.pending_generation').run(input.filePath, input.generation.generationId);
       this.db.prepare('UPDATE index_stats SET structured_rebuild_epoch=? WHERE id=?').run(input.rebuildEpoch, PRIMARY_STATS_ID);
-    });
+    };
     this.immediateTransaction(transaction);
   }
 
@@ -210,7 +222,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       if (file.active_generation !== input.expectedActiveGeneration) return { activated: false, reason: 'stale_active_generation' };
       const epoch = this.db.prepare('SELECT structured_rebuild_epoch AS value FROM index_stats WHERE id = ?').get(PRIMARY_STATS_ID) as { value: number | null } | undefined;
       if ((epoch?.value ?? 0) !== input.expectedRebuildEpoch) return { activated: false, reason: 'stale_rebuild_epoch' };
-      if (file.active_generation) this.db.prepare('INSERT OR REPLACE INTO symbol_tombstones SELECT symbol_id,file_path,generation,? FROM symbols WHERE file_path=? AND generation=? AND symbol_id NOT IN (SELECT symbol_id FROM symbols WHERE file_path=? AND generation=?)').run(input.expectedRebuildEpoch, input.filePath, file.active_generation, input.filePath, input.generationId);
+      if (file.active_generation) this.db.prepare('INSERT OR REPLACE INTO symbol_tombstones SELECT symbol_id,file_path,generation,?,? FROM symbols WHERE file_path=? AND generation=? AND symbol_id NOT IN (SELECT symbol_id FROM symbols WHERE file_path=? AND generation=?)').run(input.expectedRebuildEpoch, Date.now(), input.filePath, file.active_generation, input.filePath, input.generationId);
       this.db.prepare('UPDATE structured_files SET active_generation = ?, pending_generation = NULL WHERE file_path = ?').run(input.generationId, input.filePath);
       return { activated: true };
     };
@@ -233,7 +245,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     const transaction = () => {
       const row = this.db.prepare('SELECT active_generation FROM structured_files WHERE file_path=?').get(input.filePath) as { active_generation: string | null } | undefined;
       if (!row || row.active_generation !== input.expectedActiveGeneration) return;
-      this.db.prepare('INSERT OR REPLACE INTO symbol_tombstones SELECT symbol_id,file_path,generation,? FROM symbols WHERE file_path=? AND generation=?').run(input.rebuildEpoch, input.filePath, row.active_generation);
+      this.db.prepare('INSERT OR REPLACE INTO symbol_tombstones SELECT symbol_id,file_path,generation,?,? FROM symbols WHERE file_path=? AND generation=?').run(input.rebuildEpoch, input.tombstoneTimestamp ?? Date.now(), input.filePath, row.active_generation);
       this.db.prepare('UPDATE structured_files SET active_generation=NULL,pending_generation=NULL WHERE file_path=?').run(input.filePath);
     };
     this.immediateTransaction(transaction);
@@ -243,11 +255,11 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
 
   async getActiveGenerationMap(filePaths: readonly string[]) { await this.asyncBoundary(); const result = new Map<string, string>(); const statement = this.db.prepare('SELECT active_generation FROM structured_files WHERE file_path=?'); for (const filePath of filePaths) { const row = statement.get(filePath) as { active_generation: string | null } | undefined; if (row?.active_generation) result.set(filePath, row.active_generation); } return result; }
 
-  private declaration(row: Record<string, unknown>): StructuredDeclaration { return { name: String(row.name), symbolId: String(row.symbol_id), qualifiedName: String(row.qualified_name), kind: row.kind as StructuredDeclaration['kind'], signatureDiscriminator: String(row.signature_discriminator), position: { startLine: Number(row.start_line), startColumn: Number(row.start_column), endLine: Number(row.end_line), endColumn: Number(row.end_column) }, content: '' }; }
+  private declaration(row: Record<string, unknown>): StructuredDeclaration { return { name: String(row.name), symbolId: String(row.symbol_id), qualifiedName: String(row.qualified_name), kind: row.kind as StructuredDeclaration['kind'], signatureDiscriminator: String(row.signature_discriminator), position: { startLine: Number(row.start_line), startColumn: Number(row.start_column), endLine: Number(row.end_line), endColumn: Number(row.end_column) }, startByte: Number(row.start_byte ?? 0), endByte: Number(row.end_byte ?? 0), sourceHash: String(row.source_hash), languageId: typeof row.language_id === 'string' ? row.language_id : '', isExact: Boolean(row.is_exact ?? 1), parentSymbolId: typeof row.parent_symbol_id === 'string' ? row.parent_symbol_id : undefined }; }
 
   async resolveSymbol(symbolId: string): Promise<StructuredSymbolResolution> { const row = this.db.prepare('SELECT s.* FROM symbols s JOIN structured_files f ON f.file_path=s.file_path AND f.active_generation=s.generation WHERE s.symbol_id=?').get(symbolId) as Record<string, unknown> | undefined; if (row) return { kind: 'active', declaration: this.declaration(row) }; const tombstone = await this.getTombstone(symbolId); return tombstone ? { kind: 'tombstone', tombstone } : { kind: 'missing' }; }
   async getPendingSymbol(symbolId: string): Promise<StructuredPendingSymbolResolution> { await this.asyncBoundary(); const row = this.db.prepare('SELECT s.* FROM symbols s JOIN structured_files f ON f.file_path=s.file_path AND f.pending_generation=s.generation WHERE s.symbol_id=?').get(symbolId) as Record<string, unknown> | undefined; return row ? { kind: 'pending', declaration: this.declaration(row) } : { kind: 'missing' }; }
-  async getTombstone(symbolId: string): Promise<StructuredTombstone | null> { await this.asyncBoundary(); const row = this.db.prepare('SELECT symbol_id,file_path,generation,retired_at_rebuild_epoch FROM symbol_tombstones WHERE symbol_id=?').get(symbolId) as { symbol_id: string; file_path: string; generation: string; retired_at_rebuild_epoch: number } | undefined; return row ? { symbolId: row.symbol_id, filePath: row.file_path, generationId: row.generation, retiredAtRebuildEpoch: row.retired_at_rebuild_epoch } : null; }
+  async getTombstone(symbolId: string): Promise<StructuredTombstone | null> { await this.asyncBoundary(); const row = this.db.prepare('SELECT symbol_id,file_path,generation,retired_at_rebuild_epoch,retired_at FROM symbol_tombstones WHERE symbol_id=?').get(symbolId) as { symbol_id: string; file_path: string; generation: string; retired_at_rebuild_epoch: number; retired_at: number } | undefined; return row ? { symbolId: row.symbol_id, filePath: row.file_path, generationId: row.generation, retiredAtRebuildEpoch: row.retired_at_rebuild_epoch, retiredAt: row.retired_at } : null; }
   async getStructuredCounts(): Promise<StructuredIndexCounts> { await this.asyncBoundary(); const activeFiles = this.db.prepare('SELECT count(*) AS n FROM structured_files WHERE active_generation IS NOT NULL').get() as { n: number }; const pendingFiles = this.db.prepare('SELECT count(*) AS n FROM structured_files WHERE pending_generation IS NOT NULL').get() as { n: number }; const activeSymbols = this.db.prepare('SELECT count(*) AS n FROM symbols s JOIN structured_files f ON f.file_path=s.file_path AND f.active_generation=s.generation').get() as { n: number }; const pendingSymbols = this.db.prepare('SELECT count(*) AS n FROM symbols s JOIN structured_files f ON f.file_path=s.file_path AND f.pending_generation=s.generation').get() as { n: number }; const tombstones = this.db.prepare('SELECT count(*) AS n FROM symbol_tombstones').get() as { n: number }; return { activeFiles: activeFiles.n, activeSymbols: activeSymbols.n, pendingFiles: pendingFiles.n, pendingSymbols: pendingSymbols.n, tombstones: tombstones.n }; }
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> { await this.asyncBoundary(); return { repaired: false, prunedTombstones: 0 }; }
 

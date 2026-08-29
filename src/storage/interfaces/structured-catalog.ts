@@ -17,6 +17,10 @@ export interface StructuredGenerationStage {
   readonly declarations: readonly StructuredDeclaration[];
   readonly imports: readonly StructuredImport[];
   readonly rebuildEpoch: number;
+  readonly bytes: Uint8Array;
+  readonly fileHash: string;
+  readonly fileCompleteness: 'complete' | 'partial';
+  readonly fileDiagnostics?: readonly unknown[];
 }
 
 export interface StructuredGenerationActivation {
@@ -30,6 +34,9 @@ export interface StructuredFileRetirement {
   readonly filePath: string;
   readonly expectedActiveGeneration: string | null;
   readonly rebuildEpoch: number;
+  readonly retiredGenerationId?: string;
+  readonly tombstoneTimestamp?: number;
+  readonly retiredSymbolIds?: readonly string[];
 }
 
 export interface StructuredIndexState {
@@ -65,6 +72,7 @@ export interface StructuredTombstone {
   readonly filePath: string;
   readonly generationId: string;
   readonly retiredAtRebuildEpoch: number;
+  readonly retiredAt: number;
 }
 
 export interface StructuredIndexCounts {
