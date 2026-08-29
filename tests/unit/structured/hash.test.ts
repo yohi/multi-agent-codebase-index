@@ -7,7 +7,9 @@ describe("structured byte helpers", () => {
     const decomposed = Buffer.from("cafe\u0301", "utf8");
     const composed = Buffer.from("café", "utf8");
 
-    expect(decomposed.toString("utf8")).not.toBe(composed.toString("utf8"));
+    expect(decomposed.toString("utf8").normalize("NFC")).toBe(
+      composed.toString("utf8").normalize("NFC"),
+    );
     expect(sha256Hex(decomposed)).not.toBe(sha256Hex(composed));
   });
 
