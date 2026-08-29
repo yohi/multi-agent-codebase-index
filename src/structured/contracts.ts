@@ -42,9 +42,10 @@ export interface StructuredGeneration {
 }
 
 export const structuredRetrievalStatus = {
-  exact: 'exact',
+  ok: 'ok',
   degraded: 'degraded',
   unsupported: 'unsupported',
+  failed: 'failed',
 } as const;
 export type StructuredRetrievalStatus = typeof structuredRetrievalStatus[keyof typeof structuredRetrievalStatus];
 
@@ -71,7 +72,8 @@ export type StructuredParseResult = {
   readonly imports: readonly StructuredImport[];
   readonly generation?: StructuredGeneration;
 } & (
-  | { readonly status: 'exact'; readonly retrievability: 'exact'; readonly failure?: never }
+  | { readonly status: 'ok'; readonly retrievability: 'exact'; readonly failure?: never }
   | { readonly status: 'degraded'; readonly retrievability: 'exact'; readonly failure: StructuredFailure }
   | { readonly status: 'unsupported'; readonly retrievability: 'exact'; readonly failure: StructuredFailure }
+  | { readonly status: 'failed'; readonly retrievability: 'exact'; readonly failure: StructuredFailure }
 );
