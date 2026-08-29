@@ -91,7 +91,7 @@ export type StructuredParseResult = {
   readonly generation?: StructuredGeneration;
 } & (
   | { readonly status: 'ok'; readonly retrievability: 'exact'; readonly failure?: never }
-  | { readonly status: 'degraded'; readonly retrievability: 'exact'; readonly failure: StructuredFailure }
+  | { readonly status: 'degraded'; readonly retrievability: 'partial'; readonly failure: StructuredFailure }
   | { readonly status: 'unsupported'; readonly retrievability: 'exact'; readonly failure: StructuredFailure }
   | { readonly status: 'failed'; readonly retrievability: 'exact'; readonly failure: StructuredFailure }
 );
