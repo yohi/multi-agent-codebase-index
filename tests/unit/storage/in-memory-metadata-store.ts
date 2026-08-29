@@ -7,8 +7,24 @@ import type {
   IndexStatsRow,
   MerkleNodeRow,
 } from '../../../src/types/index.js';
+import type {
+  IStructuredCatalog,
+  StructuredActivationResult,
+  StructuredFileRetirement,
+  StructuredFileResolution,
+  StructuredGenerationActivation,
+  StructuredGenerationStage,
+  StructuredIndexCounts,
+  StructuredIndexState,
+  StructuredPendingClear,
+  StructuredPendingSymbolResolution,
+  StructuredReconciliationResult,
+  StructuredSymbolResolution,
+  StructuredTombstone,
+} from '../../../src/storage/interfaces/structured-catalog.js';
+import type { StructuredDeclaration } from '../../../src/structured/contracts.js';
 
-export class InMemoryMetadataStore implements IMetadataStore {
+export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog {
   private readonly nodes = new Map<string, MerkleNodeRow>();
 
   private stats: IndexStatsRow | null = null;
@@ -17,9 +33,85 @@ export class InMemoryMetadataStore implements IMetadataStore {
 
   private readonly embeddings = new Map<string, number[]>();
 
+  private readonly active = new Map<string, StructuredGenerationStage>();
+
+  private readonly pending = new Map<string, StructuredGenerationStage>();
+
+  private readonly tombstones = new Map<string, StructuredTombstone>();
+
+  private rebuildEpoch = 0;
+
   async initialize(): Promise<void> {
     return;
   }
+
+  async bootstrapStructuredSchema(): Promise<void> {}
+
+  async getStructuredIndexState(): Promise<StructuredIndexState> {
+    return { rebuildEpoch: this.rebuildEpoch, activeGenerations: await this.getActiveGenerationMap([...this.active.keys()]) };
+  }
+
+  async stageGeneration(input: StructuredGenerationStage): Promise<void> {
+    this.pending.set(input.filePath, input);
+  }
+
+  async activateGeneration(input: StructuredGenerationActivation): Promise<StructuredActivationResult> {
+    const pending = this.pending.get(input.filePath);
+    const active = this.active.get(input.filePath);
+    if (input.expectedRebuildEpoch !== this.rebuildEpoch) return { activated: false, reason: 'stale_rebuild_epoch' };
+    if ((active?.generation.generationId ?? null) !== input.expectedActiveGeneration) return { activated: false, reason: 'stale_active_generation' };
+    if (pending?.generation.generationId !== input.generationId) return { activated: false, reason: 'missing_generation' };
+    this.active.set(input.filePath, pending);
+    this.pending.delete(input.filePath);
+    for (const declaration of pending.declarations) this.tombstones.delete(declaration.symbolId);
+    return { activated: true };
+  }
+
+  async clearPendingGeneration(input: StructuredPendingClear): Promise<{ cleared: boolean }> {
+    const pending = this.pending.get(input.filePath);
+    const active = this.active.get(input.filePath);
+    if (input.expectedRebuildEpoch !== this.rebuildEpoch || (active?.generation.generationId ?? null) !== input.expectedActiveGeneration || pending?.generation.generationId !== input.expectedPendingGeneration) return { cleared: false };
+    this.pending.delete(input.filePath);
+    return { cleared: true };
+  }
+
+  async retireFile(input: StructuredFileRetirement): Promise<void> {
+    const active = this.active.get(input.filePath);
+    if (active === undefined || active.generation.generationId !== input.expectedActiveGeneration || input.rebuildEpoch !== this.rebuildEpoch) return;
+    for (const declaration of active.declarations) this.tombstones.set(declaration.symbolId, { symbolId: declaration.symbolId, filePath: input.filePath, generationId: active.generation.generationId, retiredAtRebuildEpoch: this.rebuildEpoch });
+    this.active.delete(input.filePath);
+    this.pending.delete(input.filePath);
+  }
+
+  async resolveFile(filePath: string): Promise<StructuredFileResolution> {
+    const active = this.active.get(filePath);
+    if (active) return { kind: 'active', generationId: active.generation.generationId };
+    const pending = this.pending.get(filePath);
+    return pending ? { kind: 'pending', generationId: pending.generation.generationId } : { kind: 'missing' };
+  }
+
+  async getActiveGenerationMap(filePaths: readonly string[]): Promise<ReadonlyMap<string, string>> {
+    return new Map(filePaths.flatMap((filePath) => { const generation = this.active.get(filePath)?.generation.generationId; return generation ? [[filePath, generation] as const] : []; }));
+  }
+
+  async resolveSymbol(symbolId: string): Promise<StructuredSymbolResolution> {
+    for (const generation of this.active.values()) { const declaration = generation.declarations.find((item) => item.symbolId === symbolId); if (declaration) return { kind: 'active', declaration }; }
+    const tombstone = this.tombstones.get(symbolId);
+    return tombstone ? { kind: 'tombstone', tombstone } : { kind: 'missing' };
+  }
+
+  async getPendingSymbol(symbolId: string): Promise<StructuredPendingSymbolResolution> {
+    for (const generation of this.pending.values()) { const declaration = generation.declarations.find((item) => item.symbolId === symbolId); if (declaration) return { kind: 'pending', declaration }; }
+    return { kind: 'missing' };
+  }
+
+  async getTombstone(symbolId: string): Promise<StructuredTombstone | null> { return this.tombstones.get(symbolId) ?? null; }
+
+  async getStructuredCounts(): Promise<StructuredIndexCounts> {
+    return { activeFiles: this.active.size, activeSymbols: [...this.active.values()].reduce((sum, item) => sum + item.declarations.length, 0), pendingFiles: this.pending.size, pendingSymbols: [...this.pending.values()].reduce((sum, item) => sum + item.declarations.length, 0), tombstones: this.tombstones.size };
+  }
+
+  async reconcileStructuredState(): Promise<StructuredReconciliationResult> { return { repaired: false, prunedTombstones: 0 }; }
 
   async bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void> {
     for (const node of nodes) {
