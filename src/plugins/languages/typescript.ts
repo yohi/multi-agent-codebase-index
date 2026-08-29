@@ -13,19 +13,33 @@ const getLineRange = (sourceFile: ts.SourceFile, node: ts.Node): { startLine: nu
 };
 
 const declarationStart = (sourceFile: ts.SourceFile, node: ts.Node): number => {
-  const fullStart = node.getFullStart();
-  const start = node.getStart(sourceFile);
-  const prefix = sourceFile.text.slice(fullStart, start);
-  const attached = prefix.match(/(?:^|\n)[ \t]*(?:\/\*\*[\s\S]*?\*\/\s*\n)?[ \t]*(?:@[^\n]+\n)*[ \t]*$/);
-  return attached?.[0] && (attached[0].includes('/**') || attached[0].includes('@')) ? start - attached[0].length : start;
+  const firstToken = node.getStart(sourceFile);
+  let earliest = firstToken;
+  const comments = ts.getLeadingCommentRanges(sourceFile.getFullText(), node.getFullStart()) ?? [];
+  for (const comment of comments) {
+    const text = sourceFile.text.slice(comment.pos, comment.end);
+    const between = sourceFile.text.slice(comment.end, firstToken);
+    if (text.startsWith('/**') && !between.includes('\n\n') && between.trim() === '') earliest = Math.min(earliest, comment.pos);
+  }
+  const decorators = ts.canHaveDecorators(node) ? ts.getDecorators(node) ?? [] : [];
+  for (const decorator of decorators) {
+    const between = sourceFile.text.slice(decorator.end, firstToken);
+    if (!between.includes('\n\n') && between.trim() === '') earliest = Math.min(earliest, decorator.getStart(sourceFile));
+  }
+  return earliest;
 };
 
 const signatureFor = (sourceFile: ts.SourceFile, node: ts.Node): string => {
-  let header = sourceFile.text.slice(node.getStart(sourceFile), node.end);
-  header = header.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '').replace(/(^|\n)\s*@[^\n]*/g, '');
-  const body = header.search(/[={]/);
-  if (body >= 0) header = header.slice(0, body);
-  return header.normalize('NFC').replace(/\s+/g, ' ').trim();
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, sourceFile.text, undefined, node.getStart(sourceFile), node.end);
+  const tokens: string[] = [];
+  for (;;) {
+    const token = scanner.scan();
+    if (token === ts.SyntaxKind.EndOfFileToken || token === ts.SyntaxKind.OpenBraceToken || token === ts.SyntaxKind.EqualsGreaterThanToken || token === ts.SyntaxKind.SemicolonToken) break;
+    if (token === ts.SyntaxKind.WhitespaceTrivia || token === ts.SyntaxKind.NewLineTrivia || token === ts.SyntaxKind.SingleLineCommentTrivia || token === ts.SyntaxKind.MultiLineCommentTrivia) continue;
+    const tokenText = scanner.getTokenText();
+    tokens.push(token === ts.SyntaxKind.Identifier ? tokenText.normalize('NFC') : tokenText);
+  }
+  return tokens.join(' ');
 };
 
 /**
