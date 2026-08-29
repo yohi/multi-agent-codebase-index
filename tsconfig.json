@@ -18,5 +18,5 @@
     "types": ["node", "vitest/globals"]
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "eslint.config.mjs", "vitest.config.ts"],
-  "exclude": ["dist", "node_modules"]
+  "exclude": ["dist", "node_modules", "tests/fixtures/structured/typescript/malformed.ts"]
 }
