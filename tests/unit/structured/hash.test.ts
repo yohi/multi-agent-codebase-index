@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 import { decodeUtf8, sha256Hex } from "../../../src/structured/hash.js";
 
 describe("structured byte helpers", () => {
+  it("hashes the original bytes without re-encoding logical text", () => {
+    const decomposed = Buffer.from("cafe\u0301", "utf8");
+    const composed = Buffer.from("café", "utf8");
+
+    expect(decomposed.toString("utf8")).not.toBe(composed.toString("utf8"));
+    expect(sha256Hex(decomposed)).not.toBe(sha256Hex(composed));
+  });
+
   it("returns the known SHA-256 digest as lowercase hexadecimal", () => {
     const digest = sha256Hex(new TextEncoder().encode("abc"));
 
