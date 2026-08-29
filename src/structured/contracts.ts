@@ -42,10 +42,9 @@ export interface StructuredGeneration {
 }
 
 export const structuredRetrievalStatus = {
-  ok: 'ok',
+  exact: 'exact',
   degraded: 'degraded',
   unsupported: 'unsupported',
-  failed: 'failed',
 } as const;
 export type StructuredRetrievalStatus = typeof structuredRetrievalStatus[keyof typeof structuredRetrievalStatus];
 
@@ -62,14 +61,17 @@ export const structuredRetrievalReasonCode = {
 } as const;
 export type StructuredRetrievalReasonCode = typeof structuredRetrievalReasonCode[keyof typeof structuredRetrievalReasonCode];
 
+export interface StructuredFailure {
+  readonly reasonCode: StructuredRetrievalReasonCode;
+  readonly message: string;
+}
+
 export type StructuredParseResult = {
   readonly declarations: readonly StructuredDeclaration[];
   readonly imports: readonly StructuredImport[];
   readonly generation?: StructuredGeneration;
-  readonly error?: string;
 } & (
-  | { readonly status: 'ok'; readonly retrievability: 'exact'; readonly reasonCode?: never }
-  | { readonly status: 'degraded'; readonly retrievability: 'partial'; readonly reasonCode: StructuredRetrievalReasonCode }
-  | { readonly status: 'unsupported'; readonly retrievability: 'none'; readonly reasonCode: StructuredRetrievalReasonCode }
-  | { readonly status: 'failed'; readonly retrievability: 'none'; readonly reasonCode: StructuredRetrievalReasonCode }
+  | { readonly status: 'exact'; readonly retrievability: 'exact'; readonly failure?: never }
+  | { readonly status: 'degraded'; readonly retrievability: 'exact'; readonly failure: StructuredFailure }
+  | { readonly status: 'unsupported'; readonly retrievability: 'exact'; readonly failure: StructuredFailure }
 );
