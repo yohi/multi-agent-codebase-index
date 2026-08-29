@@ -7,6 +7,10 @@ export interface StructuredSource {
   readonly text: string;
 }
 
+export interface StructuredLanguageParser {
+  parseStructured(source: StructuredSource): Promise<StructuredParseResult>;
+}
+
 export interface SymbolPosition {
   readonly startLine: number;
   readonly startColumn: number;
@@ -30,6 +34,7 @@ export interface StructuredDeclaration extends SymbolMetadata {
   readonly parentSymbolId?: string;
   readonly languageId: string;
   readonly isExact: boolean;
+  readonly rawSource?: string;
 }
 
 export interface StructuredImport {

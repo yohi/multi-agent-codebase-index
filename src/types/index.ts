@@ -1,3 +1,5 @@
+import type { StructuredLanguageParser } from '../structured/contracts.js';
+
 export type SymbolKind =
   | 'file'
   | 'module'
@@ -161,6 +163,7 @@ export interface LanguagePlugin {
   createParser(): Promise<{
     parse(file: FileToChunk): Promise<ParsedSourceFile>;
   }>;
+  createStructuredParser?: () => Promise<StructuredLanguageParser>;
 }
 
 export interface WatcherConfig {
