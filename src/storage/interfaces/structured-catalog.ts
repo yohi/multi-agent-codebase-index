@@ -1,0 +1,93 @@
+import type {
+  StructuredDeclaration,
+  StructuredGeneration,
+  StructuredImport,
+} from '../../structured/contracts.js';
+
+export interface StructuredPendingClear {
+  readonly filePath: string;
+  readonly expectedActiveGeneration: string | null;
+  readonly expectedPendingGeneration: string;
+  readonly expectedRebuildEpoch: number;
+}
+
+export interface StructuredGenerationStage {
+  readonly filePath: string;
+  readonly generation: StructuredGeneration;
+  readonly declarations: readonly StructuredDeclaration[];
+  readonly imports: readonly StructuredImport[];
+  readonly rebuildEpoch: number;
+}
+
+export interface StructuredGenerationActivation {
+  readonly filePath: string;
+  readonly generationId: string;
+  readonly expectedActiveGeneration: string | null;
+  readonly expectedRebuildEpoch: number;
+}
+
+export interface StructuredFileRetirement {
+  readonly filePath: string;
+  readonly expectedActiveGeneration: string | null;
+  readonly rebuildEpoch: number;
+}
+
+export interface StructuredIndexState {
+  readonly rebuildEpoch: number;
+  readonly activeGenerations: ReadonlyMap<string, string>;
+}
+
+export interface StructuredActivationResult {
+  readonly activated: boolean;
+  readonly reason?: 'stale_active_generation' | 'stale_rebuild_epoch' | 'missing_generation';
+}
+
+export type StructuredFileResolution =
+  | { readonly kind: 'active'; readonly generationId: string }
+  | { readonly kind: 'pending'; readonly generationId: string }
+  | { readonly kind: 'missing' };
+
+export type StructuredSymbolResolution =
+  | { readonly kind: 'active'; readonly declaration: StructuredDeclaration }
+  | { readonly kind: 'tombstone'; readonly tombstone: StructuredTombstone }
+  | { readonly kind: 'missing' };
+
+export type StructuredPendingSymbolResolution =
+  | { readonly kind: 'pending'; readonly declaration: StructuredDeclaration }
+  | { readonly kind: 'missing' };
+
+export interface StructuredTombstone {
+  readonly symbolId: string;
+  readonly filePath: string;
+  readonly generationId: string;
+  readonly retiredAtRebuildEpoch: number;
+}
+
+export interface StructuredIndexCounts {
+  readonly activeFiles: number;
+  readonly activeSymbols: number;
+  readonly pendingFiles: number;
+  readonly pendingSymbols: number;
+  readonly tombstones: number;
+}
+
+export interface StructuredReconciliationResult {
+  readonly repaired: boolean;
+  readonly prunedTombstones: number;
+}
+
+export interface IStructuredCatalog {
+  bootstrapStructuredSchema(): Promise<void>;
+  getStructuredIndexState(): Promise<StructuredIndexState>;
+  stageGeneration(input: StructuredGenerationStage): Promise<void>;
+  activateGeneration(input: StructuredGenerationActivation): Promise<StructuredActivationResult>;
+  clearPendingGeneration(input: StructuredPendingClear): Promise<{ cleared: boolean }>;
+  retireFile(input: StructuredFileRetirement): Promise<void>;
+  resolveFile(filePath: string): Promise<StructuredFileResolution>;
+  getActiveGenerationMap(filePaths: readonly string[]): Promise<ReadonlyMap<string, string>>;
+  resolveSymbol(symbolId: string): Promise<StructuredSymbolResolution>;
+  getPendingSymbol(symbolId: string): Promise<StructuredPendingSymbolResolution>;
+  getTombstone(symbolId: string): Promise<StructuredTombstone | null>;
+  getStructuredCounts(): Promise<StructuredIndexCounts>;
+  reconcileStructuredState(): Promise<StructuredReconciliationResult>;
+}

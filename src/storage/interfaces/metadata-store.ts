@@ -1,5 +1,6 @@
 /** Storage interfaces (design doc §7.3). Canonical home since the Phase 1b relocation; re-exported from src/types/index.ts for backward compatibility. */
 import type { DeadLetterEntry } from '../../types/index.js';
+import type { IStructuredCatalog } from './structured-catalog.js';
 
 export interface MerkleNodeRow {
   path: string;
@@ -23,7 +24,7 @@ export interface EmbeddingCacheEntry {
   vector: number[];
 }
 
-export interface IMetadataStore {
+export interface IMetadataStore extends Partial<IStructuredCatalog> {
   initialize(): Promise<void>;
   bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void>;
   bulkDeleteMerkleNodes(paths: string[]): Promise<void>;
