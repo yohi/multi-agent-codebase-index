@@ -1,45 +1,12 @@
 import ts from 'typescript';
-import { createHash } from 'node:crypto';
 import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile, SymbolKind } from '../../types/index.js';
-import { sha256Hex } from '../../structured/hash.js';
-import { createSymbolId } from '../../structured/identity.js';
-import { createUtf8OffsetTable } from '../../structured/utf8-offsets.js';
-import type { StructuredDeclaration, StructuredImport, StructuredLanguageParser, StructuredParseResult, StructuredSource } from '../../structured/contracts.js';
+import type { StructuredLanguageParser } from '../../structured/contracts.js';
+import { TypeScriptStructuredParser } from './typescript-structured.js';
 
 const getLineRange = (sourceFile: ts.SourceFile, node: ts.Node): { startLine: number; endLine: number } => {
   const startLine = sourceFile.getLineAndCharacterOfPosition(node.getFullStart()).line + 1;
   const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
   return { startLine, endLine };
-};
-
-const declarationStart = (sourceFile: ts.SourceFile, node: ts.Node): number => {
-  const firstToken = node.getStart(sourceFile);
-  let earliest = firstToken;
-  const comments = ts.getLeadingCommentRanges(sourceFile.getFullText(), node.getFullStart()) ?? [];
-  for (const comment of comments) {
-    const text = sourceFile.text.slice(comment.pos, comment.end);
-    const between = sourceFile.text.slice(comment.end, firstToken);
-    if (text.startsWith('/**') && !between.includes('\n\n') && between.trim() === '') earliest = Math.min(earliest, comment.pos);
-  }
-  const decorators = ts.canHaveDecorators(node) ? ts.getDecorators(node) ?? [] : [];
-  for (const decorator of decorators) {
-    const between = sourceFile.text.slice(decorator.end, firstToken);
-    if (!between.includes('\n\n') && between.trim() === '') earliest = Math.min(earliest, decorator.getStart(sourceFile));
-  }
-  return earliest;
-};
-
-const signatureFor = (sourceFile: ts.SourceFile, node: ts.Node): string => {
-  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, sourceFile.text, undefined, node.getStart(sourceFile), node.end);
-  const tokens: string[] = [];
-  for (;;) {
-    const token = scanner.scan();
-    if (token === ts.SyntaxKind.EndOfFileToken || token === ts.SyntaxKind.OpenBraceToken || token === ts.SyntaxKind.EqualsGreaterThanToken || token === ts.SyntaxKind.SemicolonToken) break;
-    if (token === ts.SyntaxKind.WhitespaceTrivia || token === ts.SyntaxKind.NewLineTrivia || token === ts.SyntaxKind.SingleLineCommentTrivia || token === ts.SyntaxKind.MultiLineCommentTrivia) continue;
-    const tokenText = scanner.getTokenText();
-    tokens.push(token === ts.SyntaxKind.Identifier ? tokenText.normalize('NFC') : tokenText);
-  }
-  return tokens.join(' ');
 };
 
 /**
@@ -65,63 +32,6 @@ const hasImplementation = (node: ts.Node): boolean => {
 };
 
 class TypeScriptParser {
-  async parseStructured(source: StructuredSource): Promise<StructuredParseResult> {
-    const sourceFile = ts.createSourceFile(source.filePath, source.text, ts.ScriptTarget.Latest, true);
-    const offsets = createUtf8OffsetTable(source.text);
-    const declarations: StructuredDeclaration[] = [];
-    const imports: StructuredImport[] = [];
-    const diagnostics = (sourceFile as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
-    const intersectsDiagnostic = (start: number, end: number): boolean => diagnostics.some((diagnostic) => diagnostic.start !== undefined && diagnostic.length !== undefined && diagnostic.start < end && diagnostic.start + diagnostic.length > start);
-    const visit = (node: ts.Node, parents: readonly string[]) => {
-      const named = (node as ts.NamedDeclaration).name;
-      const name = ts.isConstructorDeclaration(node) ? 'constructor' : named && ts.isIdentifier(named) ? named.text : ts.isExportAssignment(node) ? 'default' : undefined;
-      let kind: SymbolKind | undefined;
-      if (ts.isClassDeclaration(node)) kind = 'class';
-      else if (ts.isInterfaceDeclaration(node)) kind = 'interface';
-      else if (ts.isFunctionDeclaration(node)) kind = 'function';
-      else if (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) kind = 'method';
-      else if (ts.isConstructorDeclaration(node)) kind = 'constructor';
-      else if (ts.isEnumDeclaration(node)) kind = 'enum';
-      else if (ts.isTypeAliasDeclaration(node)) kind = 'typeAlias';
-      else if (ts.isPropertyDeclaration(node)) kind = 'property';
-      else if (ts.isModuleDeclaration(node)) kind = 'namespace';
-      else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) kind = 'variable';
-      if (ts.isImportDeclaration(node)) {
-        const moduleSpecifier = ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : undefined;
-        const clauseNames = node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)
-          ? node.importClause.namedBindings.elements.map((element) => element.name.text)
-          : node.importClause?.name ? [node.importClause.name.text] : [];
-        const shadowed = clauseNames.some((importName) => sourceFile.statements.some((statement) => (ts.isVariableStatement(statement) && statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === importName)) || (ts.isFunctionDeclaration(statement) && statement.parameters.some((parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === importName))));
-        const importKey = `${source.filePath}:${node.getStart(sourceFile)}:${moduleSpecifier ?? ''}`;
-        imports.push({ id: `import_v1_${createHash('sha256').update(importKey, 'utf8').digest('base64url')}`, moduleSpecifier, startByte: offsets.byteOffsetAtUtf16(node.getStart(sourceFile)), endByte: offsets.byteOffsetAtUtf16(node.end), sourceHash: sha256Hex(source.bytes.subarray(offsets.byteOffsetAtUtf16(node.getStart(sourceFile)), offsets.byteOffsetAtUtf16(node.end))), completeness: diagnostics.length === 0 && !shadowed && Boolean(moduleSpecifier) ? 'complete' : 'partial', diagnostics: diagnostics.map((item) => item.messageText), position: { startLine: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1, startColumn: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).character, endLine: sourceFile.getLineAndCharacterOfPosition(node.end).line + 1, endColumn: sourceFile.getLineAndCharacterOfPosition(node.end).character } });
-      }
-      const isMultiDeclarator = ts.isVariableDeclaration(node) && ts.isVariableDeclarationList(node.parent) && ts.isVariableStatement(node.parent.parent) && node.parent.declarations.length > 1;
-      if (kind && name && !isMultiDeclarator) {
-        const qualifiedName = [...parents, name].join('.');
-        const start = declarationStart(sourceFile, node);
-        const end = node.end;
-        const startByte = offsets.byteOffsetAtUtf16(start);
-        const endByte = offsets.byteOffsetAtUtf16(end);
-        const signatureDiscriminator = signatureFor(sourceFile, node);
-        const isExact = !intersectsDiagnostic(start, end);
-        if (isExact) declarations.push({ symbolId: createSymbolId({ filePath: source.filePath, qualifiedName, kind, signatureDiscriminator, occurrence: declarations.length }), qualifiedName, kind, signatureDiscriminator, position: { startLine: sourceFile.getLineAndCharacterOfPosition(start).line + 1, startColumn: sourceFile.getLineAndCharacterOfPosition(start).character, endLine: sourceFile.getLineAndCharacterOfPosition(end).line + 1, endColumn: sourceFile.getLineAndCharacterOfPosition(end).character }, name, startByte, endByte, sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)), parentSymbolId: undefined, languageId: source.language, isExact: true, rawSource: source.text.slice(start, end) });
-      }
-      const nextParents = kind && name && (ts.isClassDeclaration(node) || ts.isModuleDeclaration(node) || ts.isNamespaceExportDeclaration(node)) ? [...parents, name] : parents;
-      ts.forEachChild(node, (child) => visit(child, nextParents));
-    };
-    visit(sourceFile, []);
-    const byName = new Map(declarations.map((declaration) => [declaration.qualifiedName, declaration.symbolId]));
-    for (const declaration of declarations) {
-      const separator = declaration.qualifiedName.lastIndexOf('.');
-      if (separator > 0) {
-        const parentSymbolId = byName.get(declaration.qualifiedName.slice(0, separator));
-        if (parentSymbolId) Object.assign(declaration, { parentSymbolId });
-      }
-    }
-    const generation = { generationId: sha256Hex(source.bytes), schemaVersion: 1 as const, parserId: 'typescript', parserVersion: ts.version, fileHash: sha256Hex(source.bytes), fileCompleteness: diagnostics.length === 0 ? 'complete' as const : 'partial' as const, fileDiagnostics: diagnostics.map((item: ts.Diagnostic) => item.messageText) };
-    if (diagnostics.length === 0) return { status: 'ok', retrievability: 'exact', declarations, imports, generation };
-    return { status: 'degraded', retrievability: 'partial', declarations, imports, generation, failure: { reasonCode: 'parse_error', message: 'TypeScript parse diagnostics were reported.' } };
-  }
   async parse(file: FileToChunk): Promise<ParsedSourceFile> {
     const sourceFile = ts.createSourceFile(file.filePath, file.content, ts.ScriptTarget.Latest, true);
     const declarations: ParsedDeclaration[] = [];
@@ -276,6 +186,6 @@ export class TypeScriptLanguagePlugin implements LanguagePlugin {
   }
 
   async createStructuredParser(): Promise<StructuredLanguageParser> {
-    return new TypeScriptParser();
+    return new TypeScriptStructuredParser();
   }
 }
