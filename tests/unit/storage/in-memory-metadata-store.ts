@@ -78,7 +78,7 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   async retireFile(input: StructuredFileRetirement): Promise<void> {
     const active = this.active.get(input.filePath);
     if (active === undefined || active.generation.generationId !== input.expectedActiveGeneration || input.rebuildEpoch !== this.rebuildEpoch) return;
-    for (const declaration of active.declarations) this.tombstones.set(declaration.symbolId, { symbolId: declaration.symbolId, filePath: input.filePath, generationId: active.generation.generationId, retiredAtRebuildEpoch: this.rebuildEpoch });
+    for (const declaration of active.declarations) this.tombstones.set(declaration.symbolId, { symbolId: declaration.symbolId, filePath: input.filePath, generationId: active.generation.generationId, retiredAtRebuildEpoch: this.rebuildEpoch, retiredAt: input.tombstoneTimestamp ?? Date.now() });
     this.active.delete(input.filePath);
     this.pending.delete(input.filePath);
   }

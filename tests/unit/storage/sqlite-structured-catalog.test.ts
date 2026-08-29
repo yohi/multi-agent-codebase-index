@@ -5,10 +5,10 @@ import path from 'node:path';
 import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
 import type { StructuredGenerationStage } from '../../../src/storage/interfaces/structured-catalog.js';
 
-const generation = (id: string) => ({ generationId: id, schemaVersion: 1 as const, parserId: 'test', parserVersion: '1', contentHash: `hash-${id}` });
+const generation = (id: string) => ({ generationId: id, schemaVersion: 1 as const, parserId: 'test', parserVersion: '1', fileHash: `hash-${id}`, fileCompleteness: 'complete' as const });
 const stage = (filePath: string, id: string, symbolId: string): StructuredGenerationStage => ({
-  filePath, generation: generation(id), rebuildEpoch: 1,
-  declarations: [{ name: symbolId, symbolId, qualifiedName: symbolId, kind: 'function', signatureDiscriminator: 'sig', position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 }, content: 'not persisted' }],
+  filePath, generation: generation(id), rebuildEpoch: 1, bytes: new TextEncoder().encode('not persisted'), fileHash: `hash-${id}`, fileCompleteness: 'complete',
+  declarations: [{ name: symbolId, symbolId, qualifiedName: symbolId, kind: 'function', signatureDiscriminator: 'sig', position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 }, startByte: 0, endByte: 3, sourceHash: '', languageId: 'typescript', isExact: true }],
   imports: [],
 });
 
