@@ -12,6 +12,22 @@ const getLineRange = (sourceFile: ts.SourceFile, node: ts.Node): { startLine: nu
   return { startLine, endLine };
 };
 
+const declarationStart = (sourceFile: ts.SourceFile, node: ts.Node): number => {
+  const fullStart = node.getFullStart();
+  const start = node.getStart(sourceFile);
+  const prefix = sourceFile.text.slice(fullStart, start);
+  const attached = prefix.match(/(?:^|\n)[ \t]*(?:\/\*\*[\s\S]*?\*\/\s*\n)?[ \t]*(?:@[^\n]+\n)*[ \t]*$/);
+  return attached?.[0] && (attached[0].includes('/**') || attached[0].includes('@')) ? start - attached[0].length : start;
+};
+
+const signatureFor = (sourceFile: ts.SourceFile, node: ts.Node): string => {
+  let header = sourceFile.text.slice(node.getStart(sourceFile), node.end);
+  header = header.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '').replace(/(^|\n)\s*@[^\n]*/g, '');
+  const body = header.search(/[={]/);
+  if (body >= 0) header = header.slice(0, body);
+  return header.normalize('NFC').replace(/\s+/g, ' ').trim();
+};
+
 /**
  * Defensive helper that correctly detects whether a node has an implementation.
  * Returns true only when node.body exists, the source file is not a declaration file,
@@ -44,7 +60,7 @@ class TypeScriptParser {
     const intersectsDiagnostic = (start: number, end: number): boolean => diagnostics.some((diagnostic) => diagnostic.start !== undefined && diagnostic.length !== undefined && diagnostic.start < end && diagnostic.start + diagnostic.length > start);
     const visit = (node: ts.Node, parents: readonly string[]) => {
       const named = (node as ts.NamedDeclaration).name;
-      const name = named && ts.isIdentifier(named) ? named.text : undefined;
+      const name = ts.isConstructorDeclaration(node) ? 'constructor' : named && ts.isIdentifier(named) ? named.text : ts.isExportAssignment(node) ? 'default' : undefined;
       let kind: SymbolKind | undefined;
       if (ts.isClassDeclaration(node)) kind = 'class';
       else if (ts.isInterfaceDeclaration(node)) kind = 'interface';
@@ -54,19 +70,25 @@ class TypeScriptParser {
       else if (ts.isEnumDeclaration(node)) kind = 'enum';
       else if (ts.isTypeAliasDeclaration(node)) kind = 'typeAlias';
       else if (ts.isPropertyDeclaration(node)) kind = 'property';
+      else if (ts.isModuleDeclaration(node)) kind = 'namespace';
       else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) kind = 'variable';
       if (ts.isImportDeclaration(node)) {
         const moduleSpecifier = ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : undefined;
+        const clauseNames = node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)
+          ? node.importClause.namedBindings.elements.map((element) => element.name.text)
+          : node.importClause?.name ? [node.importClause.name.text] : [];
+        const shadowed = clauseNames.some((importName) => sourceFile.statements.some((statement) => (ts.isVariableStatement(statement) && statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === importName)) || (ts.isFunctionDeclaration(statement) && statement.parameters.some((parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === importName))));
         const importKey = `${source.filePath}:${node.getStart(sourceFile)}:${moduleSpecifier ?? ''}`;
-        imports.push({ id: `import_v1_${createHash('sha256').update(importKey, 'utf8').digest('base64url')}`, moduleSpecifier, startByte: offsets.byteOffsetAtUtf16(node.getStart(sourceFile)), endByte: offsets.byteOffsetAtUtf16(node.end), sourceHash: sha256Hex(source.bytes.subarray(offsets.byteOffsetAtUtf16(node.getStart(sourceFile)), offsets.byteOffsetAtUtf16(node.end))), completeness: diagnostics.length === 0 ? 'complete' : 'partial', diagnostics: diagnostics.map((item) => item.messageText), position: { startLine: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1, startColumn: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).character, endLine: sourceFile.getLineAndCharacterOfPosition(node.end).line + 1, endColumn: sourceFile.getLineAndCharacterOfPosition(node.end).character } });
+        imports.push({ id: `import_v1_${createHash('sha256').update(importKey, 'utf8').digest('base64url')}`, moduleSpecifier, startByte: offsets.byteOffsetAtUtf16(node.getStart(sourceFile)), endByte: offsets.byteOffsetAtUtf16(node.end), sourceHash: sha256Hex(source.bytes.subarray(offsets.byteOffsetAtUtf16(node.getStart(sourceFile)), offsets.byteOffsetAtUtf16(node.end))), completeness: diagnostics.length === 0 && !shadowed && Boolean(moduleSpecifier) ? 'complete' : 'partial', diagnostics: diagnostics.map((item) => item.messageText), position: { startLine: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1, startColumn: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).character, endLine: sourceFile.getLineAndCharacterOfPosition(node.end).line + 1, endColumn: sourceFile.getLineAndCharacterOfPosition(node.end).character } });
       }
-      if (kind && name) {
+      const isMultiDeclarator = ts.isVariableDeclaration(node) && ts.isVariableDeclarationList(node.parent) && ts.isVariableStatement(node.parent.parent) && node.parent.declarations.length > 1;
+      if (kind && name && !isMultiDeclarator) {
         const qualifiedName = [...parents, name].join('.');
-        const start = node.getFullStart();
+        const start = declarationStart(sourceFile, node);
         const end = node.end;
         const startByte = offsets.byteOffsetAtUtf16(start);
         const endByte = offsets.byteOffsetAtUtf16(end);
-        const signatureDiscriminator = source.text.slice(node.getStart(sourceFile), Math.min(end, node.getStart(sourceFile) + 256)).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '').replace(/\s+/g, ' ').trim();
+        const signatureDiscriminator = signatureFor(sourceFile, node);
         const isExact = !intersectsDiagnostic(start, end);
         if (isExact) declarations.push({ symbolId: createSymbolId({ filePath: source.filePath, qualifiedName, kind, signatureDiscriminator, occurrence: declarations.length }), qualifiedName, kind, signatureDiscriminator, position: { startLine: sourceFile.getLineAndCharacterOfPosition(start).line + 1, startColumn: sourceFile.getLineAndCharacterOfPosition(start).character, endLine: sourceFile.getLineAndCharacterOfPosition(end).line + 1, endColumn: sourceFile.getLineAndCharacterOfPosition(end).character }, name, startByte, endByte, sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)), parentSymbolId: undefined, languageId: source.language, isExact: true, rawSource: source.text.slice(start, end) });
       }

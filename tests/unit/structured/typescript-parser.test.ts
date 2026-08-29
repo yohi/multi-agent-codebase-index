@@ -28,4 +28,28 @@ describe('TypeScript structured parser', () => {
     expect(result.declarations.find((item) => item.qualifiedName === 'ValidClass')?.symbolId).toMatch(/^symbol_v1_/);
     expect(result.declarations.find((item) => item.qualifiedName === 'BrokenClass')?.symbolId).toBeUndefined();
   });
+
+  it('extracts the required declaration families and marks shadowed imports partial', async () => {
+    const filePath = path.join('tests', 'fixtures', 'structured', 'typescript', 'coverage.ts');
+    const bytes = new Uint8Array(await readFile(filePath));
+    const parser = await (new TypeScriptLanguagePlugin()).createStructuredParser();
+    const result = await parser.parseStructured({ filePath, language: 'typescript', bytes, text: decodeUtf8(bytes) });
+    const names = new Set(result.declarations.map((item) => item.qualifiedName));
+    expect(names.size).toBeGreaterThan(0);
+    expect(names.has('Outer.Inner')).toBe(true);
+    expect(names.has('Outer.Inner.constructor')).toBe(true);
+    expect(names.has('Alias')).toBe(true);
+    expect(names.has('State')).toBe(true);
+    expect(names.has('DefaultClass')).toBe(true);
+    expect(names.has('日本語')).toBe(true);
+    expect(result.declarations.some((item) => item.qualifiedName === 'first')).toBe(false);
+  });
+
+  it('marks imports with shadowed bindings partial', async () => {
+    const filePath = path.join('tests', 'fixtures', 'structured', 'typescript', 'shadowed.ts');
+    const bytes = new Uint8Array(await readFile(filePath));
+    const parser = await (new TypeScriptLanguagePlugin()).createStructuredParser();
+    const result = await parser.parseStructured({ filePath, language: 'typescript', bytes, text: decodeUtf8(bytes) });
+    expect(result.imports[0]?.completeness).toBe('partial');
+  });
 });
