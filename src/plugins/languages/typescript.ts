@@ -1,5 +1,8 @@
 import ts from 'typescript';
 import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile, SymbolKind } from '../../types/index.js';
+import { sha256Hex } from '../../structured/hash.js';
+import { createUtf8OffsetTable } from '../../structured/utf8-offsets.js';
+import type { StructuredDeclaration, StructuredImport, StructuredLanguageParser, StructuredParseResult, StructuredSource } from '../../structured/contracts.js';
 
 const getLineRange = (sourceFile: ts.SourceFile, node: ts.Node): { startLine: number; endLine: number } => {
   const startLine = sourceFile.getLineAndCharacterOfPosition(node.getFullStart()).line + 1;
@@ -30,6 +33,46 @@ const hasImplementation = (node: ts.Node): boolean => {
 };
 
 class TypeScriptParser {
+  async parseStructured(source: StructuredSource): Promise<StructuredParseResult> {
+    const sourceFile = ts.createSourceFile(source.filePath, source.text, ts.ScriptTarget.Latest, true);
+    const offsets = createUtf8OffsetTable(source.text);
+    const declarations: StructuredDeclaration[] = [];
+    const imports: StructuredImport[] = [];
+    const diagnostics: readonly ts.Diagnostic[] = [];
+    const visit = (node: ts.Node, parents: readonly string[]) => {
+      const named = (node as ts.NamedDeclaration).name;
+      const name = named && ts.isIdentifier(named) ? named.text : undefined;
+      let kind: SymbolKind | undefined;
+      if (ts.isClassDeclaration(node)) kind = 'class';
+      else if (ts.isInterfaceDeclaration(node)) kind = 'interface';
+      else if (ts.isFunctionDeclaration(node)) kind = 'function';
+      else if (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) kind = 'method';
+      else if (ts.isConstructorDeclaration(node)) kind = 'constructor';
+      else if (ts.isEnumDeclaration(node)) kind = 'enum';
+      else if (ts.isTypeAliasDeclaration(node)) kind = 'typeAlias';
+      else if (ts.isPropertyDeclaration(node)) kind = 'property';
+      else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) kind = 'variable';
+      if (ts.isImportDeclaration(node)) {
+        const moduleSpecifier = ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : undefined;
+        imports.push({ id: sha256Hex(new TextEncoder().encode(`${source.filePath}:${node.getStart(sourceFile)}:${moduleSpecifier ?? ''}`)), moduleSpecifier, startByte: offsets.byteOffsetAtUtf16(node.getStart(sourceFile)), endByte: offsets.byteOffsetAtUtf16(node.end), sourceHash: sha256Hex(source.bytes.subarray(offsets.byteOffsetAtUtf16(node.getStart(sourceFile)), offsets.byteOffsetAtUtf16(node.end))), completeness: diagnostics.length === 0 ? 'complete' : 'partial', diagnostics: diagnostics.map((item) => item.messageText), position: { startLine: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1, startColumn: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).character, endLine: sourceFile.getLineAndCharacterOfPosition(node.end).line + 1, endColumn: sourceFile.getLineAndCharacterOfPosition(node.end).character } });
+      }
+      if (kind && name) {
+        const qualifiedName = [...parents, name].join('.');
+        const start = node.getFullStart();
+        const end = node.end;
+        const startByte = offsets.byteOffsetAtUtf16(start);
+        const endByte = offsets.byteOffsetAtUtf16(end);
+        const signatureDiscriminator = source.text.slice(node.getStart(sourceFile), Math.min(end, node.getStart(sourceFile) + 256)).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '').replace(/\s+/g, ' ').trim();
+        declarations.push({ symbolId: sha256Hex(new TextEncoder().encode(`${qualifiedName}:${signatureDiscriminator}`)), qualifiedName, kind, signatureDiscriminator, position: { startLine: sourceFile.getLineAndCharacterOfPosition(start).line + 1, startColumn: sourceFile.getLineAndCharacterOfPosition(start).character, endLine: sourceFile.getLineAndCharacterOfPosition(end).line + 1, endColumn: sourceFile.getLineAndCharacterOfPosition(end).character }, name, startByte, endByte, sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)), parentSymbolId: parents.length > 0 ? sha256Hex(new TextEncoder().encode(parents.join('.'))) : undefined, languageId: source.language, isExact: diagnostics.length === 0, rawSource: source.text.slice(start, end) });
+      }
+      const nextParents = kind && name && (ts.isClassDeclaration(node) || ts.isModuleDeclaration(node) || ts.isNamespaceExportDeclaration(node)) ? [...parents, name] : parents;
+      ts.forEachChild(node, (child) => visit(child, nextParents));
+    };
+    visit(sourceFile, []);
+    const generation = { generationId: sha256Hex(source.bytes), schemaVersion: 1 as const, parserId: 'typescript', parserVersion: ts.version, fileHash: sha256Hex(source.bytes), fileCompleteness: diagnostics.length === 0 ? 'complete' as const : 'partial' as const, fileDiagnostics: diagnostics.map((item: ts.Diagnostic) => item.messageText) };
+    if (diagnostics.length === 0) return { status: 'ok', retrievability: 'exact', declarations, imports, generation };
+    return { status: 'degraded', retrievability: 'exact', declarations, imports, generation, failure: { reasonCode: 'parse_error', message: 'TypeScript parse diagnostics were reported.' } };
+  }
   async parse(file: FileToChunk): Promise<ParsedSourceFile> {
     const sourceFile = ts.createSourceFile(file.filePath, file.content, ts.ScriptTarget.Latest, true);
     const declarations: ParsedDeclaration[] = [];
@@ -180,6 +223,10 @@ export class TypeScriptLanguagePlugin implements LanguagePlugin {
   }
 
   async createParser(): Promise<TypeScriptParser> {
+    return new TypeScriptParser();
+  }
+
+  async createStructuredParser(): Promise<StructuredLanguageParser> {
     return new TypeScriptParser();
   }
 }
