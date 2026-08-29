@@ -32,6 +32,8 @@ describe("canonical structured context", () => {
     });
 
     expect(result.context).toBe("very long complete symbol");
+    expect(result.tokenizer).toBe(tokenCounter.tokenizer);
+    expect(result.tokenizerVersion).toBe(tokenCounter.tokenizerVersion);
     expect(result.budget.exceeded).toBe(true);
     expect(result.budget.omittedForBudget).toBe(1);
   });

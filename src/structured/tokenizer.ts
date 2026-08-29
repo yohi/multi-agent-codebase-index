@@ -29,6 +29,8 @@ export interface PackRelatedImportsInput {
 export interface PackedContext {
   readonly context: string;
   readonly imports: readonly ImportCandidate[];
+  readonly tokenizer: typeof tokenCounter.tokenizer;
+  readonly tokenizerVersion: typeof tokenCounter.tokenizerVersion;
   readonly budget: {
     readonly exceeded: boolean;
     readonly omittedForBudget: number;
@@ -57,6 +59,8 @@ export const packRelatedImports = (input: PackRelatedImportsInput): PackedContex
   return {
     context,
     imports: selected,
+    tokenizer: tokenCounter.tokenizer,
+    tokenizerVersion: tokenCounter.tokenizerVersion,
     budget: {
       exceeded: tokenCounter.count(context) > input.tokenBudget,
       omittedForBudget,
