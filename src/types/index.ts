@@ -65,6 +65,7 @@ export interface FileToChunk {
   filePath: string;
   language: string;
   content: string;
+  bytes?: Uint8Array;
 }
 
 export interface ParsedDeclaration {
