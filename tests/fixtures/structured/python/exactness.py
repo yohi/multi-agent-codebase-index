@@ -29,6 +29,10 @@ def 日本語() -> str:
     return "狐"
 
 
+async def top_level_async() -> None:
+    return None
+
+
 alias = "shadowed"
 
 

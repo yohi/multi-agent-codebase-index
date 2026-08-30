@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { PythonLanguagePlugin } from '../../../src/plugins/languages/python.js';
 import { decodeUtf8, sha256Hex } from '../../../src/structured/hash.js';
@@ -14,6 +14,13 @@ const parsePythonFixture = async (name: string) => {
   const parser = await new PythonLanguagePlugin().createStructuredParser();
   const result = await parser.parseStructured({ filePath, language: 'python', bytes, text });
   return { bytes, result, text };
+};
+
+const parsePythonSource = async (content: string) => {
+  const bytes = Buffer.from(content, 'utf8');
+  const parser = await new PythonLanguagePlugin().createStructuredParser();
+  const result = await parser.parseStructured({ filePath: 'inline.py', language: 'python', bytes, text: content });
+  return result;
 };
 
 describe('Python structured parser', () => {
@@ -43,16 +50,19 @@ describe('Python structured parser', () => {
     expect(result.declarations.find((item) => item.qualifiedName === 'Broken')).toBeUndefined();
   });
 
-  it('supports PEP 695, docstrings, and UTF-8 byte offsets', async () => {
+  it('supports PEP 695, docstrings, top-level async functions, and UTF-8 byte offsets', async () => {
     const { bytes, result, text } = await parsePythonFixture('exactness.py');
     const generic = result.declarations.find((item) => item.qualifiedName === 'generic');
     const unicode = result.declarations.find((item) => item.qualifiedName === '日本語');
-    const unicodeStart = text.indexOf('def 日本語');
+    const unicodeStart = Buffer.byteLength(text.slice(0, text.indexOf('def 日本語')), 'utf8');
+    const unicodeEnd = unicodeStart + Buffer.byteLength('def 日本語() -> str:\n    return "狐"', 'utf8');
 
     expect(generic?.rawSource).toContain('def generic[T](value: T) -> T:');
     expect(result.declarations.find((item) => item.qualifiedName === 'Service.fetch')?.rawSource).toContain('"""Return one cached value."""');
-    expect(unicode?.startByte).toBe(Buffer.byteLength(text.slice(0, unicodeStart), 'utf8'));
-    expect(unicode?.sourceHash).toBe(sha256Hex(bytes.subarray(unicode?.startByte ?? 0, unicode?.endByte ?? 0)));
+    expect(result.declarations.find((item) => item.qualifiedName === 'top_level_async')?.kind).toBe('function');
+    expect(unicode?.startByte).toBe(unicodeStart);
+    expect(unicode?.endByte).toBe(unicodeEnd);
+    expect(unicode?.sourceHash).toBe(sha256Hex(bytes.subarray(unicodeStart, unicodeEnd)));
   });
 
   it('reports aliases and relative imports while marking stars and shadowed names partial', async () => {
@@ -77,5 +87,52 @@ describe('Python structured parser', () => {
     expect(secondClass).toBeDefined();
     expect(firstMethod?.parentSymbolId).toBe(firstClass?.symbolId);
     expect(secondMethod?.parentSymbolId).toBe(secondClass?.symbolId);
+  });
+
+  it('does not emit exact imports with syntax errors', async () => {
+    const result = await parsePythonSource('from package import name as\n');
+
+    expect(result.status).toBe('degraded');
+    expect(result.imports).toEqual([]);
+  });
+
+  it('marks imports partial when module-scope bindings shadow them', async () => {
+    const result = await parsePythonSource(`
+from package import function, annotation, simple, left, loop_name
+def function():
+    pass
+annotation: int
+simple = 1
+left, right = (1, 2)
+for loop_name in []:
+    pass
+`.trim());
+    const completenessByName = new Map(result.imports.map((item) => [item.bindingName, item.completeness]));
+
+    expect(completenessByName).toEqual(new Map([
+      ['function', 'partial'],
+      ['annotation', 'partial'],
+      ['simple', 'partial'],
+      ['left', 'partial'],
+      ['loop_name', 'partial'],
+    ]));
+  });
+
+  it('falls back when Tree-sitter cannot be loaded', async () => {
+    vi.resetModules();
+    vi.doMock('tree-sitter', () => {
+      throw new Error('native parser unavailable');
+    });
+
+    try {
+      const { PythonLanguagePlugin: IsolatedPythonLanguagePlugin } = await import('../../../src/plugins/languages/python.js');
+      const parser = await new IsolatedPythonLanguagePlugin().createParser();
+      const result = await parser.parse({ filePath: 'fallback.py', language: 'python', content: 'def fallback():\n    pass' });
+
+      expect(result.declarations).toEqual([expect.objectContaining({ type: 'function', name: 'fallback' })]);
+    } finally {
+      vi.doUnmock('tree-sitter');
+      vi.resetModules();
+    }
   });
 });
