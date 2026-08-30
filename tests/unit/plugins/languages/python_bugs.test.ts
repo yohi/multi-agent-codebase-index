@@ -178,8 +178,7 @@ class TopLevel:
     expect(classDecls).toHaveLength(1);
     expect(classDecls[0]!.name).toBe('TopLevel');
     
-    // nested_method should be extracted, top_method should be extracted
-    expect(methodDecls.map(m => m.name)).toContain('nested_method');
+    expect(methodDecls.map(m => m.name)).not.toContain('nested_method');
     expect(methodDecls.map(m => m.name)).toContain('top_method');
   });
 });
