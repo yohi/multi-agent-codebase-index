@@ -62,6 +62,7 @@ describe('Python structured parser', () => {
     expect(result.declarations.find((item) => item.qualifiedName === 'top_level_async')?.kind).toBe('function');
     expect(unicode?.startByte).toBe(unicodeStart);
     expect(unicode?.endByte).toBe(unicodeEnd);
+    expect(unicode?.rawSource).toBe(decodeUtf8(bytes.subarray(unicodeStart, unicodeEnd)));
     expect(unicode?.sourceHash).toBe(sha256Hex(bytes.subarray(unicodeStart, unicodeEnd)));
   });
 
@@ -69,7 +70,7 @@ describe('Python structured parser', () => {
     const { result } = await parsePythonFixture('exactness.py');
     const imports = new Map(result.imports.map((item) => [item.bindingName, item]));
 
-    expect(imports.get('alias')).toEqual(expect.objectContaining({ moduleSpecifier: 'package', completeness: 'partial' }));
+    expect(imports.get('alias')).toEqual(expect.objectContaining({ moduleSpecifier: 'package', completeness: 'complete' }));
     expect(imports.get('local')).toEqual(expect.objectContaining({ moduleSpecifier: '.relative', completeness: 'complete' }));
     expect(imports.get('module_alias')).toEqual(expect.objectContaining({ moduleSpecifier: 'module', completeness: 'complete' }));
     expect(result.imports).toContainEqual(expect.objectContaining({ bindingName: undefined, moduleSpecifier: 'package', completeness: 'partial' }));
@@ -96,7 +97,7 @@ describe('Python structured parser', () => {
     expect(result.imports).toEqual([]);
   });
 
-  it('marks imports partial when module-scope bindings shadow them', async () => {
+  it('does not mark imports partial when later module-scope bindings reuse their names', async () => {
     const result = await parsePythonSource(`
 from package import function, annotation, simple, left, loop_name
 def function():
@@ -110,12 +111,61 @@ for loop_name in []:
     const completenessByName = new Map(result.imports.map((item) => [item.bindingName, item.completeness]));
 
     expect(completenessByName).toEqual(new Map([
-      ['function', 'partial'],
-      ['annotation', 'partial'],
-      ['simple', 'partial'],
-      ['left', 'partial'],
-      ['loop_name', 'partial'],
+      ['function', 'complete'],
+      ['annotation', 'complete'],
+      ['simple', 'complete'],
+      ['left', 'complete'],
+      ['loop_name', 'complete'],
     ]));
+  });
+
+  it('marks imports partial only when earlier module-scope bindings shadow them', async () => {
+    const result = await parsePythonSource(`
+before = 1
+if True:
+    from_if = 1
+try:
+    from_try: int
+except Exception:
+    pass
+with context():
+    from_with = 1
+while False:
+    from_while = 1
+for from_for in []:
+    pass
+from package import before, from_if, from_try, from_with, from_while, from_for, later
+later = 1
+`.trim());
+    const completenessByName = new Map(result.imports.map((item) => [item.bindingName, item.completeness]));
+
+    expect(completenessByName).toEqual(new Map([
+      ['before', 'partial'],
+      ['from_if', 'partial'],
+      ['from_try', 'partial'],
+      ['from_with', 'partial'],
+      ['from_while', 'partial'],
+      ['from_for', 'partial'],
+      ['later', 'complete'],
+    ]));
+  });
+
+  it('returns a partial result when structured source bytes are missing', async () => {
+    const source = {
+      filePath: 'missing-bytes.py',
+      language: 'python',
+      bytes: Buffer.from('def missing_bytes():\n    pass', 'utf8'),
+      text: 'def missing_bytes():\n    pass',
+    };
+    Reflect.deleteProperty(source, 'bytes');
+    const parser = await new PythonLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured(source);
+
+    expect(result).toEqual(expect.objectContaining({
+      status: 'degraded',
+      retrievability: 'partial',
+      failure: expect.objectContaining({ reasonCode: 'invariant_violation' }),
+    }));
   });
 
   it('falls back when Tree-sitter cannot be loaded', async () => {
