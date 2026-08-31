@@ -1,4 +1,8 @@
 import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile } from '../../types/index.js';
+import type { StructuredLanguageParser } from '../../structured/contracts.js';
+import { decodeUtf8 } from '../../structured/hash.js';
+import { GoStructuredParser } from './go-structured.js';
+import type { GoTreeSitterRuntime } from './go-structured.js';
 
 /**
  * Builds a Go declaration by scanning lines until the braces are balanced.
@@ -22,7 +26,7 @@ const buildGoDeclaration = (
     const line = lines[i];
     if (line === undefined) continue;
     let stripped = '';
-    
+
     // Process character by character to handle multi-line comments and strings correctly
     for (let j = 0; j < line.length; j += 1) {
       if (inBlockComment) {
@@ -51,7 +55,7 @@ const buildGoDeclaration = (
       if (char === '/' && nextChar === '/') {
         break; // Line comment, skip rest of the line
       }
-      
+
       // Simple string literals (single line in Go)
       if (char === '"' || char === '\'') {
         const quote = char;
@@ -62,7 +66,7 @@ const buildGoDeclaration = (
         }
         continue;
       }
-      
+
       // Backtick raw strings
       if (char === '`') {
         inRawString = true;
@@ -82,7 +86,7 @@ const buildGoDeclaration = (
     braceDepth += opens - closes;
     endIndex = i;
 
-    // For non-function declarations (like type aliases), 
+    // For non-function declarations (like type aliases),
     // if we don't see an opening brace on the first line, we assume it's a single-line declaration.
     if (i === startIndex && !seenOpeningBrace && type !== 'function' && type !== 'method') {
       break;
@@ -155,7 +159,7 @@ class GoParser {
           const currentLine = lines[j];
           if (currentLine === undefined) continue;
           const innerLine = currentLine.trim();
-          
+
           // Pattern for identifiers in type blocks - broadened to support more types
           const innerTypeMatch = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\s+([A-Za-z_\[*].*)/.exec(innerLine);
           const typeName = innerTypeMatch?.[1];
@@ -165,7 +169,7 @@ class GoParser {
             j = decl.endLine - 1;
           }
         }
-        
+
         i = endIndex;
         continue;
       }
@@ -210,6 +214,42 @@ class GoParser {
   }
 }
 
+const textEncoder = new TextEncoder();
+
+const sourceFor = (file: FileToChunk) => ({
+  filePath: file.filePath,
+  language: file.language,
+  bytes: file.bytes ?? textEncoder.encode(file.content),
+  text: file.content,
+});
+
+const loadTreeSitter = async (): Promise<GoTreeSitterRuntime> => {
+  const [parser, go] = await Promise.all([import('tree-sitter'), import('tree-sitter-go')]);
+  return { Parser: parser.default, Go: go.default };
+};
+
+const projectLegacyResult = (result: Awaited<ReturnType<StructuredLanguageParser['parseStructured']>>, source: ReturnType<typeof sourceFor>): ParsedSourceFile => {
+  const declarations = result.declarations.map(({ kind, name, position, rawSource }): ParsedDeclaration => ({
+    type: kind === 'interface' ? 'class' : kind,
+    name,
+    startLine: position.startLine,
+    endLine: position.endLine,
+    content: rawSource ?? '',
+  }));
+  const ranges = [...new Map(result.imports.map((item) => [`${item.startByte}:${item.endByte}`, item])).values()]
+    .sort((left, right) => left.startByte - right.startByte);
+  for (const item of ranges) {
+    declarations.push({
+      type: 'import',
+      name: 'imports',
+      startLine: item.position.startLine,
+      endLine: item.position.endLine,
+      content: decodeUtf8(source.bytes.subarray(item.startByte, item.endByte)),
+    });
+  }
+  return { rootType: 'source_file', declarations: declarations.sort((left, right) => left.startLine - right.startLine) };
+};
+
 export class GoLanguagePlugin implements LanguagePlugin {
   readonly languageId = 'go';
 
@@ -219,7 +259,33 @@ export class GoLanguagePlugin implements LanguagePlugin {
     return this.fileExtensions.some((extension) => filePath.endsWith(extension));
   }
 
-  async createParser(): Promise<GoParser> {
-    return new GoParser();
+  async createStructuredParser(): Promise<StructuredLanguageParser> {
+    const runtime = await loadTreeSitter();
+    return new GoStructuredParser(runtime);
+  }
+
+  async createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
+    const legacyParser = new GoParser();
+    try {
+      const structured = await this.createStructuredParser();
+      return {
+        parse: async (file) => {
+          try {
+            const source = sourceFor(file);
+            const structuredResult = await structured.parseStructured(source);
+            if (structuredResult.status === 'ok') {
+              return projectLegacyResult(structuredResult, source);
+            }
+          } catch (error) {
+            if (error instanceof Error) return legacyParser.parse(file);
+            throw error;
+          }
+          return legacyParser.parse(file);
+        },
+      };
+    } catch (error) {
+      if (error instanceof Error) return legacyParser;
+      throw error;
+    }
   }
 }
