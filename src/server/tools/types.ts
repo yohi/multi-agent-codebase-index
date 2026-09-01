@@ -4,6 +4,7 @@ import type { PluginRegistry } from '../../plugins/registry.js';
 import type { SearchOrchestrator } from '../../search/orchestrator.js';
 import type { IContentStore } from '../../storage/interfaces/content-store.js';
 import type { ISemanticSearch } from '../../search/semantic.js';
+import type { SymbolRetrievalService } from '../../structured/retrieval-service.js';
 import type {
   IIndexPipeline,
   IMetadataStore,
@@ -30,6 +31,7 @@ export interface NexusServerOptions {
   metricsHooks?: MetricsHooks;
   packageMode?: boolean;
   eventQueue?: EventQueue;
+  symbolRetrievalService?: SymbolRetrievalService;
 }
 
 export interface NexusToolCallResult {

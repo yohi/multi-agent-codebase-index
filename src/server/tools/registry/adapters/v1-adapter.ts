@@ -7,10 +7,20 @@ import type { ToolHandler } from '../../types.js';
 
 const toZodV3Field = (field: NeutralField): z.ZodTypeAny => {
   switch (field.kind) {
-    case 'string':
-      return z.string();
-    case 'integer':
-      return z.number().int().positive();
+    case 'string': {
+      let stringField = z.string();
+      if (field.pattern !== undefined) {
+        stringField = stringField.regex(new RegExp(field.pattern));
+      }
+      return stringField;
+    }
+    case 'integer': {
+      let integer = z.number().int().positive();
+      if (field.minimum !== undefined) {
+        integer = integer.min(field.minimum);
+      }
+      return integer;
+    }
     case 'number':
       return z.number();
     case 'boolean':
