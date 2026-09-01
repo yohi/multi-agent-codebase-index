@@ -158,6 +158,15 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
     return [];
   }
 
+  async getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]> {
+    const active = this.active.get(filePath);
+    if (active === undefined) return [];
+    return [...active.declarations].sort((a, b) => {
+      if (a.startByte !== b.startByte) return a.startByte - b.startByte;
+      return a.qualifiedName.localeCompare(b.qualifiedName);
+    });
+  }
+
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> { return { repaired: false, prunedTombstones: 0 }; }
 
   async bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void> {

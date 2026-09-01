@@ -115,5 +115,6 @@ export interface IStructuredCatalog {
   getTombstone(symbolId: string): Promise<StructuredTombstone | null>;
   getStructuredCounts(): Promise<StructuredIndexCounts>;
   getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]>;
+  getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]>;
   reconcileStructuredState(): Promise<StructuredReconciliationResult>;
 }

@@ -45,7 +45,28 @@ export class SymbolRetrievalService {
       return { status: 'not_found', reasonCode: 'FILE_NOT_FOUND', request: { filePath: input.filePath } };
     }
 
-    return { status: 'ok', filePath: relativePath, generationId: resolution.generationId, symbols: [] };
+    if (resolution.kind === 'pending') {
+      return {
+        status: 'index_incomplete',
+        reasonCode: 'INDEX_PENDING_GENERATION',
+        request: { filePath: input.filePath },
+      };
+    }
+
+    // For active files, return source-free outline metadata.
+    const declarations = await this.options.catalog.getFileDeclarations(relativePath);
+    const symbols = declarations.map((declaration) => ({
+      name: declaration.name,
+      qualifiedName: declaration.qualifiedName,
+      symbolId: declaration.symbolId,
+      kind: declaration.kind,
+      signatureDiscriminator: declaration.signatureDiscriminator,
+      position: declaration.position,
+      isExact: declaration.isExact,
+      languageId: declaration.languageId,
+    }));
+
+    return { status: 'ok', filePath: relativePath, generationId: resolution.generationId, symbols };
   }
 
   async getSymbolSource(input: { symbolId: string; signal?: AbortSignal }): Promise<SourceStatus & { request?: { symbolId: string } }> {

@@ -293,6 +293,18 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     }));
   }
 
+  async getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]> {
+    await this.asyncBoundary();
+    const rows = this.db.prepare(`
+      SELECT s.*, f.file_path AS file_path
+      FROM symbols s
+      JOIN structured_files f ON f.file_path = s.file_path AND f.active_generation = s.generation
+      WHERE s.file_path = ?
+      ORDER BY s.start_byte, s.qualified_name
+    `).all(filePath) as Array<Record<string, unknown>>;
+    return rows.map((row) => this.declaration(row));
+  }
+
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> { await this.asyncBoundary(); return { repaired: false, prunedTombstones: 0 }; }
 
   async setStructuredRebuildState(input: { rebuildState: string; lastErrorCode?: string | null }): Promise<void> {
