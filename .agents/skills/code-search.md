@@ -75,6 +75,7 @@ Nexus is a local-first code indexing platform that combines semantic search, rip
 - **Search strategy:** Use `hybrid_search` for semantic queries, vague feature exploration, or architectural questions; it combines vector and ripgrep results through RRF.
 - **Exact search:** Use `grep_search` to pinpoint exact symbols, class or function names, error messages, and code fragments.
 - **Context budgeting:** Use `get_context` with explicit `startLine` and `endLine` values. Do not read a whole file when a minimal snippet answers the question.
+- **Structured symbol search:** Use `get_symbol_source` / `get_symbol_context` with a `symbolId` for verified, exact source and bounded context. Use `get_file_outline` for a source-free symbol map of a known supported file.
 - **Index freshness:** After switching branches or making massive code changes, call `reindex` to refresh the local index before relying on semantic results.
 - **Project context:** When Nexus is active, consult `SPEC.md` for architecture details and `AGENTS.md` for project constraints when those details affect the task.
 
