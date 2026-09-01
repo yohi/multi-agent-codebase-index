@@ -38,6 +38,28 @@ export interface CompactionMutex {
   waitForUnlock(abortSignal?: AbortSignal): Promise<void>;
 }
 
+/** Visibility of a structured vector row. */
+export type StructuredRowVisibility = 'pending' | 'active';
+
+/** A batch of chunks belonging to a single file generation. */
+export interface GenerationChunkBatch {
+  filePath: string;
+  generationId: string;
+  chunks: readonly CodeChunk[];
+  vectors: readonly number[][];
+}
+
+/** A file/generation pair used to reconcile active structured rows. */
+export interface ActiveGeneration {
+  filePath: string;
+  generationId: string;
+}
+
+/** Opaque handle for a structured shadow table used during full rebuilds. */
+export interface StructuredShadowTable {
+  readonly name: string;
+}
+
 export interface IVectorStore {
   initialize(): Promise<void>;
   upsertChunks(chunks: CodeChunk[], embeddings?: number[][], affectedFilePaths?: string[]): Promise<void>;
@@ -56,4 +78,12 @@ export interface IVectorStore {
   ): NodeJS.Timeout;
   getStats(): Promise<VectorStoreStats>;
   close(timeoutMs?: number): Promise<void>;
+
+  /** Structured-vector lifecycle methods. */
+  stageGenerationChunks(batch: GenerationChunkBatch): Promise<void>;
+  activateGenerationRows(filePath: string, generationId: string): Promise<void>;
+  removeGenerationRows(filePath: string, generationId: string): Promise<void>;
+  beginStructuredShadowTable(): Promise<StructuredShadowTable>;
+  swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
+  reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void>;
 }

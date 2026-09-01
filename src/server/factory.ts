@@ -468,6 +468,11 @@ export class NexusServerFactory {
     const semanticSearch = new SemanticSearch({
       vectorStore,
       embeddingProvider,
+      activeGenerationResolver: {
+        resolveActiveGenerations: async (filePaths) => {
+          return await metadataStore.getActiveGenerationMap(filePaths);
+        },
+      },
     });
     const grepEngine = this.createGrepEngine(projectRoot);
     const orchestrator = new SearchOrchestrator({

@@ -87,10 +87,14 @@ export type {
   EmbeddingCacheEntry,
 } from '../storage/interfaces/metadata-store.js';
 export type {
-  IVectorStore,
+  ActiveGeneration,
   CompactionConfig,
   CompactionMutex,
   CompactionResult,
+  GenerationChunkBatch,
+  IVectorStore,
+  StructuredRowVisibility,
+  StructuredShadowTable,
   VectorFilter,
   VectorSearchResult,
   VectorStoreStats,

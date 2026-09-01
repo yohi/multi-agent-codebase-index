@@ -11,6 +11,7 @@ const makeChunk = (overrides: Partial<CodeChunk> = {}): CodeChunk => ({
   startLine: overrides.startLine ?? 1,
   endLine: overrides.endLine ?? 1,
   hash: overrides.hash ?? 'hash-1',
+  symbolId: overrides.symbolId,
 });
 
 export function vectorStoreContractTests(
@@ -139,6 +140,130 @@ export function vectorStoreContractTests(
     it('close() — 二重呼び出しで冪等（例外をスローしない）', async () => {
       await expect(store.close()).resolves.toBeUndefined();
       await expect(store.close()).resolves.toBeUndefined();
+    });
+
+    it('structured rows are not returned until activated', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      await store.stageGenerationChunks({
+        filePath: 'src/a.ts',
+        generationId: 'gen-1',
+        chunks: [makeChunk({ id: 'a', filePath: 'src/a.ts', symbolId: 'symbol-1' })],
+        vectors: [embedding],
+      });
+
+      const pendingResults = await store.search(embedding, 10);
+      expect(pendingResults).toHaveLength(0);
+
+      await store.activateGenerationRows('src/a.ts', 'gen-1');
+
+      const activeResults = await store.search(embedding, 10);
+      expect(activeResults).toHaveLength(1);
+      expect(activeResults[0]?.chunk.id).toBe('a');
+      expect(activeResults[0]?.generationId).toBe('gen-1');
+    });
+
+    it('structured activation does not affect other generations', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      await store.stageGenerationChunks({
+        filePath: 'src/a.ts',
+        generationId: 'gen-1',
+        chunks: [makeChunk({ id: 'a1', filePath: 'src/a.ts', symbolId: 'symbol-1' })],
+        vectors: [embedding],
+      });
+      await store.stageGenerationChunks({
+        filePath: 'src/a.ts',
+        generationId: 'gen-2',
+        chunks: [makeChunk({ id: 'a2', filePath: 'src/a.ts', symbolId: 'symbol-2' })],
+        vectors: [embedding],
+      });
+
+      await store.activateGenerationRows('src/a.ts', 'gen-1');
+      const results = await store.search(embedding, 10);
+      expect(results).toHaveLength(1);
+      expect(results[0]?.generationId).toBe('gen-1');
+    });
+
+    it('removeGenerationRows deletes only the targeted file+generation', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      await store.stageGenerationChunks({
+        filePath: 'src/a.ts',
+        generationId: 'gen-1',
+        chunks: [makeChunk({ id: 'a1', filePath: 'src/a.ts', symbolId: 'symbol-1' })],
+        vectors: [embedding],
+      });
+      await store.stageGenerationChunks({
+        filePath: 'src/b.ts',
+        generationId: 'gen-1',
+        chunks: [makeChunk({ id: 'b1', filePath: 'src/b.ts', symbolId: 'symbol-1' })],
+        vectors: [embedding],
+      });
+
+      await store.activateGenerationRows('src/a.ts', 'gen-1');
+      await store.activateGenerationRows('src/b.ts', 'gen-1');
+      await store.removeGenerationRows('src/a.ts', 'gen-1');
+
+      const results = await store.search(embedding, 10);
+      expect(results).toHaveLength(1);
+      expect(results[0]?.chunk.filePath).toBe('src/b.ts');
+    });
+
+    it('reconcileStructuredRows keeps only catalog-active generations', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      await store.stageGenerationChunks({
+        filePath: 'src/a.ts',
+        generationId: 'gen-1',
+        chunks: [makeChunk({ id: 'a1', filePath: 'src/a.ts', symbolId: 'symbol-1' })],
+        vectors: [embedding],
+      });
+      await store.stageGenerationChunks({
+        filePath: 'src/a.ts',
+        generationId: 'gen-2',
+        chunks: [makeChunk({ id: 'a2', filePath: 'src/a.ts', symbolId: 'symbol-2' })],
+        vectors: [embedding],
+      });
+
+      await store.activateGenerationRows('src/a.ts', 'gen-1');
+      await store.activateGenerationRows('src/a.ts', 'gen-2');
+      await store.reconcileStructuredRows([{ filePath: 'src/a.ts', generationId: 'gen-2' }]);
+
+      const results = await store.search(embedding, 10);
+      expect(results).toHaveLength(1);
+      expect(results[0]?.generationId).toBe('gen-2');
+    });
+
+    it('shadow table swap replaces structured rows atomically', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      await store.stageGenerationChunks({
+        filePath: 'src/a.ts',
+        generationId: 'gen-1',
+        chunks: [makeChunk({ id: 'a1', filePath: 'src/a.ts', symbolId: 'symbol-1' })],
+        vectors: [embedding],
+      });
+      await store.activateGenerationRows('src/a.ts', 'gen-1');
+
+      const shadowTable = await store.beginStructuredShadowTable();
+      await store.stageGenerationChunks({
+        filePath: 'src/b.ts',
+        generationId: 'gen-2',
+        chunks: [makeChunk({ id: 'b1', filePath: 'src/b.ts', symbolId: 'symbol-2' })],
+        vectors: [embedding],
+      });
+      await store.swapStructuredShadowTable(shadowTable);
+
+      const results = await store.search(embedding, 10);
+      expect(results).toHaveLength(1);
+      expect(results[0]?.chunk.filePath).toBe('src/b.ts');
+    });
+
+    it('legacy upsert results do not carry generationId', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      await store.upsertChunks(
+        [makeChunk({ id: 'legacy', filePath: 'src/legacy.ts' })],
+        [embedding],
+      );
+      const results = await store.search(embedding, 10);
+      expect(results).toHaveLength(1);
+      expect(results[0]?.generationId).toBeUndefined();
     });
   });
 }

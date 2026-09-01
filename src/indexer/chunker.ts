@@ -2,6 +2,7 @@ import { computeStringHash } from './hash.js';
 
 import type { CodeChunk, FileToChunk, ParsedSourceFile } from '../types/index.js';
 import type { PluginRegistry } from '../plugins/registry.js';
+import type { StructuredParseResult, StructuredDeclaration } from '../structured/contracts.js';
 
 export interface FixedLineChunkOptions {
   windowSize?: number;
@@ -45,6 +46,55 @@ export class Chunker {
     }
 
     return chunks;
+  }
+
+  async chunkStructuredFile(
+    file: FileToChunk,
+    artifact: StructuredParseResult,
+  ): Promise<CodeChunk[]> {
+    const chunks: CodeChunk[] = [];
+
+    for (const [index, declaration] of artifact.declarations.entries()) {
+      chunks.push(...(await this.extractDeclarationChunks(declaration, file)));
+
+      if ((index + 1) % 50 === 0) {
+        await this.yieldToEventLoop();
+      }
+    }
+
+    return chunks;
+  }
+
+  private async extractDeclarationChunks(
+    declaration: StructuredDeclaration,
+    file: FileToChunk,
+  ): Promise<CodeChunk[]> {
+    const base: Omit<CodeChunk, 'id' | 'content' | 'startLine' | 'endLine' | 'hash'> = {
+      filePath: file.filePath,
+      language: file.language,
+      symbolName: declaration.name,
+      symbolKind: declaration.kind,
+      symbolId: declaration.symbolId,
+    };
+
+    const content = declaration.rawSource ?? file.content;
+    const subChunks = await this.splitByMaxChars(
+      content,
+      declaration.position.startLine,
+      declaration.name,
+      file.filePath,
+      base,
+    );
+
+    // Align line ranges to the declaration boundaries when rawSource is available.
+    if (declaration.rawSource !== undefined && subChunks.length > 1) {
+      const endLine = declaration.position.endLine;
+      for (const chunk of subChunks) {
+        chunk.endLine = Math.min(chunk.endLine, endLine);
+      }
+    }
+
+    return subChunks;
   }
 
   async extractChunksWithYield(

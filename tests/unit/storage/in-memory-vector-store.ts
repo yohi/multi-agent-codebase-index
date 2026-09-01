@@ -1,9 +1,13 @@
 import type {
+  ActiveGeneration,
   CodeChunk,
   CompactionConfig,
   CompactionMutex,
   CompactionResult,
+  GenerationChunkBatch,
   IVectorStore,
+  StructuredRowVisibility,
+  StructuredShadowTable,
   VectorFilter,
   VectorSearchResult,
   VectorStoreStats,
@@ -17,6 +21,13 @@ interface StoredVector {
   chunk: CodeChunk;
   vector: number[];
   deleted: boolean;
+}
+
+interface StructuredRow {
+  chunk: CodeChunk;
+  vector: number[];
+  generationId: string;
+  visibility: StructuredRowVisibility;
 }
 
 const cosineSimilarity = (left: number[], right: number[]): number => {
@@ -35,6 +46,8 @@ export class InMemoryVectorStore implements IVectorStore {
   private readonly dimensions: number;
 
   private readonly records = new Map<string, StoredVector>();
+  private readonly structuredRecords = new Map<string, StructuredRow>();
+  private structuredShadow: Map<string, StructuredRow> | undefined;
 
   private deletedCount = 0;
 
@@ -173,26 +186,109 @@ export class InMemoryVectorStore implements IVectorStore {
       throw new RangeError('topK must be a positive integer');
     }
 
-    return [...this.records.values()]
+    const legacyCandidates = [...this.records.values()]
       .filter((record) => !record.deleted)
-      .filter((record) => {
-        if (filter?.filePathPrefix !== undefined && !record.chunk.filePath.startsWith(filter.filePathPrefix)) {
+      .map((record) => ({
+        chunk: record.chunk,
+        score: cosineSimilarity(queryVector, record.vector),
+      }));
+
+    const structuredCandidates = [...this.structuredRecords.values()]
+      .filter((row) => row.visibility === 'active')
+      .map((row) => ({
+        chunk: row.chunk,
+        score: cosineSimilarity(queryVector, row.vector),
+        generationId: row.generationId,
+      }));
+
+    const allCandidates = [...legacyCandidates, ...structuredCandidates];
+
+    return allCandidates
+      .filter((candidate) => {
+        if (filter?.filePathPrefix !== undefined && !candidate.chunk.filePath.startsWith(filter.filePathPrefix)) {
           return false;
         }
-        if (filter?.language !== undefined && record.chunk.language !== filter.language) {
+        if (filter?.language !== undefined && candidate.chunk.language !== filter.language) {
           return false;
         }
-        if (filter?.symbolKind !== undefined && record.chunk.symbolKind !== filter.symbolKind) {
+        if (filter?.symbolKind !== undefined && candidate.chunk.symbolKind !== filter.symbolKind) {
           return false;
         }
         return true;
       })
-      .map((record) => ({
-        chunk: record.chunk,
-        score: cosineSimilarity(queryVector, record.vector),
-      }))
       .sort((left, right) => right.score - left.score || left.chunk.filePath.localeCompare(right.chunk.filePath))
       .slice(0, topK);
+  }
+
+  async stageGenerationChunks(batch: GenerationChunkBatch): Promise<void> {
+    if (batch.vectors.length !== batch.chunks.length) {
+      throw new Error(`InMemoryVectorStore.stageGenerationChunks: vectors length mismatch (expected ${batch.chunks.length}, got ${batch.vectors.length})`);
+    }
+
+    for (let i = 0; i < batch.chunks.length; i++) {
+      const chunk = batch.chunks[i]!;
+      const vector = batch.vectors[i]!;
+      if (vector.length !== this.dimensions) {
+        throw new Error(`InMemoryVectorStore.stageGenerationChunks: vector length mismatch for chunk ${chunk.id}`);
+      }
+      if (!vector.every(Number.isFinite)) {
+        throw new Error(`InMemoryVectorStore.stageGenerationChunks: vector contains non-finite values for chunk ${chunk.id}`);
+      }
+
+      const key = this.structuredKey(batch.filePath, batch.generationId, chunk.id);
+      const target = this.structuredShadow ?? this.structuredRecords;
+      target.set(key, {
+        chunk,
+        vector,
+        generationId: batch.generationId,
+        visibility: 'pending',
+      });
+    }
+  }
+
+  async activateGenerationRows(filePath: string, generationId: string): Promise<void> {
+    for (const [key, row] of this.structuredRecords.entries()) {
+      if (row.chunk.filePath === filePath && row.generationId === generationId && row.visibility === 'pending') {
+        this.structuredRecords.set(key, { ...row, visibility: 'active' });
+      }
+    }
+  }
+
+  async removeGenerationRows(filePath: string, generationId: string): Promise<void> {
+    for (const key of this.structuredRecords.keys()) {
+      const row = this.structuredRecords.get(key);
+      if (row && row.chunk.filePath === filePath && row.generationId === generationId) {
+        this.structuredRecords.delete(key);
+      }
+    }
+  }
+
+  async beginStructuredShadowTable(): Promise<StructuredShadowTable> {
+    this.structuredShadow = new Map();
+    return { name: 'in-memory-structured-shadow' };
+  }
+
+  async swapStructuredShadowTable(_shadowTable: StructuredShadowTable): Promise<void> {
+    if (!this.structuredShadow) {
+      throw new Error('InMemoryVectorStore.swapStructuredShadowTable: no shadow table in progress');
+    }
+    this.structuredRecords.clear();
+    for (const [key, row] of this.structuredShadow.entries()) {
+      this.structuredRecords.set(key, { ...row, visibility: 'active' });
+    }
+    this.structuredShadow = undefined;
+  }
+
+  async reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void> {
+    const activeKeys = new Set(activeGenerations.map((ag) => this.structuredKey(ag.filePath, ag.generationId, '')));
+    for (const key of this.structuredRecords.keys()) {
+      const row = this.structuredRecords.get(key);
+      if (!row) continue;
+      const rowFileGenKey = this.structuredKey(row.chunk.filePath, row.generationId, '');
+      if (!activeKeys.has(rowFileGenKey)) {
+        this.structuredRecords.delete(key);
+      }
+    }
   }
 
   async compactIfNeeded(config?: Partial<CompactionConfig>): Promise<CompactionResult> {
@@ -314,5 +410,9 @@ export class InMemoryVectorStore implements IVectorStore {
     }
 
     return this.deletedCount / total;
+  }
+
+  private structuredKey(filePath: string, generationId: string, chunkId: string): string {
+    return `${filePath}\u0000${generationId}\u0000${chunkId}`;
   }
 }
