@@ -226,6 +226,7 @@ export const buildToolHandlers = (
             options.symbolRetrievalService,
             parsed,
             extra?.signal,
+            options.metricsHooks,
           );
           return toolResult(result);
         } catch (error) {
@@ -247,6 +248,7 @@ export const buildToolHandlers = (
             options.symbolRetrievalService,
             parsed,
             extra?.signal,
+            options.metricsHooks,
           );
           return toolResult(result);
         } catch (error) {
@@ -268,6 +270,7 @@ export const buildToolHandlers = (
             options.symbolRetrievalService,
             parsed,
             extra?.signal,
+            options.metricsHooks,
           );
           return toolResult(result);
         } catch (error) {

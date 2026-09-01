@@ -92,6 +92,11 @@ export const createMockMetricsHooks = (): MetricsHooks => ({
   onSearchResults: vi.fn(),
   onContextLinesFetched: vi.fn(),
   onEmbeddingRequest: vi.fn(),
+  onStructuredRetrievalOutcome: vi.fn(),
+  onStructuredParserOutcome: vi.fn(),
+  onStructuredContextTokens: vi.fn(),
+  onStructuredBudgetOverflow: vi.fn(),
+  onStructuredCatalogSnapshot: vi.fn(),
 });
 
 export const createMockRegistry = (): Registry =>

@@ -19,6 +19,27 @@ describe('MetricsCollector', () => {
     registry = new Registry();
   });
 
+  it('structured retrieval metrics are emitted', async () => {
+    const collector = new MetricsCollector({ registry });
+
+    collector.onStructuredRetrievalOutcome('get_symbol_source', 'ok');
+    collector.onStructuredParserOutcome('typescript', 'exact');
+    collector.onStructuredContextTokens('get_symbol_context', 2000, 42);
+    collector.onStructuredBudgetOverflow('get_symbol_context', 3);
+    collector.onStructuredCatalogSnapshot(12, 87, 10, 2, 0);
+
+    const metrics = await registry.metrics();
+    expect(metrics).toMatch(metricPattern('nexus_structured_retrieval_outcomes_total', 1, 'tool="get_symbol_source"', 'status="ok"'));
+    expect(metrics).toMatch(metricPattern('nexus_structured_parser_outcomes_total', 1, 'language="typescript"', 'parse_status="exact"'));
+    expect(metrics).toMatch(metricPattern('nexus_structured_context_tokens_count', 2, 'tool="get_symbol_context"'));
+    expect(metrics).toMatch(metricPattern('nexus_structured_budget_overflows_total', 3, 'tool="get_symbol_context"'));
+    expect(metrics).toMatch(metricPattern('nexus_structured_catalog_symbols', 87));
+    expect(metrics).toMatch(metricPattern('nexus_structured_catalog_files', 10, 'coverage="exact"'));
+    expect(metrics).toMatch(metricPattern('nexus_structured_catalog_files', 2, 'coverage="degraded"'));
+    expect(metrics).toMatch(metricPattern('nexus_structured_catalog_files', 0, 'coverage="pending"'));
+    expect(metrics).toMatch(metricPattern('nexus_structured_catalog_coverage_files', 10 / 12));
+  });
+
   it('metricPattern escapes regex metacharacters in metric values', () => {
     const pattern = metricPattern('nexus_metric_total', '+Inf');
 
