@@ -47,18 +47,21 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
     return;
   }
 
-  async bootstrapStructuredSchema(): Promise<void> {}
+  private schemaVersion: number | null = null;
+
+  async bootstrapStructuredSchema(): Promise<void> {
+    this.schemaVersion = 1;
+  }
 
   async getStructuredIndexState(): Promise<StructuredIndexState> {
-    const schemaVersion = null;
     return {
-      schemaVersion,
+      schemaVersion: this.schemaVersion,
       rebuildState: this.rebuildState,
       rebuildEpoch: this.rebuildEpoch,
       lastErrorCode: this.lastErrorCode,
       counts: await this.getStructuredCounts(),
       activeGenerations: await this.getActiveGenerationMap([...this.active.keys()]),
-      reindexRequired: schemaVersion === null,
+      reindexRequired: this.schemaVersion === null,
     };
   }
 
@@ -73,6 +76,7 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   }
 
   async stageGeneration(input: StructuredGenerationStage): Promise<void> {
+    // If a pending generation exists for this file, replace it with the new one.
     this.pending.set(input.filePath, input);
   }
 
@@ -116,7 +120,10 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   }
 
   async resolveSymbol(symbolId: string): Promise<StructuredSymbolResolution> {
-    for (const generation of this.active.values()) { const declaration = generation.declarations.find((item) => item.symbolId === symbolId); if (declaration) return { kind: 'active', declaration }; }
+    for (const [filePath, generation] of this.active.entries()) {
+      const declaration = generation.declarations.find((item) => item.symbolId === symbolId);
+      if (declaration) return { kind: 'active', declaration, filePath };
+    }
     const tombstone = this.tombstones.get(symbolId);
     return tombstone ? { kind: 'tombstone', tombstone } : { kind: 'missing' };
   }

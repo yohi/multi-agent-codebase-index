@@ -18,7 +18,7 @@ export class ProjectWriteCoordinator {
     }
   }
 
-  async isLocked(): Promise<boolean> {
+  isLocked(): boolean {
     return !this.mutex.isLocked();
   }
 }

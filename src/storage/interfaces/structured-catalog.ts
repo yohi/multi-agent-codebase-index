@@ -60,7 +60,7 @@ export type StructuredFileResolution =
   | { readonly kind: 'missing' };
 
 export type StructuredSymbolResolution =
-  | { readonly kind: 'active'; readonly declaration: StructuredDeclaration }
+  | { readonly kind: 'active'; readonly declaration: StructuredDeclaration; readonly filePath: string }
   | { readonly kind: 'tombstone'; readonly tombstone: StructuredTombstone }
   | { readonly kind: 'missing' };
 
