@@ -195,7 +195,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     await this.asyncBoundary();
     const rows = this.db.prepare('SELECT file_path, active_generation FROM structured_files WHERE active_generation IS NOT NULL').all() as Array<{ file_path: string; active_generation: string }>;
     const state = this.db.prepare('SELECT structured_schema_version AS schemaVersion, structured_rebuild_state AS rebuildState, structured_rebuild_epoch AS rebuildEpoch, structured_last_error_code AS lastErrorCode FROM index_stats WHERE id = ?').get(PRIMARY_STATS_ID) as { schemaVersion: number | null; rebuildState: string | null; rebuildEpoch: number | null; lastErrorCode: string | null } | undefined;
-    return { schemaVersion: state?.schemaVersion ?? null, rebuildState: state?.rebuildState ?? null, rebuildEpoch: state?.rebuildEpoch ?? 0, lastErrorCode: state?.lastErrorCode ?? null, counts: await this.getStructuredCounts(), activeGenerations: new Map(rows.map((row) => [row.file_path, row.active_generation])) };
+    return { schemaVersion: state?.schemaVersion ?? null, rebuildState: state?.rebuildState ?? null, rebuildEpoch: state?.rebuildEpoch ?? 0, lastErrorCode: state?.lastErrorCode ?? null, counts: await this.getStructuredCounts(), activeGenerations: new Map(rows.map((row) => [row.file_path, row.active_generation])), reindexRequired: state?.schemaVersion === null || state?.schemaVersion === undefined };
   }
 
   async stageGeneration(input: StructuredGenerationStage): Promise<void> {
@@ -264,6 +264,18 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
   async getTombstone(symbolId: string): Promise<StructuredTombstone | null> { await this.asyncBoundary(); const row = this.db.prepare('SELECT symbol_id,file_path,generation,retired_at_rebuild_epoch,retired_at FROM symbol_tombstones WHERE symbol_id=?').get(symbolId) as { symbol_id: string; file_path: string; generation: string; retired_at_rebuild_epoch: number; retired_at: number } | undefined; return row ? { symbolId: row.symbol_id, filePath: row.file_path, generationId: row.generation, retiredAtRebuildEpoch: row.retired_at_rebuild_epoch, retiredAt: row.retired_at } : null; }
   async getStructuredCounts(): Promise<StructuredIndexCounts> { await this.asyncBoundary(); const activeFiles = this.db.prepare('SELECT count(*) AS n FROM structured_files WHERE active_generation IS NOT NULL').get() as { n: number }; const pendingFiles = this.db.prepare('SELECT count(*) AS n FROM structured_files WHERE pending_generation IS NOT NULL').get() as { n: number }; const activeSymbols = this.db.prepare('SELECT count(*) AS n FROM symbols s JOIN structured_files f ON f.file_path=s.file_path AND f.active_generation=s.generation').get() as { n: number }; const pendingSymbols = this.db.prepare('SELECT count(*) AS n FROM symbols s JOIN structured_files f ON f.file_path=s.file_path AND f.pending_generation=s.generation').get() as { n: number }; const tombstones = this.db.prepare('SELECT count(*) AS n FROM symbol_tombstones').get() as { n: number }; return { activeFiles: activeFiles.n, activeSymbols: activeSymbols.n, pendingFiles: pendingFiles.n, pendingSymbols: pendingSymbols.n, tombstones: tombstones.n }; }
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> { await this.asyncBoundary(); return { repaired: false, prunedTombstones: 0 }; }
+
+  async setStructuredRebuildState(input: { rebuildState: string; lastErrorCode?: string | null }): Promise<void> {
+    await this.asyncBoundary();
+    this.db.prepare('UPDATE index_stats SET structured_rebuild_state=?, structured_last_error_code=? WHERE id=?').run(input.rebuildState, input.lastErrorCode ?? null, PRIMARY_STATS_ID);
+  }
+
+  async incrementRebuildEpoch(): Promise<number> {
+    await this.asyncBoundary();
+    this.db.prepare('UPDATE index_stats SET structured_rebuild_epoch = structured_rebuild_epoch + 1 WHERE id=?').run(PRIMARY_STATS_ID);
+    const row = this.db.prepare('SELECT structured_rebuild_epoch AS epoch FROM index_stats WHERE id=?').get(PRIMARY_STATS_ID) as { epoch: number } | undefined;
+    return row?.epoch ?? 0;
+  }
 
   async bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void> {
     const statement = this.db.prepare(`

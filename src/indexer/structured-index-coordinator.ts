@@ -3,6 +3,15 @@ import type { Chunker } from './chunker.js';
 import type { IStructuredCatalog, StructuredGenerationStage, StructuredGenerationActivation, StructuredFileRetirement } from '../storage/interfaces/structured-catalog.js';
 import type { ProjectWriteCoordinator } from './project-write-coordinator.js';
 
+export interface FullRebuildFile {
+  source: import('../structured/contracts.js').StructuredSource;
+  generationId: string;
+  contentHash: string;
+  fileCompleteness: 'complete' | 'partial';
+  declarations: import('../structured/contracts.js').StructuredDeclaration[];
+  imports: import('../structured/contracts.js').StructuredImport[];
+}
+
 export interface StructuredIndexCoordinatorOptions {
   metadataStore: IStructuredCatalog;
   vectorStore: IVectorStore;
@@ -120,6 +129,74 @@ export class StructuredIndexCoordinator {
       await this.options.metadataStore.retireFile(retirement);
 
       await this.options.vectorStore.deleteByFilePath(input.filePath);
+    });
+  }
+
+  async runFullRebuild(input: { files: FullRebuildFile[] }): Promise<void> {
+    return this.options.projectWriteCoordinator.run(async () => {
+      await this.options.metadataStore.bootstrapStructuredSchema();
+      const epoch = await this.options.metadataStore.incrementRebuildEpoch();
+      await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'building' });
+
+      const shadowTable = await this.options.vectorStore.beginStructuredShadowTable();
+      try {
+        for (const file of input.files) {
+          const stage: StructuredGenerationStage = {
+            filePath: file.source.filePath,
+            generation: {
+              generationId: file.generationId,
+              schemaVersion: 1,
+              parserId: 'full-rebuild',
+              parserVersion: '1',
+              fileHash: file.contentHash,
+              fileCompleteness: file.fileCompleteness,
+            },
+            declarations: file.declarations,
+            imports: file.imports,
+            rebuildEpoch: epoch,
+            bytes: file.source.bytes,
+            fileHash: file.contentHash,
+            fileCompleteness: file.fileCompleteness,
+          };
+          await this.options.metadataStore.stageGeneration(stage);
+
+          const chunks = await this.options.chunker.chunkStructuredFile(
+            {
+              filePath: file.source.filePath,
+              language: file.source.language,
+              content: file.source.text,
+            },
+            { declarations: file.declarations, imports: file.imports },
+          );
+          const embeddings = chunks.map(() => new Array(64).fill(0));
+          await this.options.vectorStore.stageGenerationChunks({
+            filePath: file.source.filePath,
+            generationId: file.generationId,
+            chunks,
+            vectors: embeddings,
+          });
+        }
+
+        await this.options.vectorStore.swapStructuredShadowTable(shadowTable);
+
+        const state = await this.options.metadataStore.getStructuredIndexState();
+        for (const file of input.files) {
+          await this.options.metadataStore.activateGeneration({
+            filePath: file.source.filePath,
+            generationId: file.generationId,
+            expectedActiveGeneration: state.activeGenerations.get(file.source.filePath) ?? null,
+            expectedRebuildEpoch: epoch,
+          });
+        }
+        await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'idle', lastErrorCode: null });
+      } catch (error) {
+        await this.options.vectorStore.abortStructuredShadowTable(shadowTable).catch(() => {});
+        await this.options.metadataStore.setStructuredRebuildState({
+          rebuildState: 'failed',
+          lastErrorCode: error instanceof Error ? error.message : 'unknown',
+        });
+        throw error;
+      }
     });
   }
 

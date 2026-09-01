@@ -46,6 +46,7 @@ export interface StructuredIndexState {
   readonly lastErrorCode: string | null;
   readonly counts: StructuredIndexCounts;
   readonly activeGenerations: ReadonlyMap<string, string>;
+  readonly reindexRequired: boolean;
 }
 
 export interface StructuredActivationResult {
@@ -91,6 +92,8 @@ export interface StructuredReconciliationResult {
 export interface IStructuredCatalog {
   bootstrapStructuredSchema(): Promise<void>;
   getStructuredIndexState(): Promise<StructuredIndexState>;
+  setStructuredRebuildState(input: { rebuildState: string; lastErrorCode?: string | null }): Promise<void>;
+  incrementRebuildEpoch(): Promise<number>;
   stageGeneration(input: StructuredGenerationStage): Promise<void>;
   activateGeneration(input: StructuredGenerationActivation): Promise<StructuredActivationResult>;
   clearPendingGeneration(input: StructuredPendingClear): Promise<{ cleared: boolean }>;

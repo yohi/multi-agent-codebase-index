@@ -40,6 +40,8 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   private readonly tombstones = new Map<string, StructuredTombstone>();
 
   private rebuildEpoch = 0;
+  private rebuildState: string | null = null;
+  private lastErrorCode: string | null = null;
 
   async initialize(): Promise<void> {
     return;
@@ -48,7 +50,26 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   async bootstrapStructuredSchema(): Promise<void> {}
 
   async getStructuredIndexState(): Promise<StructuredIndexState> {
-    return { schemaVersion: null, rebuildState: null, rebuildEpoch: this.rebuildEpoch, lastErrorCode: null, counts: await this.getStructuredCounts(), activeGenerations: await this.getActiveGenerationMap([...this.active.keys()]) };
+    const schemaVersion = null;
+    return {
+      schemaVersion,
+      rebuildState: this.rebuildState,
+      rebuildEpoch: this.rebuildEpoch,
+      lastErrorCode: this.lastErrorCode,
+      counts: await this.getStructuredCounts(),
+      activeGenerations: await this.getActiveGenerationMap([...this.active.keys()]),
+      reindexRequired: schemaVersion === null,
+    };
+  }
+
+  async setStructuredRebuildState(input: { rebuildState: string; lastErrorCode?: string | null }): Promise<void> {
+    this.rebuildState = input.rebuildState;
+    this.lastErrorCode = input.lastErrorCode ?? null;
+  }
+
+  async incrementRebuildEpoch(): Promise<number> {
+    this.rebuildEpoch += 1;
+    return this.rebuildEpoch;
   }
 
   async stageGeneration(input: StructuredGenerationStage): Promise<void> {

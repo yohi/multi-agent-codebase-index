@@ -291,6 +291,11 @@ export class InMemoryVectorStore implements IVectorStore {
     this.structuredShadow = undefined;
   }
 
+  async abortStructuredShadowTable(_shadowTable: StructuredShadowTable): Promise<void> {
+    this.structuredShadow = undefined;
+    this.structuredRecords.clear();
+  }
+
   async reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void> {
     const activeKeys = new Set(activeGenerations.map((ag) => this.structuredKey(ag.filePath, ag.generationId, '')));
     for (const key of this.structuredRecords.keys()) {
