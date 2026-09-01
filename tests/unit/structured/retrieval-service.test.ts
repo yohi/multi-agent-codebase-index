@@ -11,7 +11,7 @@ import { PluginRegistry } from '../../../src/plugins/registry.js';
 import { Chunker } from '../../../src/indexer/chunker.js';
 import { TypeScriptLanguagePlugin } from '../../../src/plugins/languages/typescript.js';
 import type { StructuredSource } from '../../../src/structured/contracts.js';
-import { mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -151,5 +151,127 @@ describe('SymbolRetrievalService', () => {
       freshness: 'fresh',
       source: firstText,
     });
+  });
+
+  it('fails closed before packing when one candidate import no longer matches its indexed hash', async () => {
+    const importText = 'import { café } from "./dep.js";';
+    const symbolText = 'export function a() { return 1; }';
+    const text = `${importText}\n${symbolText}`;
+    const source = makeSource('src/a.ts', text);
+    const generationId = createGenerationId({ schemaVersion: 1, parserId: 'test', parserVersion: '1', contentHash: sha256Hex(source.bytes) });
+    const symbolId = createSymbolId({ filePath: 'src/a.ts', qualifiedName: 'a', kind: 'function', signatureDiscriminator: 'fn', occurrence: 0 });
+    const importStart = 0;
+    const importEnd = Buffer.byteLength(importText, 'utf8');
+    await coordinator.runFullRebuild({
+      files: [{
+        source,
+        generationId,
+        contentHash: sha256Hex(source.bytes),
+        fileCompleteness: 'complete',
+        declarations: [{
+          name: 'a', symbolId, qualifiedName: 'a', kind: 'function', signatureDiscriminator: 'fn',
+          position: { startLine: 2, startColumn: 0, endLine: 2, endColumn: symbolText.length },
+          startByte: importEnd + 1, endByte: source.bytes.length, sourceHash: sha256Hex(source.bytes.subarray(importEnd + 1, source.bytes.length)),
+          languageId: 'typescript', isExact: true,
+        }],
+        imports: [{
+          id: 'import-1', moduleSpecifier: './dep.js', bindingName: 'café',
+          startByte: importStart, endByte: importEnd,
+          sourceHash: sha256Hex(source.bytes.subarray(importStart, importEnd)),
+          completeness: 'complete',
+          position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: importText.length },
+        }],
+      }],
+    });
+
+    await writeFile(join(projectRoot, 'src/a.ts'), `${importText.replace('café', 'cafe2')}\n${symbolText}`);
+    const result = await service.getSymbolContext({ symbolId, tokenBudget: 100 });
+    expect(result).toMatchObject({ status: 'index_incomplete', reasonCode: 'INDEX_IMPORT_HASH_MISMATCH' });
+    expect(result).not.toHaveProperty('context');
+  });
+
+  it('derives an import rawSource from its verified UTF-8 byte slice', async () => {
+    const importText = 'import { café } from "./dep.js";';
+    const symbolText = 'export function a() { return 1; }';
+    const text = `${importText}\n${symbolText}`;
+    const source = makeSource('src/a.ts', text);
+    const generationId = createGenerationId({ schemaVersion: 1, parserId: 'test', parserVersion: '1', contentHash: sha256Hex(source.bytes) });
+    const symbolId = createSymbolId({ filePath: 'src/a.ts', qualifiedName: 'a', kind: 'function', signatureDiscriminator: 'fn', occurrence: 0 });
+    const importStart = 0;
+    const importEnd = Buffer.byteLength(importText, 'utf8');
+    await coordinator.runFullRebuild({
+      files: [{
+        source,
+        generationId,
+        contentHash: sha256Hex(source.bytes),
+        fileCompleteness: 'complete',
+        declarations: [{
+          name: 'a', symbolId, qualifiedName: 'a', kind: 'function', signatureDiscriminator: 'fn',
+          position: { startLine: 2, startColumn: 0, endLine: 2, endColumn: symbolText.length },
+          startByte: importEnd + 1, endByte: source.bytes.length, sourceHash: sha256Hex(source.bytes.subarray(importEnd + 1, source.bytes.length)),
+          languageId: 'typescript', isExact: true,
+        }],
+        imports: [{
+          id: 'import-1', moduleSpecifier: './dep.js', bindingName: 'café',
+          startByte: importStart, endByte: importEnd,
+          sourceHash: sha256Hex(source.bytes.subarray(importStart, importEnd)),
+          completeness: 'complete',
+          position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: importText.length },
+        }],
+      }],
+    });
+
+    await writeFile(join(projectRoot, 'src/a.ts'), text);
+    const result = await service.getSymbolContext({ symbolId, tokenBudget: 100 });
+    expect(result).toMatchObject({ status: 'ok' });
+    expect((result as { context: string }).context).toContain(importText);
+  });
+
+  it('keeps source order and later small imports after a too-large earlier import', async () => {
+    const largeImport = 'import '.repeat(50);
+    const smallImport = 'import { x } from "./small.js";';
+    const symbolText = 'export function a() { return 1; }';
+    const text = `${largeImport}\n${smallImport}\n${symbolText}`;
+    const source = makeSource('src/a.ts', text);
+    const generationId = createGenerationId({ schemaVersion: 1, parserId: 'test', parserVersion: '1', contentHash: sha256Hex(source.bytes) });
+    const symbolId = createSymbolId({ filePath: 'src/a.ts', qualifiedName: 'a', kind: 'function', signatureDiscriminator: 'fn', occurrence: 0 });
+    const largeEnd = Buffer.byteLength(largeImport, 'utf8');
+    const smallStart = largeEnd + 1;
+    const smallEnd = smallStart + Buffer.byteLength(smallImport, 'utf8');
+    await coordinator.runFullRebuild({
+      files: [{
+        source,
+        generationId,
+        contentHash: sha256Hex(source.bytes),
+        fileCompleteness: 'complete',
+        declarations: [{
+          name: 'a', symbolId, qualifiedName: 'a', kind: 'function', signatureDiscriminator: 'fn',
+          position: { startLine: 3, startColumn: 0, endLine: 3, endColumn: symbolText.length },
+          startByte: smallEnd + 1, endByte: source.bytes.length, sourceHash: sha256Hex(source.bytes.subarray(smallEnd + 1, source.bytes.length)),
+          languageId: 'typescript', isExact: true,
+        }],
+        imports: [
+          {
+            id: 'large', moduleSpecifier: './large.js', bindingName: 'a',
+            startByte: 0, endByte: largeEnd,
+            sourceHash: sha256Hex(source.bytes.subarray(0, largeEnd)),
+            completeness: 'complete',
+            position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: largeImport.length },
+          },
+          {
+            id: 'small', moduleSpecifier: './small.js', bindingName: 'x',
+            startByte: smallStart, endByte: smallEnd,
+            sourceHash: sha256Hex(source.bytes.subarray(smallStart, smallEnd)),
+            completeness: 'complete',
+            position: { startLine: 2, startColumn: 0, endLine: 2, endColumn: smallImport.length },
+          },
+        ],
+      }],
+    });
+
+    await writeFile(join(projectRoot, 'src/a.ts'), text);
+    const result = await service.getSymbolContext({ symbolId, tokenBudget: 20 });
+    expect((result as { imports: Array<{ moduleSpecifier?: string }> }).imports.map((item) => item.moduleSpecifier)).toEqual(['./small.js']);
+    expect((result as { budget: { omittedForBudget: number } }).budget.omittedForBudget).toBe(1);
   });
 });

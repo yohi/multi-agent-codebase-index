@@ -4,6 +4,16 @@ import type {
   StructuredImport,
 } from '../../structured/contracts.js';
 
+export interface StructuredImportRecord {
+  readonly id: string;
+  readonly moduleSpecifier?: string;
+  readonly bindingName?: string;
+  readonly startByte: number;
+  readonly endByte: number;
+  readonly sourceHash: string;
+  readonly completeness: 'complete' | 'partial';
+}
+
 export interface StructuredPendingClear {
   readonly filePath: string;
   readonly expectedActiveGeneration: string | null;
@@ -104,5 +114,6 @@ export interface IStructuredCatalog {
   getPendingSymbol(symbolId: string): Promise<StructuredPendingSymbolResolution>;
   getTombstone(symbolId: string): Promise<StructuredTombstone | null>;
   getStructuredCounts(): Promise<StructuredIndexCounts>;
+  getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]>;
   reconcileStructuredState(): Promise<StructuredReconciliationResult>;
 }

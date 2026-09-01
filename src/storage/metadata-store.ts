@@ -10,6 +10,7 @@ import type {
   StructuredFileRetirement,
   StructuredGenerationActivation,
   StructuredGenerationStage,
+  StructuredImportRecord,
   StructuredIndexCounts,
   StructuredIndexState,
   StructuredPendingClear,
@@ -263,6 +264,35 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
   async getPendingSymbol(symbolId: string): Promise<StructuredPendingSymbolResolution> { await this.asyncBoundary(); const row = this.db.prepare('SELECT s.* FROM symbols s JOIN structured_files f ON f.file_path=s.file_path AND f.pending_generation=s.generation WHERE s.symbol_id=?').get(symbolId) as Record<string, unknown> | undefined; return row ? { kind: 'pending', declaration: this.declaration(row) } : { kind: 'missing' }; }
   async getTombstone(symbolId: string): Promise<StructuredTombstone | null> { await this.asyncBoundary(); const row = this.db.prepare('SELECT symbol_id,file_path,generation,retired_at_rebuild_epoch,retired_at FROM symbol_tombstones WHERE symbol_id=?').get(symbolId) as { symbol_id: string; file_path: string; generation: string; retired_at_rebuild_epoch: number; retired_at: number } | undefined; return row ? { symbolId: row.symbol_id, filePath: row.file_path, generationId: row.generation, retiredAtRebuildEpoch: row.retired_at_rebuild_epoch, retiredAt: row.retired_at } : null; }
   async getStructuredCounts(): Promise<StructuredIndexCounts> { await this.asyncBoundary(); const activeFiles = this.db.prepare('SELECT count(*) AS n FROM structured_files WHERE active_generation IS NOT NULL').get() as { n: number }; const pendingFiles = this.db.prepare('SELECT count(*) AS n FROM structured_files WHERE pending_generation IS NOT NULL').get() as { n: number }; const activeSymbols = this.db.prepare('SELECT count(*) AS n FROM symbols s JOIN structured_files f ON f.file_path=s.file_path AND f.active_generation=s.generation').get() as { n: number }; const pendingSymbols = this.db.prepare('SELECT count(*) AS n FROM symbols s JOIN structured_files f ON f.file_path=s.file_path AND f.pending_generation=s.generation').get() as { n: number }; const tombstones = this.db.prepare('SELECT count(*) AS n FROM symbol_tombstones').get() as { n: number }; return { activeFiles: activeFiles.n, activeSymbols: activeSymbols.n, pendingFiles: pendingFiles.n, pendingSymbols: pendingSymbols.n, tombstones: tombstones.n }; }
+  async getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]> {
+    await this.asyncBoundary();
+    const rows = this.db.prepare(`
+      SELECT i.source AS moduleSpecifier, i.imported_names AS bindingName,
+             i.start_byte AS startByte, i.end_byte AS endByte,
+             i.source_hash AS sourceHash, i.is_complete AS isComplete
+      FROM symbol_imports si
+      JOIN imports i ON i.file_path = si.file_path AND i.generation = si.generation AND i.source = si.source
+      JOIN structured_files f ON f.file_path = si.file_path AND f.active_generation = si.generation
+      WHERE si.symbol_id = ?
+    `).all(symbolId) as Array<{
+      moduleSpecifier: string;
+      bindingName: string;
+      startByte: number;
+      endByte: number;
+      sourceHash: string;
+      isComplete: number;
+    }>;
+    return rows.map((row) => ({
+      id: `${row.moduleSpecifier}\u0000${row.bindingName}`,
+      moduleSpecifier: row.moduleSpecifier || undefined,
+      bindingName: row.bindingName || undefined,
+      startByte: row.startByte,
+      endByte: row.endByte,
+      sourceHash: row.sourceHash,
+      completeness: row.isComplete === 1 ? 'complete' : 'partial',
+    }));
+  }
+
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> { await this.asyncBoundary(); return { repaired: false, prunedTombstones: 0 }; }
 
   async setStructuredRebuildState(input: { rebuildState: string; lastErrorCode?: string | null }): Promise<void> {

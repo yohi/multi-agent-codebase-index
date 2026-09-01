@@ -14,6 +14,7 @@ import type {
   StructuredFileResolution,
   StructuredGenerationActivation,
   StructuredGenerationStage,
+  StructuredImportRecord,
   StructuredIndexCounts,
   StructuredIndexState,
   StructuredPendingClear,
@@ -137,6 +138,24 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
 
   async getStructuredCounts(): Promise<StructuredIndexCounts> {
     return { activeFiles: this.active.size, activeSymbols: [...this.active.values()].reduce((sum, item) => sum + item.declarations.length, 0), pendingFiles: this.pending.size, pendingSymbols: [...this.pending.values()].reduce((sum, item) => sum + item.declarations.length, 0), tombstones: this.tombstones.size };
+  }
+
+  async getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]> {
+    for (const generation of this.active.values()) {
+      const declaration = generation.declarations.find((item) => item.symbolId === symbolId);
+      if (declaration) {
+        return generation.imports.map((imported) => ({
+          id: `${imported.moduleSpecifier ?? ''}\u0000${imported.bindingName ?? ''}`,
+          moduleSpecifier: imported.moduleSpecifier,
+          bindingName: imported.bindingName,
+          startByte: imported.startByte,
+          endByte: imported.endByte,
+          sourceHash: imported.sourceHash,
+          completeness: imported.completeness,
+        }));
+      }
+    }
+    return [];
   }
 
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> { return { repaired: false, prunedTombstones: 0 }; }
