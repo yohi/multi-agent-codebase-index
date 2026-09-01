@@ -5,11 +5,14 @@ import { buildToolHandlers, createContentReader } from '../../../../src/server/t
 import { createTestNexusOptions } from '../../../shared/create-test-nexus-options.js';
 
 describe('buildToolHandlers', () => {
-  it('returns handlers for all six tools', async () => {
+  it('returns handlers for all nine tools', async () => {
     const { options } = await createTestNexusOptions();
     const handlers = buildToolHandlers(options);
     expect(Object.keys(handlers).sort()).toEqual([
       'get_context',
+      'get_file_outline',
+      'get_symbol_context',
+      'get_symbol_source',
       'grep_search',
       'hybrid_search',
       'index_status',

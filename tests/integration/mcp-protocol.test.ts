@@ -144,6 +144,9 @@ describe('Phase 2 MCP protocol integration', () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'get_context',
+      'get_file_outline',
+      'get_symbol_context',
+      'get_symbol_source',
       'grep_search',
       'hybrid_search',
       'index_status',
@@ -152,6 +155,9 @@ describe('Phase 2 MCP protocol integration', () => {
     ]);
     expect(Object.fromEntries(tools.tools.map((tool) => [tool.name, tool.description]))).toEqual({
       get_context: 'Return a specific line range from a file; prefer partial reads.',
+      get_file_outline: 'Return a source-free structured outline of a known file.',
+      get_symbol_context: 'Return bounded context (verified imports + exact symbol source) for a symbol ID.',
+      get_symbol_source: 'Return exact source for a structured symbol ID.',
       grep_search: 'Exact string search for symbols, errors, or code fragments.',
       hybrid_search: 'Semantic + grep hybrid search for vague or conceptual queries.',
       index_status: 'Check indexing progress and statistics before searching.',
@@ -171,6 +177,9 @@ describe('Phase 2 MCP protocol integration', () => {
       ),
     ).toEqual({
       get_context: ['endLine', 'filePath', 'mode', 'startLine', 'symbolName'],
+      get_file_outline: ['filePath'],
+      get_symbol_context: ['symbolId', 'tokenBudget'],
+      get_symbol_source: ['symbolId'],
       grep_search: ['caseSensitive', 'filePattern', 'filePatterns', 'maxResults', 'pattern'],
       hybrid_search: ['contextLines', 'filePattern', 'filePatterns', 'grepPattern', 'includeSnippet', 'language', 'query', 'topK'],
       index_status: [],

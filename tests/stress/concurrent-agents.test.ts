@@ -211,7 +211,7 @@ describe('stress: concurrent MCP agents', () => {
     );
 
     for (const response of responses) {
-      expect(response.tools.tools).toHaveLength(6);
+      expect(response.tools.tools).toHaveLength(9);
       expect(response.semantic).toMatchObject({
         results: [expect.objectContaining({ chunk: expect.objectContaining({ filePath: 'src/auth.ts' }) })],
       });

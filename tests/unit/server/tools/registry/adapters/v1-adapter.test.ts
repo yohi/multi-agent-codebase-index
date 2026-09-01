@@ -38,6 +38,21 @@ const EXPECTED_TOOLS = [
     description: 'Manually rebuild the local search index.',
     required: [],
   },
+  {
+    name: 'get_file_outline',
+    description: 'Return a source-free structured outline of a known file.',
+    required: ['filePath'],
+  },
+  {
+    name: 'get_symbol_source',
+    description: 'Return exact source for a structured symbol ID.',
+    required: ['symbolId'],
+  },
+  {
+    name: 'get_symbol_context',
+    description: 'Return bounded context (verified imports + exact symbol source) for a symbol ID.',
+    required: ['symbolId', 'tokenBudget'],
+  },
 ] as const;
 
 describe('v1 adapter parity', () => {
@@ -64,7 +79,7 @@ describe('v1 adapter parity', () => {
     return client;
   };
 
-  it('lists the 6 tools with legacy names, descriptions and required params', async () => {
+  it('lists the 9 tools with legacy names, descriptions and required params', async () => {
     const connected = await connect();
     const listed = await connected.listTools();
     expect(listed.tools.map((tool) => tool.name)).toEqual(EXPECTED_TOOLS.map((tool) => tool.name));

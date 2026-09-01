@@ -1,5 +1,7 @@
 import path from 'node:path';
 
+import { SymbolRetrievalService } from '../../src/structured/retrieval-service.js';
+
 import { Chunker } from '../../src/indexer/chunker.js';
 import { IndexPipeline } from '../../src/indexer/pipeline.js';
 import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript.js';
@@ -61,6 +63,8 @@ export const createTestNexusOptions = async (): Promise<TestNexusContext> => {
   });
   const sanitizer = await PathSanitizer.create(projectRoot);
 
+  const symbolRetrievalService = new SymbolRetrievalService({ catalog: metadataStore, sanitizer });
+
   const options: NexusServerOptions = {
     projectRoot,
     sanitizer,
@@ -79,6 +83,7 @@ export const createTestNexusOptions = async (): Promise<TestNexusContext> => {
       }
       throw new Error(`unexpected file: ${filePath}`);
     },
+    symbolRetrievalService,
   };
 
   return { options, metadataStore, vectorStore, grepEngine };

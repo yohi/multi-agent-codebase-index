@@ -59,4 +59,33 @@ describe('executeIndexStatus', () => {
       healthy: true,
     });
   });
+
+  it('includes structured index status when the metadata store supports it', async () => {
+    const metadataStore = new InMemoryMetadataStore();
+    const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
+    const registry = new PluginRegistry();
+    registry.registerLanguage(new TypeScriptLanguagePlugin());
+    registry.registerEmbeddingProvider('test', new TestEmbeddingProvider());
+
+    await metadataStore.initialize();
+    await vectorStore.initialize();
+
+    const mockPipeline = {
+      getProgress: () => ({
+        status: 'idle' as const,
+        processedFiles: 0,
+        totalFiles: 0,
+      }),
+    };
+
+    const result = await executeIndexStatus(metadataStore, vectorStore, registry, mockPipeline as any);
+
+    expect(result.structuredIndex).toBeDefined();
+    expect(result.structuredIndex).toMatchObject({
+      schemaVersion: null,
+      targetSchemaVersion: 1,
+      status: 'reindex_required',
+      reindexRequired: true,
+    });
+  });
 });

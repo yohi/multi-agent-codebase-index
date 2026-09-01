@@ -157,6 +157,9 @@ describe('Nexus MCP server integration', () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'get_context',
+      'get_file_outline',
+      'get_symbol_context',
+      'get_symbol_source',
       'grep_search',
       'hybrid_search',
       'index_status',
@@ -175,8 +178,8 @@ describe('Nexus MCP server integration', () => {
     await Promise.all([first.connect(firstTransport), second.connect(secondTransport)]);
     const [firstTools, secondTools] = await Promise.all([first.listTools(), second.listTools()]);
 
-    expect(firstTools.tools).toHaveLength(6);
-    expect(secondTools.tools).toHaveLength(6);
+    expect(firstTools.tools).toHaveLength(9);
+    expect(secondTools.tools).toHaveLength(9);
   });
 
   it('creates a distinct MCP server for each HTTP client while sharing tool dependencies', async () => {
