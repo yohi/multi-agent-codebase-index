@@ -50,7 +50,7 @@ export class Chunker {
 
   async chunkStructuredFile(
     file: FileToChunk,
-    artifact: StructuredParseResult,
+    artifact: Pick<StructuredParseResult, 'declarations' | 'imports'>,
   ): Promise<CodeChunk[]> {
     const chunks: CodeChunk[] = [];
 

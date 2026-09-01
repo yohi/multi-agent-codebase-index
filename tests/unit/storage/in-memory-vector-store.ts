@@ -51,6 +51,9 @@ export class InMemoryVectorStore implements IVectorStore {
 
   private deletedCount = 0;
 
+  private failBatchNumber: number | null = null;
+  private currentBatchNumber = 0;
+
   private lastCompactedAt: string | undefined;
 
   constructor(options: InMemoryVectorStoreOptions) {
@@ -221,6 +224,11 @@ export class InMemoryVectorStore implements IVectorStore {
   }
 
   async stageGenerationChunks(batch: GenerationChunkBatch): Promise<void> {
+    this.currentBatchNumber += 1;
+    if (this.failBatchNumber === this.currentBatchNumber) {
+      this.failBatchNumber = null;
+      throw new Error(`batch ${this.currentBatchNumber} failed`);
+    }
     if (batch.vectors.length !== batch.chunks.length) {
       throw new Error(`InMemoryVectorStore.stageGenerationChunks: vectors length mismatch (expected ${batch.chunks.length}, got ${batch.vectors.length})`);
     }
@@ -244,6 +252,10 @@ export class InMemoryVectorStore implements IVectorStore {
         visibility: 'pending',
       });
     }
+  }
+
+  failOnBatch(batchNumber: number): void {
+    this.failBatchNumber = batchNumber;
   }
 
   async activateGenerationRows(filePath: string, generationId: string): Promise<void> {
