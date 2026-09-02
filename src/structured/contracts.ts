@@ -35,6 +35,7 @@ export interface StructuredDeclaration extends SymbolMetadata {
   readonly languageId: string;
   readonly isExact: boolean;
   readonly rawSource?: string;
+  readonly importBindingIds?: readonly string[];
 }
 
 export interface StructuredImport {
@@ -92,6 +93,6 @@ export type StructuredParseResult = {
 } & (
   | { readonly status: 'ok'; readonly retrievability: 'exact'; readonly failure?: never }
   | { readonly status: 'degraded'; readonly retrievability: 'partial'; readonly failure: StructuredFailure }
-  | { readonly status: 'unsupported'; readonly retrievability: 'exact'; readonly failure: StructuredFailure }
-  | { readonly status: 'failed'; readonly retrievability: 'exact'; readonly failure: StructuredFailure }
+  | { readonly status: 'unsupported'; readonly retrievability: 'none'; readonly failure: StructuredFailure }
+  | { readonly status: 'failed'; readonly retrievability: 'none'; readonly failure: StructuredFailure }
 );

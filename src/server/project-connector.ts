@@ -64,7 +64,7 @@ function tailBytes(text: string, maxBytes: number): string {
   let totalBytes = 0;
   let startIndex = text.length;
   for (let i = text.length - 1; i >= 0; i -= 1) {
-    const charBytes = encoder.encode(text[i] as string).length;
+    const charBytes = encoder.encode(text[i]).length;
     if (totalBytes + charBytes > maxBytes) {
       break;
     }

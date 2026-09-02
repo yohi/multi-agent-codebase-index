@@ -52,6 +52,7 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   }
 
   async stageGeneration(input: StructuredGenerationStage): Promise<void> {
+    this.rebuildEpoch = input.rebuildEpoch;
     this.pending.set(input.filePath, input);
   }
 
@@ -61,6 +62,14 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
     if (input.expectedRebuildEpoch !== this.rebuildEpoch) return { activated: false, reason: 'stale_rebuild_epoch' };
     if ((active?.generation.generationId ?? null) !== input.expectedActiveGeneration) return { activated: false, reason: 'stale_active_generation' };
     if (pending?.generation.generationId !== input.generationId) return { activated: false, reason: 'missing_generation' };
+    const pendingSymbolIds = new Set(pending.declarations.map((declaration) => declaration.symbolId));
+    if (active !== undefined) {
+      for (const declaration of active.declarations) {
+        if (!pendingSymbolIds.has(declaration.symbolId)) {
+          this.tombstones.set(declaration.symbolId, { symbolId: declaration.symbolId, filePath: input.filePath, generationId: active.generation.generationId, retiredAtRebuildEpoch: input.expectedRebuildEpoch, retiredAt: Date.now() });
+        }
+      }
+    }
     this.active.set(input.filePath, pending);
     this.pending.delete(input.filePath);
     for (const declaration of pending.declarations) this.tombstones.delete(declaration.symbolId);
@@ -111,7 +120,17 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
     return { activeFiles: this.active.size, activeSymbols: [...this.active.values()].reduce((sum, item) => sum + item.declarations.length, 0), pendingFiles: this.pending.size, pendingSymbols: [...this.pending.values()].reduce((sum, item) => sum + item.declarations.length, 0), tombstones: this.tombstones.size };
   }
 
-  async reconcileStructuredState(): Promise<StructuredReconciliationResult> { return { repaired: false, prunedTombstones: 0 }; }
+  async reconcileStructuredState(): Promise<StructuredReconciliationResult> {
+    const activeSymbolIds = new Set([...this.active.values()].flatMap((generation) => generation.declarations.map((declaration) => declaration.symbolId)));
+    let prunedTombstones = 0;
+    for (const symbolId of this.tombstones.keys()) {
+      if (activeSymbolIds.has(symbolId)) {
+        this.tombstones.delete(symbolId);
+        prunedTombstones += 1;
+      }
+    }
+    return { repaired: prunedTombstones > 0, prunedTombstones };
+  }
 
   async bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void> {
     for (const node of nodes) {

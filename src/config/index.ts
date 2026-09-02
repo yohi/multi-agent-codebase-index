@@ -415,8 +415,8 @@ const validateHeaders = (value: unknown): Record<string, string> | undefined => 
     const entries = Object.entries(value);
     if (entries.every(([k, v]) => typeof k === 'string' && typeof v === 'string')) {
       try {
-        new Headers(entries as [string, string][]);
-        return Object.fromEntries(entries) as Record<string, string>;
+        new Headers(entries);
+        return Object.fromEntries(entries);
       } catch {
         return undefined;
       }
@@ -461,7 +461,7 @@ const readJsonFile = async (configPath: string): Promise<Partial<Config>> => {
       throw new Error(`Configuration file "${configPath}" must contain a top-level object.`);
     }
 
-    return parsed as Partial<Config>;
+    return parsed;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return {};
