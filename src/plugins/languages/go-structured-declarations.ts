@@ -11,8 +11,8 @@ export type DeclarationDescriptor = {
 };
 
 const isExportedName = (name: string): boolean => {
-  const first = name[0];
-  return name.length > 0 && first?.toUpperCase() === first;
+  const first = name.codePointAt(0);
+  return first !== undefined && /^\p{Lu}$/u.test(String.fromCodePoint(first));
 };
 
 const typeSpecsFor = (node: Parser.SyntaxNode): readonly Parser.SyntaxNode[] => {

@@ -55,6 +55,26 @@ describe('Go structured parser', () => {
     expect(names.has('unexportedHelper')).toBe(false);
   });
 
+  it('exports standalone functions only when the first Unicode code point is uppercase', async () => {
+    const uppercaseAstral = String.fromCodePoint(0x10400);
+    const lowercaseAstral = String.fromCodePoint(0x10428);
+    const text = [
+      'package names',
+      '',
+      'func _helper() {}',
+      'func \u65e5\u672c\u8a9e() {}',
+      `func ${uppercaseAstral}Exported() {}`,
+      `func ${lowercaseAstral}unexported() {}`,
+      'func Exported() {}',
+    ].join('\n');
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new GoLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({ filePath: 'unicode.go', language: 'go', bytes, text });
+    const names = new Set(result.declarations.map((item) => item.qualifiedName));
+
+    expect(names).toEqual(new Set(['Exported', `${uppercaseAstral}Exported`]));
+  });
+
   it('hashes symbol source from exact UTF-8 byte slices', async () => {
     const { bytes, result } = await parseGoFixture('exactness.go');
     const open = result.declarations.find((item) => item.name === 'Open')!;
