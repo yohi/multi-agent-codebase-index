@@ -160,5 +160,25 @@ describe('LanceVectorStore (LanceDB integration)', () => {
       expect(results[0]?.generationId).toBe('generation-1');
       await store.close();
     });
+
+    it('upsertChunks() — generationId を保存して検索結果へ復元', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64 });
+      await store.initialize();
+
+      const chunk = {
+        ...makeChunk({ id: 'generation-upsert' }),
+        generationId: 'generation-upsert-1',
+      };
+
+      try {
+        await store.upsertChunks([chunk], [embedding]);
+        const results = await store.search(embedding, 10);
+
+        expect(results[0]?.generationId).toBe('generation-upsert-1');
+      } finally {
+        await store.close();
+      }
+    });
   });
 });

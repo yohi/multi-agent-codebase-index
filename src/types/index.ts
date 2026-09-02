@@ -27,6 +27,7 @@ export interface CodeChunk {
   endLine: number;
   hash: string;
   symbolId?: string;
+  generationId?: string;
 }
 
 export interface SearchResult {

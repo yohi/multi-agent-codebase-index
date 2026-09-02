@@ -447,6 +447,7 @@ export class LanceVectorStore implements IVectorStore {
               startline: chunk.startLine,
               endline: chunk.endLine,
               hash: chunk.hash,
+              ...(chunk.generationId === undefined ? {} : { generationid: chunk.generationId }),
             };
           });
 
