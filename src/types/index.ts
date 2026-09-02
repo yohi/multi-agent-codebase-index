@@ -81,10 +81,12 @@ export interface ParsedSourceFile {
 
 export type {
   IMetadataStore,
+  StructuredCapableMetadataStore,
   MerkleNodeRow,
   IndexStatsRow,
   EmbeddingCacheEntry,
 } from '../storage/interfaces/metadata-store.js';
+export { supportsStructuredCatalog } from '../storage/interfaces/metadata-store.js';
 export type {
   IVectorStore,
   CompactionConfig,

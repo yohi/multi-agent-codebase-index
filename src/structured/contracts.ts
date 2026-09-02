@@ -30,6 +30,7 @@ export interface StructuredDeclaration extends SymbolMetadata {
   readonly parentSymbolId?: string;
   readonly languageId: string;
   readonly isExact: boolean;
+  readonly importBindingIds?: readonly string[];
 }
 
 export interface StructuredImport {
