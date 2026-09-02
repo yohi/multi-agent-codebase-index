@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { TypeScriptLanguagePlugin } from '../../../src/plugins/languages/typescript.js';
+import { flattenDiagnosticMessage } from '../../../src/plugins/languages/typescript-structured-diagnostics.js';
 import { decodeUtf8, sha256Hex } from '../../../src/structured/hash.js';
 
 const fixturePath = (name: string): string => path.join('tests', 'fixtures', 'structured', 'typescript', name);
@@ -175,6 +177,22 @@ describe('TypeScript structured parser', () => {
     expect(result.retrievability).toBe('partial');
     expect(result.declarations.find((item) => item.qualifiedName === 'ValidClass')?.symbolId).toMatch(/^symbol_v1_/);
     expect(result.declarations.find((item) => item.qualifiedName === 'BrokenClass')?.symbolId).toBeUndefined();
+  });
+
+  it('flattens nested diagnostic messages into stable text', () => {
+    const message: ts.DiagnosticMessageChain = {
+      messageText: 'outer diagnostic',
+      category: ts.DiagnosticCategory.Error,
+      code: 1000,
+      next: [{
+        messageText: 'inner diagnostic',
+        category: ts.DiagnosticCategory.Error,
+        code: 1001,
+        next: [],
+      }],
+    };
+
+    expect(flattenDiagnosticMessage(message)).toBe('outer diagnostic\n  inner diagnostic');
   });
 
   it('extracts the required declaration families and Unicode names', async () => {

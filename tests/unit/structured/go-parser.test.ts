@@ -55,6 +55,28 @@ describe('Go structured parser', () => {
     expect(names.has('unexportedHelper')).toBe(false);
   });
 
+  it('emits single and grouped type aliases as typeAlias declarations', async () => {
+    const text = [
+      'package aliases',
+      '',
+      'type Alias = string',
+      '',
+      'type (',
+      '\tGroupedAlias = Alias',
+      '\tAnotherAlias = map[string]Alias',
+      ')',
+    ].join('\n');
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new GoLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({ filePath: 'aliases.go', language: 'go', bytes, text });
+
+    expect(result.declarations.filter((item) => item.kind === 'typeAlias').map((item) => item.name)).toEqual([
+      'Alias',
+      'GroupedAlias',
+      'AnotherAlias',
+    ]);
+  });
+
   it('exports standalone functions only when the first Unicode code point is uppercase', async () => {
     const uppercaseAstral = String.fromCodePoint(0x10400);
     const lowercaseAstral = String.fromCodePoint(0x10428);

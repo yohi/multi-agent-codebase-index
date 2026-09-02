@@ -26,6 +26,7 @@ const nameForTypeSpec = (spec: Parser.SyntaxNode): string | undefined => {
 };
 
 const kindForTypeSpec = (spec: Parser.SyntaxNode): SymbolKind => {
+  if (spec.type === 'type_alias') return 'typeAlias';
   const typeNode = spec.children.find(
     (child) =>
       child.type === 'interface_type' ||
@@ -103,7 +104,6 @@ const typeInterfacesFor = (root: Parser.SyntaxNode): ReadonlyMap<string, Parser.
 const typeDescriptorsFor = (node: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
   const descriptors: DeclarationDescriptor[] = [];
   for (const spec of typeSpecsFor(node)) {
-    if (spec.type === 'type_alias') continue;
     const name = nameForTypeSpec(spec);
     if (!name) continue;
     descriptors.push({ node: spec, kind: kindForTypeSpec(spec), name, qualifiedName: name });

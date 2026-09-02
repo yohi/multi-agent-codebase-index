@@ -2,6 +2,8 @@ export interface Utf8OffsetTable {
   readonly byteOffsetAtUtf16: (offset: number) => number;
 }
 
+const textEncoder = new TextEncoder();
+
 export const createUtf8OffsetTable = (text: string): Utf8OffsetTable => {
   const offsets = new Uint32Array(text.length + 1);
   let bytes = 0;
@@ -9,7 +11,7 @@ export const createUtf8OffsetTable = (text: string): Utf8OffsetTable => {
     offsets[index] = bytes;
     const codePoint = text.codePointAt(index);
     if (codePoint === undefined) continue;
-    const width = new TextEncoder().encode(String.fromCodePoint(codePoint)).byteLength;
+    const width = textEncoder.encode(String.fromCodePoint(codePoint)).byteLength;
     bytes += width;
     if (codePoint > 0xffff) { index += 1; offsets[index] = bytes; }
   }

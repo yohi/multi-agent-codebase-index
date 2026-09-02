@@ -6,6 +6,7 @@ import { PythonStructuredParser } from './python-structured.js';
 import type { PythonTreeSitterRuntime } from './python-structured.js';
 
 const textEncoder = new TextEncoder();
+const warnFallback = (error: Error): void => console.warn('python-structured-parser.fallback', error);
 
 const sourceFor = (file: FileToChunk): StructuredSource => ({
   filePath: file.filePath,
@@ -61,13 +62,19 @@ export class PythonLanguagePlugin implements LanguagePlugin {
             const source = sourceFor(file);
             return projectLegacyResult(await structured.parseStructured(source), source);
           } catch (error) {
-            if (error instanceof Error) return fixedLineFallback(file);
+            if (error instanceof Error) {
+              warnFallback(error);
+              return fixedLineFallback(file);
+            }
             throw error;
           }
         },
       };
     } catch (error) {
-      if (error instanceof Error) return { parse: async (file) => fixedLineFallback(file) };
+      if (error instanceof Error) {
+        warnFallback(error);
+        return { parse: async (file) => fixedLineFallback(file) };
+      }
       throw error;
     }
   }

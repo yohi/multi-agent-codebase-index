@@ -3,6 +3,7 @@ import ts from 'typescript';
 import type { StructuredImport, StructuredSource } from '../../structured/contracts.js';
 import { sha256Hex } from '../../structured/hash.js';
 import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+import { flattenDiagnosticMessage } from './typescript-structured-diagnostics.js';
 
 export interface StructuredImportContext {
   readonly source: StructuredSource;
@@ -107,7 +108,7 @@ const importsForNode = (
       endByte,
       sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
       completeness: complete ? 'complete' : 'partial',
-      diagnostics: diagnostics.map((diagnostic) => diagnostic.messageText),
+      diagnostics: diagnostics.map((diagnostic) => flattenDiagnosticMessage(diagnostic.messageText)),
       position,
     };
   });

@@ -43,17 +43,25 @@ const definitionFor = (node: Parser.SyntaxNode): { readonly declaration: Parser.
 
 const nameFor = (node: Parser.SyntaxNode): string | undefined => node.childForFieldName('name')?.text;
 
-const hasSyntaxProblem = (node: Parser.SyntaxNode): boolean =>
-  node.isError || node.isMissing || node.children.some(hasSyntaxProblem);
+type SyntaxAnalysis = {
+  readonly diagnostics: readonly string[];
+  readonly problemNodeIds: ReadonlySet<number>;
+};
 
-const diagnosticsFor = (node: Parser.SyntaxNode): readonly string[] => {
+const analyzeSyntax = (node: Parser.SyntaxNode): SyntaxAnalysis => {
   const diagnostics: string[] = [];
-  const visit = (current: Parser.SyntaxNode): void => {
-    if (current.isError || current.isMissing) diagnostics.push(`${current.type} at ${current.startPosition.row + 1}:${current.startPosition.column}`);
-    for (const child of current.children) visit(child);
+  const problemNodeIds = new Set<number>();
+  const visit = (current: Parser.SyntaxNode): boolean => {
+    let hasProblem = current.isError || current.isMissing;
+    if (hasProblem) diagnostics.push(`${current.type} at ${current.startPosition.row + 1}:${current.startPosition.column}`);
+    for (const child of current.children) {
+      if (visit(child)) hasProblem = true;
+    }
+    if (hasProblem) problemNodeIds.add(current.id);
+    return hasProblem;
   };
   visit(node);
-  return diagnostics;
+  return { diagnostics, problemNodeIds };
 };
 
 const positionFor = (node: Parser.SyntaxNode) => ({ startLine: node.startPosition.row + 1, startColumn: node.startPosition.column, endLine: node.endPosition.row + 1, endColumn: node.endPosition.column });
@@ -172,6 +180,7 @@ const completenessFor = (
 type ImportCollectionContext = {
   readonly source: StructuredSource;
   readonly offsets: Utf8OffsetTable;
+  readonly problemNodeIds: ReadonlySet<number>;
   readonly bindingsBefore: Set<string>;
   readonly occurrences: Map<string, number>;
 };
@@ -180,7 +189,7 @@ const importsForNode = (
   node: Parser.SyntaxNode,
   context: ImportCollectionContext,
 ): readonly StructuredImport[] => {
-  if ((node.type !== 'import_statement' && node.type !== 'import_from_statement') || hasSyntaxProblem(node)) {
+  if ((node.type !== 'import_statement' && node.type !== 'import_from_statement') || context.problemNodeIds.has(node.id)) {
     return [];
   }
   const { source, offsets, bindingsBefore, occurrences } = context;
@@ -211,11 +220,18 @@ const importsForNode = (
   });
 };
 
-const importsFor = (source: StructuredSource, root: Parser.SyntaxNode, offsets: Utf8OffsetTable): readonly StructuredImport[] => {
+type ImportCollectionInput = {
+  readonly source: StructuredSource;
+  readonly root: Parser.SyntaxNode;
+  readonly offsets: Utf8OffsetTable;
+  readonly problemNodeIds: ReadonlySet<number>;
+};
+
+const importsFor = ({ source, root, offsets, problemNodeIds }: ImportCollectionInput): readonly StructuredImport[] => {
   const bindingsBefore = new Set<string>();
   const occurrences = new Map<string, number>();
   const imports: StructuredImport[] = [];
-  const context: ImportCollectionContext = { source, offsets, bindingsBefore, occurrences };
+  const context: ImportCollectionContext = { source, offsets, problemNodeIds, bindingsBefore, occurrences };
 
   for (const node of root.namedChildren) {
     imports.push(...importsForNode(node, context));
@@ -246,10 +262,10 @@ export class PythonStructuredParser implements StructuredLanguageParser {
     parser.setLanguage(this.runtime.Python);
     const root = parser.parse(source.text).rootNode;
     const offsets = createUtf8OffsetTable(source.text);
-    const diagnostics = diagnosticsFor(root);
+    const syntax = analyzeSyntax(root);
     const occurrences = new Map<string, number>();
     const drafts = candidatesFor(root).flatMap((candidate) => {
-      if (hasSyntaxProblem(candidate.declaration) || hasSyntaxProblem(candidate.range) || (candidate.scope && hasSyntaxProblem(candidate.scope))) return [];
+      if (syntax.problemNodeIds.has(candidate.declaration.id) || syntax.problemNodeIds.has(candidate.range.id) || (candidate.scope && syntax.problemNodeIds.has(candidate.scope.id))) return [];
       const name = nameFor(candidate.declaration);
       if (!name) return [];
       const qualifiedName = [...candidate.parents, name].join('.');
@@ -271,9 +287,9 @@ export class PythonStructuredParser implements StructuredLanguageParser {
       const parentSymbolId = scopeId === undefined ? undefined : classSymbols.get(scopeId);
       return parentSymbolId ? { ...declaration, parentSymbolId } : declaration;
     });
-    const imports = importsFor(source, root, offsets);
-    const generation = generationFor(source, diagnostics);
-    return diagnostics.length === 0
+    const imports = importsFor({ source, root, offsets, problemNodeIds: syntax.problemNodeIds });
+    const generation = generationFor(source, syntax.diagnostics);
+    return syntax.diagnostics.length === 0
       ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
       : { status: 'degraded', retrievability: 'partial', declarations, imports, generation, failure: { reasonCode: 'parse_error', message: 'Python parse diagnostics were reported.' } };
   }

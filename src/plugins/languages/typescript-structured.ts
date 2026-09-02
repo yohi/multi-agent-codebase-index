@@ -10,6 +10,7 @@ import type {
 import { sha256Hex } from '../../structured/hash.js';
 import { createSymbolId } from '../../structured/identity.js';
 import { createUtf8OffsetTable } from '../../structured/utf8-offsets.js';
+import { flattenDiagnosticMessage } from './typescript-structured-diagnostics.js';
 import {
   describeDeclaration,
 } from './typescript-structured-declarations.js';
@@ -82,7 +83,7 @@ const generationFor = (
   parserVersion: ts.version,
   fileHash: sha256Hex(source.bytes),
   fileCompleteness: diagnostics.length === 0 ? 'complete' : 'partial',
-  fileDiagnostics: diagnostics.map((diagnostic) => diagnostic.messageText),
+  fileDiagnostics: diagnostics.map((diagnostic) => flattenDiagnosticMessage(diagnostic.messageText)),
 });
 
 export class TypeScriptStructuredParser implements StructuredLanguageParser {
