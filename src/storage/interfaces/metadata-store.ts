@@ -1,5 +1,6 @@
 /** Storage interfaces (design doc §7.3). Canonical home since the Phase 1b relocation; re-exported from src/types/index.ts for backward compatibility. */
 import type { DeadLetterEntry } from '../../types/index.js';
+import type { IStructuredCatalog } from './structured-catalog.js';
 
 export interface MerkleNodeRow {
   path: string;
@@ -23,7 +24,7 @@ export interface EmbeddingCacheEntry {
   vector: number[];
 }
 
-export interface IMetadataStore {
+export interface IMetadataStore extends Partial<IStructuredCatalog> {
   initialize(): Promise<void>;
   bulkUpsertMerkleNodes(nodes: MerkleNodeRow[]): Promise<void>;
   bulkDeleteMerkleNodes(paths: string[]): Promise<void>;
@@ -63,3 +64,24 @@ export interface IMetadataStore {
   clearEmbeddings(): Promise<void>;
   pruneEmbeddings(maxAgeDays: number): Promise<number>;
 }
+
+export type StructuredCapableMetadataStore = IMetadataStore & IStructuredCatalog;
+
+const structuredCatalogMethods = [
+  'bootstrapStructuredSchema',
+  'getStructuredIndexState',
+  'stageGeneration',
+  'activateGeneration',
+  'clearPendingGeneration',
+  'retireFile',
+  'resolveFile',
+  'getActiveGenerationMap',
+  'resolveSymbol',
+  'getPendingSymbol',
+  'getTombstone',
+  'getStructuredCounts',
+  'reconcileStructuredState',
+] as const satisfies readonly (keyof IStructuredCatalog)[];
+
+export const supportsStructuredCatalog = (store: IMetadataStore): store is StructuredCapableMetadataStore =>
+  structuredCatalogMethods.every((method) => typeof store[method] === 'function');

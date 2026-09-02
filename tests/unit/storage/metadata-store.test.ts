@@ -170,7 +170,7 @@ describe('SqliteMetadataStore', () => {
 
     expect(result.dlqEmpty).toBe(false);
     expect(result.dlqEntries).toEqual([entry]);
-    await expect(store.getIndexStats()).resolves.toBeNull();
+    await expect(store.getIndexStats()).resolves.toMatchObject({ id: 'primary' });
   });
 
   it('serializes DLQ updates with the atomic completion check lock', async () => {

@@ -264,7 +264,7 @@ const readBody = async (req: IncomingMessage): Promise<unknown> => {
     return undefined;
   }
 
-  const rawBody = Buffer.concat(chunks as Uint8Array[]).toString('utf8');
+  const rawBody = Buffer.concat(chunks).toString('utf8');
   try {
     return JSON.parse(rawBody) as unknown;
   } catch (error) {
