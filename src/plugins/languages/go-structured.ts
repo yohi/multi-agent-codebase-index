@@ -10,7 +10,11 @@ import type {
 } from '../../structured/contracts.js';
 import { decodeUtf8, sha256Hex } from '../../structured/hash.js';
 import { createSymbolId } from '../../structured/identity.js';
-import { createUtf8OffsetTable } from '../../structured/utf8-offsets.js';
+import {
+  createUtf8OffsetTable,
+  failedStructuredSource,
+  Utf8SourceError,
+} from '../../structured/utf8-offsets.js';
 import { declarationsFor } from './go-structured-declarations.js';
 import { importsFor } from './go-structured-imports.js';
 import {
@@ -59,7 +63,13 @@ export class GoStructuredParser implements StructuredLanguageParser {
     const parser = new this.runtime.Parser();
     parser.setLanguage(this.runtime.Go);
     const root = parser.parse(source.text).rootNode;
-    const offsets = createUtf8OffsetTable(source.text);
+    let offsets: ReturnType<typeof createUtf8OffsetTable>;
+    try {
+      offsets = createUtf8OffsetTable(source.text, source.bytes);
+    } catch (error) {
+      if (error instanceof Utf8SourceError) return failedStructuredSource(error);
+      throw error;
+    }
     const textLines = source.text.split('\n');
     const diagnostics = diagnosticsFor(root);
     const occurrences = new Map<string, number>();

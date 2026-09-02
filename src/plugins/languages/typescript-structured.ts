@@ -9,7 +9,11 @@ import type {
 } from '../../structured/contracts.js';
 import { sha256Hex } from '../../structured/hash.js';
 import { createSymbolId } from '../../structured/identity.js';
-import { createUtf8OffsetTable } from '../../structured/utf8-offsets.js';
+import {
+  createUtf8OffsetTable,
+  failedStructuredSource,
+  Utf8SourceError,
+} from '../../structured/utf8-offsets.js';
 import { flattenDiagnosticMessage } from './typescript-structured-diagnostics.js';
 import {
   describeDeclaration,
@@ -88,8 +92,23 @@ const generationFor = (
 
 export class TypeScriptStructuredParser implements StructuredLanguageParser {
   async parseStructured(source: StructuredSource): Promise<StructuredParseResult> {
+    if (!source.bytes) {
+      return {
+        status: 'degraded',
+        retrievability: 'partial',
+        declarations: [],
+        imports: [],
+        failure: { reasonCode: 'invariant_violation', message: 'TypeScript structured parsing requires original source bytes.' },
+      };
+    }
     const { sourceFile, checker, diagnostics } = createProgramContext(source);
-    const offsets = createUtf8OffsetTable(source.text);
+    let offsets: ReturnType<typeof createUtf8OffsetTable>;
+    try {
+      offsets = createUtf8OffsetTable(source.text, source.bytes);
+    } catch (error) {
+      if (error instanceof Utf8SourceError) return failedStructuredSource(error);
+      throw error;
+    }
     const drafts: StructuredDeclaration[] = [];
     const occurrenceCounts = new Map<string, number>();
 
