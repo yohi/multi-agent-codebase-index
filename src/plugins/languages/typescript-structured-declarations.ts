@@ -30,7 +30,7 @@ const variableDescriptor = (node: ts.VariableDeclaration): DeclarationDescriptor
   let kind: SymbolKind;
   if (node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
     kind = 'function';
-  } else if (node.parent.flags === ts.NodeFlags.Const) {
+  } else if (Boolean(node.parent.flags & ts.NodeFlags.Constant)) {
     kind = 'constant';
   } else {
     kind = 'variable';

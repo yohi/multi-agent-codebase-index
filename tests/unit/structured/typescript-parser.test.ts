@@ -99,6 +99,26 @@ describe('TypeScript structured parser', () => {
     expect(byName.get('expression')).toEqual(expect.objectContaining({ name: 'expression', kind: 'function' }));
   });
 
+  it('classifies const-like using declarations as constants', async () => {
+    const text = [
+      'async function resources() {',
+      '  const fixed = {};',
+      '  using syncResource = {};',
+      '  await using asyncResource = {};',
+      '  let mutable = {};',
+      '  var legacy = {};',
+      '}',
+    ].join('\n');
+    const { result } = await parseText('using.ts', text);
+    const kindFor = (name: string) => result.declarations.find((item) => item.name === name)?.kind;
+
+    expect(kindFor('fixed')).toBe('constant');
+    expect(kindFor('syncResource')).toBe('constant');
+    expect(kindFor('asyncResource')).toBe('constant');
+    expect(kindFor('mutable')).toBe('variable');
+    expect(kindFor('legacy')).toBe('variable');
+  });
+
   it.each([
     ['function', 'export default function (): void {}', 'function'],
     ['class', 'export default class {}', 'class'],
