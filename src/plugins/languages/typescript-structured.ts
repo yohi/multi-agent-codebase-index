@@ -11,10 +11,9 @@ import { sha256Hex } from '../../structured/hash.js';
 import { createSymbolId } from '../../structured/identity.js';
 import { createUtf8OffsetTable } from '../../structured/utf8-offsets.js';
 import {
-  declarationStart,
   describeDeclaration,
-  signatureFor,
 } from './typescript-structured-declarations.js';
+import { declarationStart, signatureFor } from './typescript-structured-signatures.js';
 import { collectStructuredImports } from './typescript-structured-imports.js';
 
 interface ProgramContext {

@@ -64,55 +64,58 @@ const bindingResolvesUnambiguously = (
 ): boolean => {
   if (nameNode === undefined) return true;
   const symbol = checker.getSymbolAtLocation(nameNode);
-  if (symbol === undefined || symbol.declarations?.length !== 1 || (symbol.flags & ts.SymbolFlags.Alias) === 0) {
+  if (symbol === undefined || symbol.declarations?.length !== 1 || symbol.flags !== ts.SymbolFlags.Alias) {
     return false;
   }
   return (checker.getAliasedSymbol(symbol).declarations?.length ?? 0) > 0;
 };
 
-export const collectStructuredImports = (context: StructuredImportContext): readonly StructuredImport[] => {
+const importsForNode = (
+  context: StructuredImportContext,
+  node: ts.ImportDeclaration,
+  localNames: ReadonlySet<string>,
+): readonly StructuredImport[] => {
   const { source, sourceFile, checker, diagnostics, offsets } = context;
-  const localNames = topLevelLocalNames(sourceFile);
-  const imports: StructuredImport[] = [];
+  const moduleSpecifier = ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : undefined;
+  const moduleResolves = checker.getSymbolAtLocation(node.moduleSpecifier) !== undefined;
+  const start = node.getStart(sourceFile);
+  const end = node.end;
+  const startByte = offsets.byteOffsetAtUtf16(start);
+  const endByte = offsets.byteOffsetAtUtf16(end);
+  const position = {
+    startLine: sourceFile.getLineAndCharacterOfPosition(start).line + 1,
+    startColumn: sourceFile.getLineAndCharacterOfPosition(start).character,
+    endLine: sourceFile.getLineAndCharacterOfPosition(end).line + 1,
+    endColumn: sourceFile.getLineAndCharacterOfPosition(end).character,
+  };
 
-  for (const node of sourceFile.statements) {
-    if (!ts.isImportDeclaration(node)) continue;
-    const moduleSpecifier = ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : undefined;
-    const moduleResolves = checker.getSymbolAtLocation(node.moduleSpecifier) !== undefined;
-    const start = node.getStart(sourceFile);
-    const end = node.end;
-    const startByte = offsets.byteOffsetAtUtf16(start);
-    const endByte = offsets.byteOffsetAtUtf16(end);
-    const position = {
-      startLine: sourceFile.getLineAndCharacterOfPosition(start).line + 1,
-      startColumn: sourceFile.getLineAndCharacterOfPosition(start).character,
-      endLine: sourceFile.getLineAndCharacterOfPosition(end).line + 1,
-      endColumn: sourceFile.getLineAndCharacterOfPosition(end).character,
+  return importBindingNodes(node).map((nameNode) => {
+    const bindingName = nameNode?.text.normalize('NFC');
+    const shadowed = bindingName !== undefined && localNames.has(bindingName);
+    const complete =
+      diagnostics.length === 0 &&
+      moduleSpecifier !== undefined &&
+      moduleResolves &&
+      bindingResolvesUnambiguously(checker, nameNode) &&
+      !shadowed;
+    const importKey = `${source.filePath}:${start}:${moduleSpecifier ?? ''}:${bindingName ?? ''}`;
+    return {
+      id: `import_v1_${createHash('sha256').update(importKey, 'utf8').digest('base64url')}`,
+      ...(moduleSpecifier === undefined ? {} : { moduleSpecifier }),
+      ...(bindingName === undefined ? {} : { bindingName }),
+      startByte,
+      endByte,
+      sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+      completeness: complete ? 'complete' : 'partial',
+      diagnostics: diagnostics.map((diagnostic) => diagnostic.messageText),
+      position,
     };
+  });
+};
 
-    for (const nameNode of importBindingNodes(node)) {
-      const bindingName = nameNode?.text.normalize('NFC');
-      const shadowed = bindingName !== undefined && localNames.has(bindingName);
-      const complete =
-        diagnostics.length === 0 &&
-        moduleSpecifier !== undefined &&
-        moduleResolves &&
-        bindingResolvesUnambiguously(checker, nameNode) &&
-        !shadowed;
-      const importKey = `${source.filePath}:${start}:${moduleSpecifier ?? ''}:${bindingName ?? ''}`;
-      imports.push({
-        id: `import_v1_${createHash('sha256').update(importKey, 'utf8').digest('base64url')}`,
-        ...(moduleSpecifier === undefined ? {} : { moduleSpecifier }),
-        ...(bindingName === undefined ? {} : { bindingName }),
-        startByte,
-        endByte,
-        sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
-        completeness: complete ? 'complete' : 'partial',
-        diagnostics: diagnostics.map((diagnostic) => diagnostic.messageText),
-        position,
-      });
-    }
-  }
-
-  return imports;
+export const collectStructuredImports = (context: StructuredImportContext): readonly StructuredImport[] => {
+  const localNames = topLevelLocalNames(context.sourceFile);
+  return context.sourceFile.statements
+    .filter((statement): statement is ts.ImportDeclaration => ts.isImportDeclaration(statement))
+    .flatMap((node) => importsForNode(context, node, localNames));
 };

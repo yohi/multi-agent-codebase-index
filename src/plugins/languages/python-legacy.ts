@@ -24,8 +24,18 @@ export const fixedLineFallback = (file: FileToChunk): ParsedSourceFile => {
     const name = match[3];
     if (!name || (indent > 0 && match[2] === 'class')) continue;
     const end = fallbackEnd(lines, index, indent);
-    const type: SymbolKind = match[2] === 'class' ? 'class' : indent === 0 ? 'function' : 'method';
+    let type: SymbolKind;
+    if (match[2] === 'class') {
+      type = 'class';
+    } else if (indent === 0) {
+      type = 'function';
+    } else {
+      type = 'method';
+    }
     declarations.push({ type, name, startLine: index + 1, endLine: end + 1, content: lines.slice(index, end + 1).join('\n').trim() });
   }
-  return { rootType: 'module', declarations: declarations.sort((left, right) => left.startLine - right.startLine) };
+  return {
+    rootType: 'module',
+    declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
+  };
 };

@@ -28,7 +28,9 @@ func (r *Resource) Close() error {
 	return nil
 }
 
-func unexportedHelper() {}
+func unexportedHelper() {
+	// Intentionally empty: the parser must ignore unexported functions.
+}
 
 type Alias = Resource
 

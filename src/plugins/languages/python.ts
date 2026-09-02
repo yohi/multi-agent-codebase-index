@@ -24,7 +24,7 @@ const projectLegacyResult = (result: Awaited<ReturnType<StructuredLanguageParser
     type: kind, name, startLine: position.startLine, endLine: position.endLine, content: rawSource ?? '',
   }));
   const ranges = [...new Map(result.imports.map((item) => [`${item.startByte}:${item.endByte}`, item])).values()]
-    .sort((left, right) => left.startByte - right.startByte);
+    .toSorted((left, right) => left.startByte - right.startByte);
   const first = ranges[0];
   const last = ranges.at(-1);
   if (first && last) {
@@ -33,7 +33,10 @@ const projectLegacyResult = (result: Awaited<ReturnType<StructuredLanguageParser
       content: decodeUtf8(source.bytes.subarray(first.startByte, last.endByte)),
     });
   }
-  return { rootType: 'module', declarations: declarations.sort((left, right) => left.startLine - right.startLine) };
+  return {
+    rootType: 'module',
+    declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
+  };
 };
 
 export class PythonLanguagePlugin implements LanguagePlugin {

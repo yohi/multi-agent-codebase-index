@@ -71,29 +71,38 @@ const signatureFor = (source: StructuredSource, node: Parser.SyntaxNode): string
   return source.text.slice(node.startIndex, body?.startIndex ?? node.endIndex).replace(/\s+/gu, ' ').trim();
 };
 
-const candidatesFor = (root: Parser.SyntaxNode): readonly DeclarationCandidate[] => {
+const methodCandidatesFor = (
+  definition: Parser.SyntaxNode,
+  className: string,
+): readonly DeclarationCandidate[] => {
   const candidates: DeclarationCandidate[] = [];
-  for (const child of root.namedChildren) {
-    const definition = definitionFor(child);
-    if (!definition) continue;
-    const name = nameFor(definition.declaration);
-    if (!name) continue;
-    if (definition.declaration.type === 'class_definition') {
-      candidates.push({ ...definition, kind: 'class', parents: [] });
-      const block = definition.declaration.childForFieldName('body');
-      for (const member of block?.namedChildren ?? []) {
-        const method = definitionFor(member);
-        const methodName = method ? nameFor(method.declaration) : undefined;
-        if (method && methodName && method.declaration.type !== 'class_definition') {
-          candidates.push({ ...method, kind: 'method', parents: [name], scope: definition.declaration });
-        }
-      }
-      continue;
-    }
-    candidates.push({ ...definition, kind: 'function', parents: [] });
+  const block = definition.childForFieldName('body');
+  for (const member of block?.namedChildren ?? []) {
+    const method = definitionFor(member);
+    if (!method) continue;
+    const methodName = nameFor(method.declaration);
+    if (!methodName || method.declaration.type === 'class_definition') continue;
+    candidates.push({ ...method, kind: 'method', parents: [className], scope: definition });
   }
   return candidates;
 };
+
+const candidatesForChild = (child: Parser.SyntaxNode): readonly DeclarationCandidate[] => {
+  const definition = definitionFor(child);
+  if (!definition) return [];
+  const name = nameFor(definition.declaration);
+  if (!name) return [];
+  if (definition.declaration.type === 'class_definition') {
+    return [
+      { ...definition, kind: 'class', parents: [] },
+      ...methodCandidatesFor(definition.declaration, name),
+    ];
+  }
+  return [{ ...definition, kind: 'function', parents: [] }];
+};
+
+const candidatesFor = (root: Parser.SyntaxNode): readonly DeclarationCandidate[] =>
+  root.namedChildren.flatMap(candidatesForChild);
 
 const bindingNamesFor = (node: Parser.SyntaxNode): readonly string[] => {
   if (node.type === 'identifier') return [node.text];
@@ -151,27 +160,65 @@ const importBindingsFor = (node: Parser.SyntaxNode): readonly ImportBinding[] =>
   return bindings.length > 0 ? bindings : [{ moduleSpecifier, partial: true }];
 };
 
+const completenessFor = (
+  binding: ImportBinding,
+  bindingsBefore: ReadonlySet<string>,
+): 'complete' | 'partial' => {
+  if (binding.partial) return 'partial';
+  if (binding.bindingName !== undefined && bindingsBefore.has(binding.bindingName)) return 'partial';
+  return 'complete';
+};
+
+type ImportCollectionContext = {
+  readonly source: StructuredSource;
+  readonly offsets: Utf8OffsetTable;
+  readonly bindingsBefore: Set<string>;
+  readonly occurrences: Map<string, number>;
+};
+
+const importsForNode = (
+  node: Parser.SyntaxNode,
+  context: ImportCollectionContext,
+): readonly StructuredImport[] => {
+  if ((node.type !== 'import_statement' && node.type !== 'import_from_statement') || hasSyntaxProblem(node)) {
+    return [];
+  }
+  const { source, offsets, bindingsBefore, occurrences } = context;
+  const { startByte, endByte } = byteRangeFor(offsets, node);
+  return importBindingsFor(node).map((binding) => {
+    const key = `${binding.moduleSpecifier}\u0000${binding.bindingName ?? '*'}`;
+    const occurrence = occurrences.get(key) ?? 0;
+    occurrences.set(key, occurrence + 1);
+    const completeness = completenessFor(binding, bindingsBefore);
+    const imported: StructuredImport = {
+      id: createSymbolId({
+        filePath: source.filePath,
+        qualifiedName: binding.bindingName ?? '*',
+        kind: 'import',
+        signatureDiscriminator: binding.moduleSpecifier,
+        occurrence,
+      }),
+      moduleSpecifier: binding.moduleSpecifier,
+      bindingName: binding.bindingName,
+      startByte,
+      endByte,
+      sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+      completeness,
+      position: positionFor(node),
+    };
+    if (binding.bindingName) bindingsBefore.add(binding.bindingName);
+    return imported;
+  });
+};
+
 const importsFor = (source: StructuredSource, root: Parser.SyntaxNode, offsets: Utf8OffsetTable): readonly StructuredImport[] => {
   const bindingsBefore = new Set<string>();
   const occurrences = new Map<string, number>();
   const imports: StructuredImport[] = [];
+  const context: ImportCollectionContext = { source, offsets, bindingsBefore, occurrences };
+
   for (const node of root.namedChildren) {
-    if (node.type === 'import_statement' || node.type === 'import_from_statement') {
-      if (hasSyntaxProblem(node)) continue;
-      const { startByte, endByte } = byteRangeFor(offsets, node);
-      for (const binding of importBindingsFor(node)) {
-      const key = `${binding.moduleSpecifier}\u0000${binding.bindingName ?? '*'}`;
-      const occurrence = occurrences.get(key) ?? 0;
-      occurrences.set(key, occurrence + 1);
-        const completeness = binding.partial || (binding.bindingName !== undefined && bindingsBefore.has(binding.bindingName)) ? 'partial' : 'complete';
-        imports.push({
-        id: createSymbolId({ filePath: source.filePath, qualifiedName: binding.bindingName ?? '*', kind: 'import', signatureDiscriminator: binding.moduleSpecifier, occurrence }),
-        moduleSpecifier: binding.moduleSpecifier, bindingName: binding.bindingName, startByte, endByte,
-        sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)), completeness, position: positionFor(node),
-        });
-        if (binding.bindingName) bindingsBefore.add(binding.bindingName);
-      }
-    }
+    imports.push(...importsForNode(node, context));
     for (const binding of bindingNamesInStatement(node)) bindingsBefore.add(binding);
   }
   return imports;
@@ -218,7 +265,7 @@ export class PythonStructuredParser implements StructuredLanguageParser {
         languageId: source.language, isExact: true, rawSource: rawSourceFor(source, startByte, declarationEndByte),
       };
       return [{ declaration, nodeId: candidate.declaration.id, scopeId: candidate.scope?.id }];
-    }).sort((left, right) => left.declaration.startByte - right.declaration.startByte);
+    }).toSorted((left, right) => left.declaration.startByte - right.declaration.startByte);
     const classSymbols = new Map(drafts.filter(({ declaration }) => declaration.kind === 'class').map(({ declaration, nodeId }) => [nodeId, declaration.symbolId]));
     const declarations = drafts.map(({ declaration, scopeId }) => {
       const parentSymbolId = scopeId === undefined ? undefined : classSymbols.get(scopeId);

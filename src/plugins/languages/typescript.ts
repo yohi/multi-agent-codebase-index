@@ -163,11 +163,9 @@ class TypeScriptParser {
       }
     }
 
-    declarations.sort((left, right) => left.startLine - right.startLine);
-
     return {
       rootType: 'program',
-      declarations,
+      declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
     };
   }
 }

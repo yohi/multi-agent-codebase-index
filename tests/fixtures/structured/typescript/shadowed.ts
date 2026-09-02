@@ -1,2 +1,2 @@
-import { value } from './dependency.js';
-export function use(value: string): string { return value; }
+import { value as defaultValue } from './dependency.js';
+export function use(value: number = defaultValue): number { return value; }
