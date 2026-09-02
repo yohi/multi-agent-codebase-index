@@ -31,6 +31,7 @@ interface LanceRow {
   endline: number;
   hash: string;
   vector: number[] | Float32Array;
+  generationid?: string;
   _distance?: number;
   [key: string]: unknown;
 }
@@ -446,6 +447,7 @@ export class LanceVectorStore implements IVectorStore {
               startline: chunk.startLine,
               endline: chunk.endLine,
               hash: chunk.hash,
+              ...(chunk.generationId === undefined ? {} : { generationid: chunk.generationId }),
             };
           });
 
@@ -594,6 +596,7 @@ export class LanceVectorStore implements IVectorStore {
           hash: row.hash,
         },
         score: typeof row._distance === 'number' ? 1 - row._distance : 0,
+        generationId: row.generationid,
       }));
     });
   }

@@ -60,6 +60,7 @@ export class Chunker {
         language: file.language,
         symbolName: declaration.name,
         symbolKind: declaration.type,
+        symbolId: declaration.symbolId,
       };
 
       const subChunks = await this.splitByMaxChars(

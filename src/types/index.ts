@@ -26,6 +26,8 @@ export interface CodeChunk {
   startLine: number;
   endLine: number;
   hash: string;
+  symbolId?: string;
+  generationId?: string;
 }
 
 export interface SearchResult {
@@ -66,6 +68,7 @@ export interface FileToChunk {
 export interface ParsedDeclaration {
   type: SymbolKind;
   name: string;
+  symbolId?: string;
   startLine: number;
   endLine: number;
   content: string;

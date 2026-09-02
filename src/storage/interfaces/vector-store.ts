@@ -10,6 +10,7 @@ export interface VectorFilter {
 export interface VectorSearchResult {
   chunk: CodeChunk;
   score: number;
+  generationId?: string;
 }
 
 export interface VectorStoreStats {
