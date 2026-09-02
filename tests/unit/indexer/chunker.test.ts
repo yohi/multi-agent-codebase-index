@@ -141,11 +141,16 @@ describe('Chunker – maxChunkChars', () => {
     // 1 declaration whose content is 200 chars; limit is 100
     const longContent = 'x'.repeat(200);
     const chunker = new Chunker(new PluginRegistry(), { maxChunkChars: 100 });
+    const symbolId = 'symbol_v1_test';
+    const declaration = Object.assign(
+      { type: 'function' as const, name: 'bigFn', startLine: 1, endLine: 10, content: longContent },
+      { symbolId },
+    );
 
     const chunks = await chunker.extractChunksWithYield(
       {
         rootType: 'program',
-        declarations: [{ type: 'function', name: 'bigFn', startLine: 1, endLine: 10, content: longContent }],
+        declarations: [declaration],
       },
       { filePath: 'big.ts', language: 'typescript', content: longContent },
     );
@@ -154,6 +159,7 @@ describe('Chunker – maxChunkChars', () => {
     expect(chunks.every((c) => c.content.length <= 100)).toBe(true);
     // All sub-chunks belong to the same original symbol
     expect(chunks.every((c) => c.symbolName === 'bigFn')).toBe(true);
+    expect(chunks.every((c) => c.symbolId === symbolId)).toBe(true);
   });
 
   it('does NOT split chunks that are within the limit', async () => {

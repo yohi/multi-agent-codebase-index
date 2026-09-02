@@ -67,6 +67,7 @@ export interface FileToChunk {
 export interface ParsedDeclaration {
   type: SymbolKind;
   name: string;
+  symbolId?: string;
   startLine: number;
   endLine: number;
   content: string;

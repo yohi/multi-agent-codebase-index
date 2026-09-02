@@ -1,5 +1,6 @@
+import * as lancedb from '@lancedb/lancedb';
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LanceVectorStore } from '../../src/storage/vector-store.js';
@@ -128,6 +129,36 @@ describe('LanceVectorStore (LanceDB integration)', () => {
       expect(results).toHaveLength(1);
       expect(results[0]?.chunk.id).toBe('persist-test');
       await store2.close();
+    });
+
+    it('検索結果 — 保存済み generationid を generationId として復元', async () => {
+      const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+      const db = await lancedb.connect(tmpDir);
+      await db.createTable('chunks', [{
+        vector: embedding,
+        id: 'generation-test',
+        filepath: 'src/generation.ts',
+        content: 'export const value = 1;',
+        language: 'typescript',
+        symbolname: 'value',
+        symbolkind: 'constant',
+        startline: 1,
+        endline: 1,
+        hash: 'generation-hash',
+        generationid: 'generation-1',
+      }]);
+      await writeFile(
+        join(tmpDir, 'metadata.json'),
+        JSON.stringify({ dimensions: '64', totalFiles: '1' }),
+        'utf8',
+      );
+
+      const store = new LanceVectorStore({ dbPath: tmpDir, dimensions: 64 });
+      await store.initialize();
+      const results = await store.search(embedding, 10);
+
+      expect(results[0]?.generationId).toBe('generation-1');
+      await store.close();
     });
   });
 });
