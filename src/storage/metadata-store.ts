@@ -366,7 +366,14 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       const schema = this.db.prepare('SELECT MIN(sg.schema_version) AS minimum, MAX(sg.schema_version) AS maximum, COUNT(*) AS count FROM symbol_generations AS sg JOIN structured_files AS f ON f.file_path=sg.file_path AND f.active_generation=sg.generation').get() as { minimum: number | null; maximum: number | null; count: number };
       const pending = this.db.prepare('SELECT 1 FROM structured_files WHERE pending_generation IS NOT NULL LIMIT 1').get() !== undefined;
       const schemaVersion = schema.count > 0 && schema.minimum === schema.maximum ? schema.minimum : null;
-      const rebuildState = pending ? 'building' : current?.rebuildState === 'building' ? 'failed' : current?.rebuildState ?? 'idle';
+      let rebuildState: string;
+      if (pending) {
+        rebuildState = 'building';
+      } else if (current?.rebuildState === 'building') {
+        rebuildState = 'failed';
+      } else {
+        rebuildState = current?.rebuildState ?? 'idle';
+      }
       const stateChanged = current?.schemaVersion !== schemaVersion || current?.rebuildState !== rebuildState;
       this.db.prepare('UPDATE index_stats SET structured_schema_version=?, structured_rebuild_state=?, structured_last_error_code=? WHERE id=?').run(schemaVersion, rebuildState, current?.lastErrorCode ?? null, PRIMARY_STATS_ID);
       return { repaired: orphanedRows > 0 || prunedTombstones > 0 || stateChanged, prunedTombstones };
