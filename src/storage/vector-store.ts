@@ -804,19 +804,33 @@ export class LanceVectorStore implements IVectorStore {
         console.error('[LanceVectorStore] Error dropping old structured table during swap:', e);
       }
 
-      // Rename shadow table to live name by copying rows, then mark all rows active.
-      const allRowsRaw = await newTable.query().toArray() as unknown as LanceStructuredRow[];
-      const allRows = allRowsRaw.map((row) => ({
-        ...row,
-        vector: Array.from(row.vector),
-        visibility: 'active',
-      }));
-      await this.db.dropTable(oldShadowName).catch(() => {});
-      if (allRows.length > 0) {
-        this.structuredTable = await this.db.createTable(STRUCTURED_TABLE_NAME, allRows);
-      } else {
-        this.structuredTable = undefined;
+      const batchSize = 500;
+      let offset = 0;
+      let liveTable: Table | undefined;
+      while (true) {
+        const rowsRaw = await newTable.query().limit(batchSize).offset(offset).toArray() as unknown as LanceStructuredRow[];
+        if (rowsRaw.length === 0) {
+          break;
+        }
+
+        const rows: LanceStructuredRow[] = rowsRaw.map((row) => ({
+          ...row,
+          vector: Array.from(row.vector),
+          visibility: 'active',
+        }));
+        if (liveTable === undefined) {
+          liveTable = await this.db.createTable(STRUCTURED_TABLE_NAME, rows);
+        } else {
+          await liveTable.add(rows);
+        }
+
+        offset += rows.length;
+        if (rows.length < batchSize) {
+          break;
+        }
       }
+      await this.db.dropTable(oldShadowName).catch(() => {});
+      this.structuredTable = liveTable;
     });
   }
 

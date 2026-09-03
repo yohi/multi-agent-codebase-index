@@ -211,6 +211,33 @@ export function vectorStoreContractTests(
       await expectSearchResults(store, { count: 1, filePath: 'src/b.ts' });
     });
 
+    it('shadow table swap preserves rows copied across batches', async () => {
+      const chunkCount = 501;
+      const chunks = Array.from({ length: chunkCount }, (_, index) => makeChunk({
+        id: `bulk-${index}`,
+        filePath: 'src/bulk.ts',
+        symbolName: `symbol-${index}`,
+        symbolId: `symbol-${index}`,
+        startLine: index + 1,
+        endLine: index + 1,
+        hash: `hash-${index}`,
+      }));
+      const shadowTable = await store.beginStructuredShadowTable();
+
+      await store.stageGenerationChunks({
+        filePath: 'src/bulk.ts',
+        generationId: 'gen-bulk',
+        chunks,
+        vectors: chunks.map(() => embedding),
+      });
+      await store.swapStructuredShadowTable(shadowTable);
+
+      const results = await store.search(embedding, chunkCount);
+      expect(results).toHaveLength(chunkCount);
+      expect(new Set(results.map((result) => result.chunk.id)).size).toBe(chunkCount);
+      expect(results.every((result) => result.generationId === 'gen-bulk')).toBe(true);
+    });
+
     it('legacy upsert results do not carry generationId', async () => {
       await upsertChunks(store, [makeChunk({ id: 'legacy', filePath: 'src/legacy.ts' })]);
       const results = await store.search(embedding, 10);

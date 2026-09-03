@@ -3,6 +3,7 @@ import { computeStringHash } from './hash.js';
 import type { CodeChunk, FileToChunk, ParsedSourceFile } from '../types/index.js';
 import type { PluginRegistry } from '../plugins/registry.js';
 import type { StructuredParseResult, StructuredDeclaration } from '../structured/contracts.js';
+import { decodeUtf8 } from '../structured/hash.js';
 
 export interface FixedLineChunkOptions {
   windowSize?: number;
@@ -79,7 +80,7 @@ export class Chunker {
       symbolId: declaration.symbolId,
     };
 
-    const content = declaration.rawSource ?? file.content;
+    const content = declaration.rawSource ?? this.declarationContent(declaration, file);
     const subChunks = await this.splitByMaxChars(
       content,
       declaration.position.startLine,
@@ -97,6 +98,15 @@ export class Chunker {
     }
 
     return subChunks;
+  }
+
+  private declarationContent(declaration: StructuredDeclaration, file: FileToChunk): string {
+    if (file.bytes !== undefined) {
+      return decodeUtf8(file.bytes.subarray(declaration.startByte, declaration.endByte));
+    }
+
+    const lines = file.content.split('\n');
+    return lines.slice(declaration.position.startLine - 1, declaration.position.endLine).join('\n');
   }
 
   async extractChunksWithYield(

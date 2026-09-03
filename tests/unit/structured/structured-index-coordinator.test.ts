@@ -103,12 +103,20 @@ describe('StructuredIndexCoordinator', () => {
     expect(resultsBefore).toHaveLength(1);
 
     vectorStore.failOnBatch(2);
-    const second = makeStage('src/b.ts', 'export function b() { return 2; }', 'b');
+    const second = makeStage('src/a.ts', 'export function replacement() { return 2; }', 'replacement');
     await expect(stageCoordinatorFile(coordinator, second)).rejects.toThrow();
 
     const resultsAfter = await vectorStore.search(embedding, 10);
     expect(resultsAfter).toHaveLength(1);
     expect(resultsAfter[0]?.chunk.symbolId).toBe(first.symbolId);
+    expect(await metadataStore.getStructuredCounts()).toMatchObject({
+      pendingFiles: 0,
+      pendingSymbols: 0,
+    });
+    expect(await metadataStore.resolveFile('src/a.ts')).toEqual({
+      kind: 'active',
+      generationId: first.generationId,
+    });
   });
 
   it('returns index_incomplete for a pending file instead of stale source', async () => {
@@ -123,6 +131,7 @@ describe('StructuredIndexCoordinator', () => {
     const stage = makeStage('src/a.ts', 'export function a() { return 1; }', 'a');
     await stageCoordinatorFile(coordinator, stage);
     await coordinator.activateFile({ filePath: 'src/a.ts', generationId: stage.generationId });
+    expect(await vectorStore.search(new Array<number>(64).fill(0), 10)).toHaveLength(1);
 
     await coordinator.deleteFile({ filePath: 'src/a.ts' });
 
@@ -130,5 +139,6 @@ describe('StructuredIndexCoordinator', () => {
     expect(resolved.kind).toBe('missing');
     const symbolResolved = await metadataStore.resolveSymbol(stage.symbolId);
     expect(symbolResolved.kind).toBe('tombstone');
+    expect(await vectorStore.search(new Array<number>(64).fill(0), 10)).toHaveLength(0);
   });
 });

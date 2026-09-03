@@ -25,6 +25,8 @@ export class StructuredIndexCoordinator {
     parserVersion?: string;
   }): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
+      const state = await this.options.metadataStore.getStructuredIndexState();
+      const expectedActiveGeneration = state.activeGenerations.get(input.source.filePath) ?? null;
       const rebuildEpoch = Date.now();
       const stage: StructuredGenerationStage = {
         filePath: input.source.filePath,
@@ -51,6 +53,7 @@ export class StructuredIndexCoordinator {
           filePath: input.source.filePath,
           language: input.source.language,
           content: input.source.text,
+          bytes: input.source.bytes,
         },
         {
           declarations: input.declarations,
@@ -71,7 +74,7 @@ export class StructuredIndexCoordinator {
       } catch (error) {
         await this.options.metadataStore.clearPendingGeneration({
           filePath: input.source.filePath,
-          expectedActiveGeneration: null,
+          expectedActiveGeneration,
           expectedPendingGeneration: input.generationId,
           expectedRebuildEpoch: rebuildEpoch,
         });
@@ -120,6 +123,9 @@ export class StructuredIndexCoordinator {
 
       await this.options.metadataStore.retireFile(retirement);
 
+      if (expectedActiveGeneration !== null) {
+        await this.options.vectorStore.removeGenerationRows(input.filePath, expectedActiveGeneration);
+      }
       await this.options.vectorStore.deleteByFilePath(input.filePath);
     });
   }

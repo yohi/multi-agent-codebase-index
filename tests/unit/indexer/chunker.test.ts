@@ -7,6 +7,7 @@ import type { FileToChunk, LanguagePlugin } from '../../../src/types/index.js';
 import { Chunker } from '../../../src/indexer/chunker.js';
 import { PluginRegistry } from '../../../src/plugins/registry.js';
 import { TypeScriptLanguagePlugin } from '../../../src/plugins/languages/typescript.js';
+import type { StructuredDeclaration } from '../../../src/structured/contracts.js';
 
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
 
@@ -120,6 +121,52 @@ describe('Chunker', () => {
 
     expect(chunks).toHaveLength(0);
   });
+
+  it('uses each declaration byte range when rawSource is omitted', async () => {
+    const firstSource = 'export function first() {}\n';
+    const secondSource = 'export function second() {}';
+    const content = `${firstSource}${secondSource}`;
+    const bytes = Buffer.from(content, 'utf8');
+    const firstEndByte = Buffer.byteLength(firstSource, 'utf8');
+    const declarations: StructuredDeclaration[] = [
+      {
+        name: 'first',
+        symbolId: 'symbol-first',
+        qualifiedName: 'first',
+        kind: 'function',
+        signatureDiscriminator: 'first()',
+        position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 27 },
+        startByte: 0,
+        endByte: firstEndByte,
+        sourceHash: 'hash-first',
+        languageId: 'typescript',
+        isExact: true,
+      },
+      {
+        name: 'second',
+        symbolId: 'symbol-second',
+        qualifiedName: 'second',
+        kind: 'function',
+        signatureDiscriminator: 'second()',
+        position: { startLine: 2, startColumn: 0, endLine: 2, endColumn: 28 },
+        startByte: firstEndByte,
+        endByte: bytes.length,
+        sourceHash: 'hash-second',
+        languageId: 'typescript',
+        isExact: true,
+      },
+    ];
+
+    const chunker = new Chunker(new PluginRegistry());
+    const chunks = await chunker.chunkStructuredFile(
+      { filePath: 'src/functions.ts', language: 'typescript', content, bytes },
+      { declarations, imports: [] },
+    );
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual([firstSource, secondSource]);
+    expect(chunks.map((chunk) => chunk.symbolId)).toEqual(['symbol-first', 'symbol-second']);
+  });
+
   it('uses xxhash for chunk hashes', async () => {
     const chunker = new Chunker(new PluginRegistry());
     const chunks = await chunker.chunkFiles([
