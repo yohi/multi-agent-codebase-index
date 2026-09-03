@@ -14,7 +14,7 @@ import { packRelatedImports, tokenCounter } from './tokenizer.js';
 
 type SourceStatus =
   | { status: 'ok'; freshness: 'fresh'; source: string }
-  | { status: 'index_incomplete'; reasonCode: StructuredRetrievalReasonCode | 'INDEX_PENDING_GENERATION' | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'SYMBOL_RETIRED' | 'STRUCTURED_INDEX_MISSING' | 'FILE_NOT_FOUND' | 'INDEX_FILE_MISSING' }
+  | { status: 'index_incomplete'; reasonCode: StructuredRetrievalReasonCode | 'INDEX_PENDING_GENERATION' | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_SYMBOL_HASH_MISMATCH' | 'INDEX_GENERATION_MISSING' | 'SYMBOL_RETIRED' | 'STRUCTURED_INDEX_MISSING' | 'FILE_NOT_FOUND' | 'INDEX_FILE_MISSING' }
   | { status: 'stale'; reasonCode: StructuredRetrievalReasonCode | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_FILE_MISSING' | 'PATH_EXCLUDED' }
   | { status: 'not_found'; reasonCode: 'FILE_NOT_FOUND' | 'SYMBOL_RETIRED' | 'STRUCTURED_INDEX_MISSING' }
   | { status: 'excluded'; reasonCode: 'PATH_EXCLUDED' }
@@ -41,23 +41,98 @@ export class SymbolRetrievalService {
     const state = await this.options.catalog.getStructuredIndexState();
     const domain = this.checkGlobalState(state);
     if (domain !== undefined) {
-      return domain;
+      return { ...domain, request: { filePath: input.filePath } };
+    }
+
+    if (this.options.isExcluded) {
+      const excluded = await this.options.isExcluded(relativePath);
+      if (excluded) {
+        return {
+          status: 'excluded',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'PATH_EXCLUDED',
+          request: { filePath: input.filePath },
+        };
+      }
     }
 
     const resolution = await this.options.catalog.resolveFile(relativePath);
-    if (resolution.kind === 'missing') {
-      return { status: 'not_found', reasonCode: 'FILE_NOT_FOUND', request: { filePath: input.filePath } };
-    }
-
     if (resolution.kind === 'pending') {
       return {
         status: 'index_incomplete',
+        freshness: 'unknown',
+        reindexRequired: true,
         reasonCode: 'INDEX_PENDING_GENERATION',
         request: { filePath: input.filePath },
       };
     }
 
-    // For active files, return source-free outline metadata.
+    const projectRoot = this.options.sanitizer.getProjectRoot();
+    const readResult = await this.readCurrentBytes(relativePath, projectRoot, input.signal);
+
+    if (resolution.kind === 'missing') {
+      if (readResult.status !== 'ok') {
+        return {
+          status: 'not_found',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'FILE_NOT_FOUND',
+          request: { filePath: input.filePath },
+        };
+      }
+      return {
+        status: 'not_indexed',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'STRUCTURED_INDEX_MISSING',
+        request: { filePath: input.filePath },
+      };
+    }
+
+    // Active file: verify freshness before returning metadata.
+    if (readResult.status !== 'ok') {
+      return {
+        status: 'stale',
+        freshness: 'stale',
+        reindexRequired: true,
+        reasonCode: readResult.reasonCode,
+        request: { filePath: input.filePath },
+      };
+    }
+
+    const generation = await this.options.catalog.getGeneration(relativePath, resolution.generationId);
+    if (generation === null) {
+      return {
+        status: 'index_incomplete',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'INDEX_GENERATION_MISSING',
+        request: { filePath: input.filePath },
+      };
+    }
+
+    const fileHash = sha256Hex(readResult.bytes);
+    if (fileHash !== generation.fileHash) {
+      return {
+        status: 'stale',
+        freshness: 'stale',
+        reindexRequired: true,
+        reasonCode: 'INDEX_FILE_HASH_MISMATCH',
+        request: { filePath: input.filePath },
+      };
+    }
+
+    if (this.options.isSupportedLanguage && !this.options.isSupportedLanguage(generation.parserId)) {
+      return {
+        status: 'unsupported',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'LANGUAGE_UNSUPPORTED',
+        request: { filePath: input.filePath },
+      };
+    }
+
     const declarations = await this.options.catalog.getFileDeclarations(relativePath);
     const symbols = declarations.map((declaration) => ({
       name: declaration.name,
@@ -70,7 +145,19 @@ export class SymbolRetrievalService {
       languageId: declaration.languageId,
     }));
 
-    return { status: 'ok', filePath: relativePath, generationId: resolution.generationId, symbols };
+    return {
+      status: 'ok',
+      freshness: 'fresh',
+      reindexRequired: false,
+      file: {
+        filePath: relativePath,
+        language: generation.parserId,
+        parserId: generation.parserId,
+        parserVersion: generation.parserVersion,
+      },
+      symbols,
+      request: { filePath: input.filePath },
+    };
   }
 
   async getSymbolSource(input: { symbolId: string; signal?: AbortSignal }): Promise<SourceStatus & { request?: { symbolId: string } }> {
@@ -118,7 +205,7 @@ export class SymbolRetrievalService {
         id: item.id,
         moduleSpecifier: importsById.get(item.id)?.moduleSpecifier,
         startByte: item.startByte,
-        rawSource: item.rawSource,
+        endByte: importsById.get(item.id)?.endByte,
       })),
       importsCompleteness,
       tokenizer: packed.tokenizer,
@@ -179,16 +266,26 @@ export class SymbolRetrievalService {
       return { ok: false, status: { status: 'unsupported', reasonCode: 'unsupported_language', request: { symbolId: input.symbolId } } };
     }
 
+    const generation = await this.options.catalog.getGeneration(filePath, activeGeneration);
+    if (generation === null) {
+      return { ok: false, status: { status: 'index_incomplete', reasonCode: 'INDEX_GENERATION_MISSING', request: { symbolId: input.symbolId } } };
+    }
+
     const projectRoot = this.options.sanitizer.getProjectRoot();
     const readResult = await this.readCurrentBytes(filePath, projectRoot, input.signal);
     if (readResult.status !== 'ok') {
       return { ok: false, status: { status: 'stale', reasonCode: readResult.reasonCode, request: { symbolId: input.symbolId } } };
     }
 
+    const fileHash = sha256Hex(readResult.bytes);
+    if (fileHash !== generation.fileHash) {
+      return { ok: false, status: { status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH', request: { symbolId: input.symbolId } } };
+    }
+
     const symbolSlice = readResult.bytes.subarray(resolution.declaration.startByte, resolution.declaration.endByte);
     const sliceHash = sha256Hex(symbolSlice);
     if (sliceHash !== resolution.declaration.sourceHash) {
-      return { ok: false, status: { status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH', request: { symbolId: input.symbolId } } };
+      return { ok: false, status: { status: 'index_incomplete', reasonCode: 'INDEX_SYMBOL_HASH_MISMATCH', request: { symbolId: input.symbolId } } };
     }
 
     return { ok: true, bytes: readResult.bytes, declaration: resolution.declaration, filePath };

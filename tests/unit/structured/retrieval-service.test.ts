@@ -166,14 +166,42 @@ describe('SymbolRetrievalService', () => {
     });
   });
 
-  it('fails closed before packing when one candidate import no longer matches its indexed hash', async () => {
+  it('rejects a changed file with stale before checking imports', async () => {
     const fixture = makeImportFixture();
     await runImportFixture(coordinator, fixture);
 
     await writeFile(join(projectRoot, 'src/a.ts'), `${fixture.importText.replace('café', 'cafe2')}\n${fixture.symbolText}`);
     const result = await service.getSymbolContext({ symbolId: fixture.symbolId, tokenBudget: 100 });
+    expect(result).toMatchObject({ status: 'stale', reasonCode: 'INDEX_FILE_HASH_MISMATCH' });
+    expect(result).not.toHaveProperty('context');
+  });
+
+  it('fails closed before packing when one candidate import no longer matches its indexed hash', async () => {
+    const fixture = makeImportFixture();
+    const corrupted = {
+      ...fixture,
+      importRecord: { ...fixture.importRecord, sourceHash: '0'.repeat(64) },
+    };
+    await runImportFixture(coordinator, corrupted);
+
+    await writeFile(join(projectRoot, 'src/a.ts'), fixture.text);
+    const result = await service.getSymbolContext({ symbolId: fixture.symbolId, tokenBudget: 100 });
     expect(result).toMatchObject({ status: 'index_incomplete', reasonCode: 'INDEX_IMPORT_HASH_MISMATCH' });
     expect(result).not.toHaveProperty('context');
+  });
+
+  it('returns index_incomplete when the symbol slice hash does not match the catalog', async () => {
+    const fixture = makeImportFixture();
+    const corrupted = {
+      ...fixture,
+      declaration: { ...fixture.declaration, sourceHash: '0'.repeat(64) },
+    };
+    await runImportFixture(coordinator, corrupted);
+
+    await writeFile(join(projectRoot, 'src/a.ts'), fixture.text);
+    const result = await service.getSymbolSource({ symbolId: fixture.symbolId });
+    expect(result).toMatchObject({ status: 'index_incomplete', reasonCode: 'INDEX_SYMBOL_HASH_MISMATCH' });
+    expect(result).not.toHaveProperty('source');
   });
 
   it('derives an import rawSource from its verified UTF-8 byte slice', async () => {
@@ -184,6 +212,17 @@ describe('SymbolRetrievalService', () => {
     const result = await service.getSymbolContext({ symbolId: fixture.symbolId, tokenBudget: 100 });
     expect(result).toMatchObject({ status: 'ok' });
     expect((result as { context: string }).context).toContain(fixture.importText);
+  });
+
+  it('does not duplicate import source in the imports array', async () => {
+    const fixture = makeImportFixture();
+    await runImportFixture(coordinator, fixture);
+
+    await writeFile(join(projectRoot, 'src/a.ts'), fixture.text);
+    const result = await service.getSymbolContext({ symbolId: fixture.symbolId, tokenBudget: 100 });
+    expect(result).toMatchObject({ status: 'ok' });
+    const imports = (result as { imports: Array<{ rawSource?: string }> }).imports;
+    expect(imports[0]).not.toHaveProperty('rawSource');
   });
 
   it('keeps source order and later small imports after a too-large earlier import', async () => {
@@ -287,5 +326,95 @@ describe('SymbolRetrievalService', () => {
     const controller = new AbortController();
     controller.abort();
     await expect(service.getSymbolSource({ symbolId: stage.symbolId, signal: controller.signal })).rejects.toThrow();
+  });
+
+  describe('getFileOutline', () => {
+    it('returns freshness metadata for an active indexed file', async () => {
+      const text = 'export function a() { return 1; }';
+      const stage = createStructuredStage('src/a.ts', text, 'a');
+      await runStructuredFullRebuild(coordinator, stage);
+      await writeFile(join(projectRoot, 'src/a.ts'), text);
+
+      const result = await service.getFileOutline({ filePath: 'src/a.ts' });
+      expect(result).toMatchObject({
+        status: 'ok',
+        freshness: 'fresh',
+        reindexRequired: false,
+        file: {
+          filePath: 'src/a.ts',
+          language: 'full-rebuild',
+          parserId: 'full-rebuild',
+          parserVersion: '1',
+        },
+      });
+      expect((result as { symbols: unknown[] }).symbols).toHaveLength(1);
+    });
+
+    it('returns stale when the active file hash mismatches', async () => {
+      const text = 'export function a() { return 1; }';
+      const stage = createStructuredStage('src/a.ts', text, 'a');
+      await runStructuredFullRebuild(coordinator, stage);
+      await writeFile(join(projectRoot, 'src/a.ts'), 'export function a() { return 2; }');
+
+      const result = await service.getFileOutline({ filePath: 'src/a.ts' });
+      expect(result).toMatchObject({
+        status: 'stale',
+        freshness: 'stale',
+        reindexRequired: true,
+        reasonCode: 'INDEX_FILE_HASH_MISMATCH',
+      });
+    });
+
+    it('returns stale when the active file is deleted from disk', async () => {
+      const text = 'export function a() { return 1; }';
+      const stage = createStructuredStage('src/a.ts', text, 'a');
+      await runStructuredFullRebuild(coordinator, stage);
+      await writeFile(join(projectRoot, 'src/a.ts'), text);
+      await rm(join(projectRoot, 'src/a.ts'));
+
+      const result = await service.getFileOutline({ filePath: 'src/a.ts' });
+      expect(result).toMatchObject({
+        status: 'stale',
+        freshness: 'stale',
+        reasonCode: 'INDEX_FILE_MISSING',
+      });
+    });
+
+    it('returns not_found when the file is neither indexed nor on disk', async () => {
+      const result = await service.getFileOutline({ filePath: 'src/missing.ts' });
+      expect(result).toMatchObject({
+        status: 'not_found',
+        freshness: 'unknown',
+        reasonCode: 'FILE_NOT_FOUND',
+      });
+    });
+
+    it('returns not_indexed when the file exists but has no active catalog', async () => {
+      await writeFile(join(projectRoot, 'src/exists.ts'), 'export function b() {}');
+
+      const result = await service.getFileOutline({ filePath: 'src/exists.ts' });
+      expect(result).toMatchObject({
+        status: 'not_indexed',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'STRUCTURED_INDEX_MISSING',
+      });
+    });
+
+    it('returns excluded for files matching the ignore matcher', async () => {
+      const excludedService = new SymbolRetrievalService({
+        catalog,
+        sanitizer,
+        isExcluded: (filePath) => filePath === 'src/a.ts',
+      });
+
+      const result = await excludedService.getFileOutline({ filePath: 'src/a.ts' });
+      expect(result).toMatchObject({
+        status: 'excluded',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'PATH_EXCLUDED',
+      });
+    });
   });
 });
