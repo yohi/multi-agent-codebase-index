@@ -834,6 +834,20 @@ export class LanceVectorStore implements IVectorStore {
     });
   }
 
+  async abortStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.db) {
+        return;
+      }
+      if (this.structuredShadowTable && this.structuredShadowName === shadowTable.name) {
+        const name = this.structuredShadowName;
+        this.structuredShadowTable = undefined;
+        this.structuredShadowName = undefined;
+        await this.db.dropTable(name).catch(() => {});
+      }
+    });
+  }
+
   async reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void> {
     return this.runInWriteLock(async () => {
       if (!this.structuredTable) return;

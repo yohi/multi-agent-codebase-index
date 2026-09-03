@@ -7,7 +7,7 @@ import {
 } from '../../../../../src/server/tools/registry/definitions.js';
 
 describe('tool definitions', () => {
-  it('contains the 6 known tools in registration order', () => {
+  it('contains the 9 known tools in registration order', () => {
     expect(TOOL_DEFINITIONS.map((definition) => definition.name)).toEqual([
       'semantic_search',
       'grep_search',
@@ -15,6 +15,9 @@ describe('tool definitions', () => {
       'get_context',
       'index_status',
       'reindex',
+      'get_file_outline',
+      'get_symbol_source',
+      'get_symbol_context',
     ]);
   });
 

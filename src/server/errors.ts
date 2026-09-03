@@ -11,7 +11,9 @@ export type NexusErrorCode =
   | 'NEXUS_REVISION_NOT_READY'
   | 'NEXUS_SYNC_OUT_OF_ORDER'
   | 'NEXUS_SYNC_RECONCILE_REQUIRED'
-  | 'NEXUS_RATE_LIMITED';
+  | 'NEXUS_RATE_LIMITED'
+  | 'NEXUS_INVALID_ARGUMENT'
+  | 'NEXUS_REQUEST_CANCELLED';
 
 /** Classify a sanitized error message without exposing implementation details. */
 export const classifyErrorMessage = (message: string): NexusErrorCode => {

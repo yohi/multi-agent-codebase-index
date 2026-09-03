@@ -18,4 +18,11 @@ export interface MetricsHooks {
   onSearchResults(searchType: 'semantic' | 'grep' | 'hybrid', resultCount: number): void;
   onContextLinesFetched(toolName: string, lineCount: number): void;
   onEmbeddingRequest(provider: string, status: 'success' | 'error', durationSeconds: number, batchSize: number): void;
+
+  // Structured retrieval hooks
+  onStructuredRetrievalOutcome(toolName: string, status: string): void;
+  onStructuredParserOutcome(language: string, parseStatus: string): void;
+  onStructuredContextTokens(toolName: string, requested: number, actual: number): void;
+  onStructuredBudgetOverflow(toolName: string, omittedCount: number): void;
+  onStructuredCatalogSnapshot(totalFiles: number, totalSymbols: number, exactFiles: number, degradedFiles: number, pendingFiles: number): void;
 }

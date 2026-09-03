@@ -30,12 +30,16 @@ const toV2JsonSchemaField = (
   const description = schemaDescription(field);
   switch (field.kind) {
     case 'string':
-      return { ...description, type: 'string' };
+      return {
+        ...description,
+        type: 'string',
+        ...(field.pattern === undefined ? {} : { pattern: field.pattern }),
+      };
     case 'integer':
       return {
         ...description,
         type: 'integer',
-        minimum: 1,
+        minimum: field.minimum ?? 1,
         ...(field.maximum === undefined ? {} : { maximum: limitFor(name, field.maximum, limits) }),
       };
     case 'number':
@@ -75,10 +79,18 @@ export const toV2JsonSchema = (
 
 const toZodV4Field = (name: string, field: NeutralField, limits: V2ToolLimits): z.ZodType => {
   switch (field.kind) {
-    case 'string':
-      return z.string();
+    case 'string': {
+      let stringField = z.string();
+      if (field.pattern !== undefined) {
+        stringField = stringField.regex(new RegExp(field.pattern));
+      }
+      return stringField;
+    }
     case 'integer': {
       let integer = z.number().int().positive();
+      if (field.minimum !== undefined) {
+        integer = integer.min(field.minimum);
+      }
       if (field.maximum !== undefined) {
         integer = integer.max(limitFor(name, field.maximum, limits));
       }

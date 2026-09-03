@@ -6,6 +6,9 @@ import type { GetContextToolArgs } from './get-context-schema.js';
 import { executeGrepSearch, type GrepSearchToolArgs } from './grep-search.js';
 import { executeHybridSearch, type HybridSearchToolArgs } from './hybrid-search.js';
 import { executeIndexStatus } from './index-status.js';
+import { executeGetFileOutline, type GetFileOutlineToolArgs } from './get-file-outline.js';
+import { executeGetSymbolContext, type GetSymbolContextToolArgs } from './get-symbol-context.js';
+import { executeGetSymbolSource, type GetSymbolSourceToolArgs } from './get-symbol-source.js';
 import { executeReindex } from './reindex.js';
 import { executeSemanticSearch, type SemanticSearchToolArgs } from './semantic-search.js';
 import type { ToolName } from './registry/definitions.js';
@@ -204,6 +207,72 @@ export const buildToolHandlers = (
               args as Parameters<typeof executeReindex>[3],
             ),
           );
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    ),
+    get_file_outline: withToolMetrics(
+      'get_file_outline',
+      options.metricsHooks,
+      async (args: unknown, extra?: { signal?: AbortSignal }) => {
+        try {
+          if (awaitInitialize) await awaitInitialize();
+          if (options.symbolRetrievalService === undefined) {
+            return errorResult(new Error('Structured retrieval service is not initialized'));
+          }
+          const parsed = args as GetFileOutlineToolArgs;
+          const result = await executeGetFileOutline(
+            options.symbolRetrievalService,
+            parsed,
+            extra?.signal,
+            options.metricsHooks,
+          );
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    ),
+    get_symbol_source: withToolMetrics(
+      'get_symbol_source',
+      options.metricsHooks,
+      async (args: unknown, extra?: { signal?: AbortSignal }) => {
+        try {
+          if (awaitInitialize) await awaitInitialize();
+          if (options.symbolRetrievalService === undefined) {
+            return errorResult(new Error('Structured retrieval service is not initialized'));
+          }
+          const parsed = args as GetSymbolSourceToolArgs;
+          const result = await executeGetSymbolSource(
+            options.symbolRetrievalService,
+            parsed,
+            extra?.signal,
+            options.metricsHooks,
+          );
+          return toolResult(result);
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    ),
+    get_symbol_context: withToolMetrics(
+      'get_symbol_context',
+      options.metricsHooks,
+      async (args: unknown, extra?: { signal?: AbortSignal }) => {
+        try {
+          if (awaitInitialize) await awaitInitialize();
+          if (options.symbolRetrievalService === undefined) {
+            return errorResult(new Error('Structured retrieval service is not initialized'));
+          }
+          const parsed = args as GetSymbolContextToolArgs;
+          const result = await executeGetSymbolContext(
+            options.symbolRetrievalService,
+            parsed,
+            extra?.signal,
+            options.metricsHooks,
+          );
+          return toolResult(result);
         } catch (error) {
           return errorResult(error);
         }

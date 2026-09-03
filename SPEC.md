@@ -316,6 +316,15 @@ AI エージェントに公開される MCP ツールとそれぞれの設計役
 - **`grep_search`**
   - **役割**: ripgrep 子プロセスを使用した、高速かつ厳密なキーワード・正規表現検索です。
   - **ユースケース**: 特定のクラス名、関数定義、エラーメッセージ、定数など、一致する文字列を正確に特定したい場合に有効です。
+- **`get_file_outline`**
+  - **役割**: 既知の対応ファイルから、アクティブなシンボル・アウトラインをソーステキストなしで返します。
+  - **ユースケース**: ファイルにどのようなシンボルがあるか把握し、次に `get_symbol_source` / `get_symbol_context` で取得する ID を選びたい場合に使用します。
+- **`get_symbol_source`**
+  - **役割**: 構造化シンボル ID (`symbol_v1_<base64url-sha256>`) から、インデックス時に記録された正確なソースを返します。
+  - **ユースケース**: `semantic_search` / `hybrid_search` / `get_file_outline` で得た `symbolId` を使い、行番号推測なしで完全な宣言を取得します。
+- **`get_symbol_context`**
+  - **役割**: `get_symbol_source` と同じソースに加え、検証済みの関連 import を取得し、指定したトークン予算内で関連 import を選択してシンボルソースと結合したコンテキストを返します。
+  - **ユースケース**: シンボルの実装とその依存関係を一度の呼び出しで取得したい場合に使用します。トークン予算を超えてもシンボルソースは完全に返されます。
 - **`get_context`**
   - **役割**: 指定されたファイルから、必要な行範囲（`startLine` 〜 `endLine`）を切り出してコンテキストとして取得します。
   - **引数**: `startLine` および `endLine` はオプションです。これらが指定されない場合、ファイル全体のコンテンツを取得します。
@@ -329,6 +338,14 @@ AI エージェントに公開される MCP ツールとそれぞれの設計役
 
 **Path Sanitization (セキュリティ)**:
 すべてのツールハンドラで入力パスに対する2段階検証 (論理パス・物理パスの検証および symlink 解決) を行い、プロジェクト外へのパストラバーサル攻撃を防御します。
+
+**構造化 symbol 検索の契約**:
+
+- 構造化検索を有効にするには、`reindex({ fullRebuild: true })` で明示的にフルリビルドする必要があります。レガシーインデックスは自動移行されず、構造化ツールは `reindex_required` / `not_indexed` ステータスでゲートされます。
+- `semantic_search` / `hybrid_search` の結果に `chunk.symbolId` が含まれる場合、優先して `get_symbol_source` または `get_symbol_context` を使用します。`get_file_outline` は既知の対応ファイルのシンボルマップを返します。
+- grep ヒット、行指向リクエスト、インデックス対象外・未対応ファイル、パーサーが確定できない宣言については、従来どおり `get_context` を使用します。
+- 構造化ツールはファイルの現在のバイトハッシュをインデックス時のハッシュと比較し、不一致時は source-free な `stale` / `INDEX_FILE_HASH_MISMATCH` で fail-closed します。ファイルが削除されている場合は `INDEX_FILE_MISSING`、未対応言語の場合は `UNSUPPORTED_LANGUAGE`、対象外パスの場合は `PATH_EXCLUDED`、解析に失敗した場合は `PARSER_FAILED` / `PARSER_PARTIAL` / `PARSER_EXCLUDED` を返します。退役した ID に対しては `stale_identity` / `SYMBOL_RETIRED` を返します。同じ名前のシンボルは異なる `symbolId` で区別されます。
+- `get_symbol_context` は `tokenBudget` 内に収まるよう関連 import を追加し、予算超過時でもシンボルソースは完全に返します。超過分は `budget.exceeded: true` と `omittedForBudget` カウントで報告します。
 
 ## 8. 耐障害性とエッジケース (Resilience)
 

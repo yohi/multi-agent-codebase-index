@@ -18,6 +18,9 @@ describe('v1/v2 schema parity', () => {
     get_context: { filePath: 'src/a.ts', startLine: 1, endLine: 5 },
     index_status: {},
     reindex: { fullRebuild: true },
+    get_file_outline: { filePath: 'src/a.ts' },
+    get_symbol_source: { symbolId: 'symbol_v1_1234567890123456789012345678901234567890123' },
+    get_symbol_context: { symbolId: 'symbol_v1_1234567890123456789012345678901234567890123', tokenBudget: 512 },
   };
 
   it('accepts the same valid inputs in v3 and v4', () => {
@@ -137,6 +140,9 @@ describe('v2 adapter over InMemoryTransport', () => {
         'get_context',
         'index_status',
         'reindex',
+        'get_file_outline',
+        'get_symbol_source',
+        'get_symbol_context',
       ]);
 
       const result = await client.callTool({ name: 'grep_search', arguments: { pattern: 'authenticate' } });

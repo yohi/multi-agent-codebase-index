@@ -1,9 +1,43 @@
 # MCP ツールリファレンス
 
-Nexus は `createNexusServer()` を通じて 6 つの MCP ツールを公開します。
+Nexus は `createNexusServer()` を通じて 9 つの MCP ツールを公開します。
 すべてのレスポンスは structured JSON content として返されます。
 
-## `semantic_search`
+## ツール一覧
+
+| ツール名 | 用途 |
+| --- | --- |
+| `semantic_search` | ベクトル検索による意味的なコード探索 |
+| `grep_search` | ripgrep を用いた正確な文字列検索 |
+| `hybrid_search` | セマンティックと grep を組み合わせた強力な検索 |
+| `get_context` | ファイルの指定範囲のコードをコンテキストとして取得 |
+| `get_file_outline` | 既知ファイルのシンボル・アウトラインを取得 |
+| `get_symbol_source` | 構造化シンボル ID の正確なソースを取得 |
+| `get_symbol_context` | 構造化シンボル ID の検証済み関連コンテキストを取得 |
+| `index_status` | インデックス進捗や統計情報の確認 |
+| `reindex` | インデックスの手動再作成 |
+
+### 構造化 symbol 検索フロー
+
+`semantic_search` / `hybrid_search` の結果に `chunk.symbolId` が含まれる場合、
+その ID を使って `get_symbol_source` または `get_symbol_context` で正確なソースや
+関連コンテキストを取得できます。
+
+```text
+semantic_search / hybrid_search result with symbolId
+  -> get_symbol_source or get_symbol_context
+
+known supported file
+  -> get_file_outline
+  -> get_symbol_source or get_symbol_context
+```
+
+grep ヒットや行指向のリクエスト、未対応・不確実な宣言、インデックス対象外の
+ファイルについては、従来どおり `get_context` を使用してください。
+
+構造化検索を有効にするには、`reindex({ fullRebuild: true })` で明示的に
+フルリビルドしてください。レガシーインデックスは自動移行されず、
+構造化ツールは `reindex_required` / `not_indexed` ステータスでゲートされます。
 
 インデックス済みコードチャンクに対する vector similarity search です。
 
@@ -176,6 +210,108 @@ semantic search と grep search を統合した ranking search です。
 }
 ```
 
+## `get_file_outline`
+
+既知の対応ファイルのアクティブなシンボル・アウトラインを返します。
+構造化インデックスが有効で、かつファイルの現在のバイトがインデックス時と一致する場合に
+`ok` ステータスでソースフリーのメタデータを返します。
+
+### 引数
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | string | yes | project-relative file path |
+
+### レスポンス
+
+```json
+{
+  "filePath": "src/auth.ts",
+  "status": "ok",
+  "symbols": [
+    {
+      "symbolId": "symbol_v1_abc...",
+      "qualifiedName": "AuthService.authenticate",
+      "kind": "method",
+      "signature": "authenticate(token: string): Promise<User>",
+      "startLine": 12,
+      "endLine": 18,
+      "parentKey": "AuthService"
+    }
+  ]
+}
+```
+
+非 `ok` ステータスでは `symbols` キーは含まれません。主なステータスと reasonCode:
+
+| status | reasonCode | 意味 |
+| --- | --- | --- |
+| `ok` | — | 新鮮なアウトラインを返す |
+| `not_indexed` | `STRUCTURED_INDEX_MISSING` / `UNSUPPORTED_LANGUAGE` / `PATH_EXCLUDED` | 構造化インデックス未構築、未対応言語、対象外パス |
+| `stale` | `INDEX_FILE_HASH_MISMATCH` / `INDEX_FILE_MISSING` | ファイルが変更または削除された |
+| `index_incomplete` | `INDEX_PENDING_GENERATION` | ファイルの世代が活性化待ち |
+
+## `get_symbol_source`
+
+構造化シンボル ID の正確なソースを返します。成功時のみ `source` キーが含まれます。
+
+### 引数
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `symbolId` | string | yes | `symbol_v1_<base64url-sha256>` 形式の ID |
+
+### レスポンス
+
+```json
+{
+  "symbolId": "symbol_v1_abc...",
+  "status": "ok",
+  "freshness": "fresh",
+  "source": "export async function authenticate(token: string): Promise<User> { ... }"
+}
+```
+
+非 `ok` 時は `source` キーを含みません。`stale_identity` ステータスは退役した ID に対して返されます。
+
+## `get_symbol_context`
+
+構造化シンボル ID の検証済み関連 import と正確なシンボルソースを返します。
+`tokenBudget` は関連 import の選択にのみ適用され、シンボルソース自体は常に完全に返されます。
+import の追加で予算を超過した場合、`budget.exceeded: true` と `omittedForBudget` カウントで報告します。
+
+### 引数
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `symbolId` | string | yes | `symbol_v1_<base64url-sha256>` 形式の ID |
+| `tokenBudget` | integer | yes | 1 〜 100000 のトークン上限 |
+
+### レスポンス
+
+```json
+{
+  "symbolId": "symbol_v1_abc...",
+  "status": "ok",
+  "freshness": "fresh",
+  "context": "import { User } from \"./user.js\";\n\nexport async function authenticate(token: string): Promise<User> { ... }",
+  "imports": [
+    { "moduleSpecifier": "./user.js", "bindingName": "User", "completeness": "complete" }
+  ],
+  "budget": {
+    "requested": 2000,
+    "actual": 42,
+    "exceeded": false,
+    "omittedForBudget": 0
+  },
+  "tokenizer": "cl100k_base",
+  "tokenizerVersion": "js-tiktoken@1.0.21"
+}
+```
+
+予算を超えてもシンボルソースは常に完全に返されます。超過時は `budget.exceeded: true` となり、
+収まらなかった import が `omittedForBudget` にカウントされます。
+
 ## `index_status`
 
 現在の metadata、vector、plugin health 情報を返します。
@@ -225,9 +361,26 @@ semantic search と grep search を統合した ranking search です。
     },
     "healthy": true,
     "isOperational": true
+  },
+  "structuredIndex": {
+    "schemaVersion": 1,
+    "targetSchemaVersion": 1,
+    "status": "idle",
+    "rebuildState": null,
+    "lastErrorCode": null,
+    "totalFiles": 12,
+    "totalSymbols": 87,
+    "exactFiles": 10,
+    "degradedFiles": 2,
+    "pendingFiles": 0,
+    "reindexRequired": false
   }
 }
 ```
+
+`structuredIndex` は省略可能です。レガシーインデックスでは `schemaVersion: null`、
+`status: "reindex_required"`、`reindexRequired: true` となります。
+構造化インデックスを有効にするには `reindex({ fullRebuild: true })` を実行してください。
 
 `indexStats` が `null`、`indexStats.lastIndexedAt` が `null`、または `indexStats.lastError` が non-null の場合、そのプロジェクトには成功済みリインデックスの記録がありません。
 通常サービス起動では、この状態に対してバックグラウンド Full Index が一度だけ開始されます。

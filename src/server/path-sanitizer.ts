@@ -21,16 +21,12 @@ export class PathSanitizer {
   }
 
   /**
-   * Sanitizes and validates a file path.
-   * (1) Resolves the candidate via path.resolve(this.projectRoot, filePath) and
-   *     verifies with path.relative to ensure the resolved path stays inside projectRoot.
-   * (2) Uses fs.realpath to resolve symlinks and verify the real path also remains
-   *     under projectRoot via another path.relative check.
-   * If realpath fails with ENOENT, it propagates the error so callers can distinguish missing files.
+   * Lexically validates that the requested path is inside the project root without
+   * resolving symlinks or requiring the file to exist. Returns the project-relative
+   * path for structured retrieval outcomes.
    */
-  async sanitize(filePath: string): Promise<string> {
+  validateProjectRelative(filePath: string): string {
     const resolvedPath = path.resolve(this.projectRoot, filePath);
-
     const relativePath = path.relative(this.projectRoot, resolvedPath);
     if (
       relativePath === '..' ||
@@ -39,33 +35,45 @@ export class PathSanitizer {
     ) {
       throw new PathTraversalError(`Access denied: path '${filePath}' is outside project root`);
     }
+    return relativePath.split(path.sep).join('/');
+  }
 
-    try {
-      const realPath = await fs.realpath(resolvedPath);
-      const relativeRealPath = path.relative(this.projectRoot, realPath);
-      if (
-        relativeRealPath === '..' ||
-        relativeRealPath.startsWith('..' + path.sep) ||
-        path.isAbsolute(relativeRealPath)
-      ) {
-        throw new PathTraversalError(
-          `Access denied: symlink resolved to '${realPath}' outside project root`,
-        );
-      }
-      return realPath;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        // Propagate ENOENT so callers can distinguish missing files from security violations
-        throw error;
-      }
-      console.error('Error during realpath resolution:', {
-        error,
-        originalInput: filePath,
-        resolvedPath,
-        projectRoot: this.projectRoot,
-      });
-      throw error;
+  /**
+   * Returns the absolute project root.
+   */
+  getProjectRoot(): string {
+    return this.projectRoot;
+  }
+
+  /**
+   * Resolves an existing file path and checks for escaping symlinks.
+   */
+  async resolveExisting(filePath: string): Promise<string> {
+    const resolvedPath = path.resolve(this.projectRoot, filePath);
+    const realPath = await fs.realpath(resolvedPath);
+    const relativeRealPath = path.relative(this.projectRoot, realPath);
+    if (
+      relativeRealPath === '..' ||
+      relativeRealPath.startsWith('..' + path.sep) ||
+      path.isAbsolute(relativeRealPath)
+    ) {
+      throw new PathTraversalError(`Access denied: symlink resolved to '${realPath}' outside project root`);
     }
+    return realPath;
+  }
+
+  /**
+   * Sanitizes and validates a file path.
+   * (1) Resolves the candidate via path.resolve(this.projectRoot, filePath) and
+   *     verifies with path.relative to ensure the resolved path stays inside projectRoot.
+   * (2) Uses fs.realpath to resolve symlinks and verify the real path also remains
+   *     under projectRoot via another path.relative check.
+   * If realpath fails with ENOENT, it propagates the error so callers can distinguish missing files.
+   * @deprecated Prefer validateProjectRelative + resolveExisting for structured retrieval.
+   */
+  async sanitize(filePath: string): Promise<string> {
+    const relativePath = this.validateProjectRelative(filePath);
+    return this.resolveExisting(relativePath);
   }
 
   /**

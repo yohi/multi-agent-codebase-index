@@ -33,6 +33,14 @@ export class MetricsCollector implements MetricsHooks {
   private readonly embeddingRequestsTotal: Counter;
   private readonly embeddingDurationSeconds: Histogram;
   private readonly embeddingBatchSize: Histogram;
+  // Structured retrieval metrics
+  private readonly structuredRetrievalOutcomesTotal: Counter;
+  private readonly structuredParserOutcomesTotal: Counter;
+  private readonly structuredContextTokens: Histogram;
+  private readonly structuredBudgetOverflowsTotal: Counter;
+  private readonly structuredCatalogFiles: Gauge;
+  private readonly structuredCatalogSymbols: Gauge;
+  private readonly structuredCatalogCoverageFiles: Gauge;
 
   private readonly prevDroppedBySource = new Map<string, number>();
 
@@ -165,6 +173,55 @@ export class MetricsCollector implements MetricsHooks {
       buckets: EMBEDDING_BATCH_SIZE_BUCKETS,
       registers: [this.registry],
     });
+
+    // Initialize structured retrieval metrics
+    this.structuredRetrievalOutcomesTotal = new Counter({
+      name: 'nexus_structured_retrieval_outcomes_total',
+      help: 'Structured retrieval tool outcome counts',
+      labelNames: ['tool', 'status'] as const,
+      registers: [this.registry],
+    });
+
+    this.structuredParserOutcomesTotal = new Counter({
+      name: 'nexus_structured_parser_outcomes_total',
+      help: 'Structured parser outcome counts',
+      labelNames: ['language', 'parse_status'] as const,
+      registers: [this.registry],
+    });
+
+    this.structuredContextTokens = new Histogram({
+      name: 'nexus_structured_context_tokens',
+      help: 'Structured context token counts',
+      labelNames: ['tool', 'measurement'] as const,
+      buckets: [0, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000],
+      registers: [this.registry],
+    });
+
+    this.structuredBudgetOverflowsTotal = new Counter({
+      name: 'nexus_structured_budget_overflows_total',
+      help: 'Structured retrieval budget overflow counts',
+      labelNames: ['tool'] as const,
+      registers: [this.registry],
+    });
+
+    this.structuredCatalogFiles = new Gauge({
+      name: 'nexus_structured_catalog_files',
+      help: 'Structured catalog file counts',
+      labelNames: ['coverage'] as const,
+      registers: [this.registry],
+    });
+
+    this.structuredCatalogSymbols = new Gauge({
+      name: 'nexus_structured_catalog_symbols',
+      help: 'Structured catalog symbol count',
+      registers: [this.registry],
+    });
+
+    this.structuredCatalogCoverageFiles = new Gauge({
+      name: 'nexus_structured_catalog_coverage_files',
+      help: 'Structured catalog coverage ratio',
+      registers: [this.registry],
+    });
   }
 
 
@@ -240,5 +297,38 @@ export class MetricsCollector implements MetricsHooks {
     this.embeddingRequestsTotal.labels(provider, status).inc();
     this.embeddingDurationSeconds.labels(provider).observe(durationSeconds);
     this.embeddingBatchSize.labels(provider).observe(batchSize);
+  }
+
+  // Structured retrieval hooks
+  onStructuredRetrievalOutcome(toolName: string, status: string): void {
+    this.structuredRetrievalOutcomesTotal.labels(toolName, status).inc();
+  }
+
+  onStructuredParserOutcome(language: string, parseStatus: string): void {
+    this.structuredParserOutcomesTotal.labels(language, parseStatus).inc();
+  }
+
+  onStructuredContextTokens(toolName: string, requested: number, actual: number): void {
+    if (requested >= 0) {
+      this.structuredContextTokens.labels(toolName, 'requested').observe(requested);
+    }
+    if (actual >= 0) {
+      this.structuredContextTokens.labels(toolName, 'actual').observe(actual);
+    }
+  }
+
+  onStructuredBudgetOverflow(toolName: string, omittedCount: number): void {
+    if (omittedCount > 0) {
+      this.structuredBudgetOverflowsTotal.labels(toolName).inc(omittedCount);
+    }
+  }
+
+  onStructuredCatalogSnapshot(totalFiles: number, totalSymbols: number, exactFiles: number, degradedFiles: number, pendingFiles: number): void {
+    this.structuredCatalogSymbols.set(totalSymbols);
+    this.structuredCatalogFiles.labels('exact').set(exactFiles);
+    this.structuredCatalogFiles.labels('degraded').set(degradedFiles);
+    this.structuredCatalogFiles.labels('pending').set(pendingFiles);
+    const coverage = totalFiles > 0 ? exactFiles / totalFiles : 0;
+    this.structuredCatalogCoverageFiles.set(coverage);
   }
 }

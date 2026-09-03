@@ -1,14 +1,25 @@
+import type { StructuredDeclaration, StructuredImport, StructuredSource } from '../structured/contracts.js';
 import type { IVectorStore } from '../types/index.js';
 import type { Chunker } from './chunker.js';
 import type { IStructuredCatalog, StructuredGenerationStage, StructuredGenerationActivation, StructuredFileRetirement } from '../storage/interfaces/structured-catalog.js';
+import type { StructuredShadowTable } from '../storage/interfaces/vector-store.js';
 import type { ProjectWriteCoordinator } from './project-write-coordinator.js';
-import type { StructuredDeclaration, StructuredImport, StructuredSource } from '../structured/contracts.js';
+
+export interface FullRebuildFile {
+  source: StructuredSource;
+  generationId: string;
+  contentHash: string;
+  fileCompleteness: 'complete' | 'partial';
+  declarations: StructuredDeclaration[];
+  imports: StructuredImport[];
+}
 
 export interface StructuredIndexCoordinatorOptions {
   metadataStore: IStructuredCatalog;
   vectorStore: IVectorStore;
   chunker: Chunker;
   projectWriteCoordinator: ProjectWriteCoordinator;
+  config: { embedding: { dimensions: number } };
 }
 
 export class StructuredIndexCoordinator {
@@ -62,7 +73,7 @@ export class StructuredIndexCoordinator {
       );
 
       // Placeholder embeddings: real pipeline will compute embeddings before staging.
-      const embeddings = chunks.map(() => new Array<number>(64).fill(0));
+      const embeddings = chunks.map(() => new Array<number>(this.options.config.embedding.dimensions).fill(0));
 
       try {
         await this.options.vectorStore.stageGenerationChunks({
@@ -128,6 +139,144 @@ export class StructuredIndexCoordinator {
       }
       await this.options.vectorStore.deleteByFilePath(input.filePath);
     });
+  }
+  async runFullRebuild(input: { files: FullRebuildFile[] }): Promise<void> {
+    return this.options.projectWriteCoordinator.run(async () => {
+      await this.options.metadataStore.bootstrapStructuredSchema();
+      const epoch = await this.options.metadataStore.incrementRebuildEpoch();
+      await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'building' });
+
+      const stateBefore = await this.options.metadataStore.getStructuredIndexState();
+      const previousActiveGenerations = new Map(stateBefore.activeGenerations);
+      const inputFilePaths = new Set(input.files.map((file) => file.source.filePath));
+
+      let shadowTable: StructuredShadowTable | undefined;
+      let shadowTableSwapped = false;
+      const activatedFiles: Array<{ filePath: string; generationId: string }> = [];
+      const stagedFiles = new Set<string>();
+
+      try {
+        shadowTable = await this.options.vectorStore.beginStructuredShadowTable();
+
+        // Stage new files into metadata and the vector shadow table.
+        for (const file of input.files) {
+          const stage: StructuredGenerationStage = {
+            filePath: file.source.filePath,
+            generation: {
+              generationId: file.generationId,
+              schemaVersion: 1,
+              parserId: 'full-rebuild',
+              parserVersion: '1',
+              fileHash: file.contentHash,
+              fileCompleteness: file.fileCompleteness,
+            },
+            declarations: file.declarations,
+            imports: file.imports,
+            rebuildEpoch: epoch,
+            bytes: file.source.bytes,
+            fileHash: file.contentHash,
+            fileCompleteness: file.fileCompleteness,
+          };
+          await this.options.metadataStore.stageGeneration(stage);
+          stagedFiles.add(file.source.filePath);
+
+          const chunks = await this.options.chunker.chunkStructuredFile(
+            {
+              filePath: file.source.filePath,
+              language: file.source.language,
+              content: file.source.text,
+              bytes: file.source.bytes,
+            },
+            { declarations: file.declarations, imports: file.imports },
+          );
+          const embeddings = chunks.map(() => new Array<number>(this.options.config.embedding.dimensions).fill(0));
+          await this.options.vectorStore.stageGenerationChunks({
+            filePath: file.source.filePath,
+            generationId: file.generationId,
+            chunks,
+            vectors: embeddings,
+          });
+        }
+
+        // Swap vectors first; the final metadata activation remains the commit gate.
+        await this.options.vectorStore.swapStructuredShadowTable(shadowTable);
+        shadowTableSwapped = true;
+
+        for (const file of input.files) {
+          const previousGeneration = previousActiveGenerations.get(file.source.filePath);
+          const result = await this.options.metadataStore.activateGeneration({
+            filePath: file.source.filePath,
+            generationId: file.generationId,
+            expectedActiveGeneration: previousGeneration ?? null,
+            expectedRebuildEpoch: epoch,
+          });
+          if (!result.activated) {
+            throw new Error(`Full rebuild activation failed for ${file.source.filePath}: ${result.reason ?? 'unknown'}`);
+          }
+          activatedFiles.push({ filePath: file.source.filePath, generationId: file.generationId });
+        }
+
+        // Retire files that are no longer present only after the vector commit succeeds.
+        for (const [filePath, generationId] of previousActiveGenerations) {
+          if (!inputFilePaths.has(filePath)) {
+            await this.options.metadataStore.retireFile({
+              filePath,
+              expectedActiveGeneration: generationId,
+              rebuildEpoch: epoch,
+            });
+          }
+        }
+
+        await this.options.metadataStore.setStructuredRebuildState({ rebuildState: 'idle', lastErrorCode: null });
+      } catch (error) {
+        if (shadowTableSwapped) {
+          await this.rollbackMetadataActivations(activatedFiles, previousActiveGenerations, epoch);
+        } else {
+          for (const filePath of stagedFiles) {
+            const file = input.files.find((candidate) => candidate.source.filePath === filePath);
+            if (file === undefined) continue;
+            await this.options.metadataStore.clearPendingGeneration({
+              filePath,
+              expectedActiveGeneration: previousActiveGenerations.get(filePath) ?? null,
+              expectedPendingGeneration: file.generationId,
+              expectedRebuildEpoch: epoch,
+            });
+          }
+          if (shadowTable !== undefined) {
+            await this.options.vectorStore.abortStructuredShadowTable(shadowTable).catch(() => {});
+          }
+        }
+        await this.options.metadataStore.setStructuredRebuildState({
+          rebuildState: 'failed',
+          lastErrorCode: error instanceof Error ? error.message : 'unknown',
+        });
+        throw error;
+      }
+    });
+  }
+
+  private async rollbackMetadataActivations(
+    activatedFiles: ReadonlyArray<{ filePath: string; generationId: string }>,
+    previousActiveGenerations: ReadonlyMap<string, string>,
+    epoch: number,
+  ): Promise<void> {
+    for (const { filePath, generationId } of activatedFiles) {
+      const previousGeneration = previousActiveGenerations.get(filePath);
+      if (previousGeneration !== undefined) {
+        await this.options.metadataStore.activateGeneration({
+          filePath,
+          generationId: previousGeneration,
+          expectedActiveGeneration: generationId,
+          expectedRebuildEpoch: epoch,
+        });
+      } else {
+        await this.options.metadataStore.retireFile({
+          filePath,
+          expectedActiveGeneration: generationId,
+          rebuildEpoch: epoch,
+        });
+      }
+    }
   }
 
   async reconcile(): Promise<void> {

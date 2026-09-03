@@ -31,6 +31,7 @@ import { EventQueue } from "../indexer/event-queue.js";
 import { MetricsCollector } from "../observability/metrics-collector.js";
 import type { Config, GrepMatch, IndexEvent, ReindexOptions } from "../types/index.js";
 import { DEFAULT_OLLAMA_NUM_THREAD } from "../config/index.js";
+import { SymbolRetrievalService } from "../structured/retrieval-service.js";
 
 /**
  * Type-safe interface for ripgrep JSON output.
@@ -514,8 +515,15 @@ export class NexusServerFactory {
       const workspaceId = config.projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? 'unknown';
       const contentStore = new LocalContentStoreFactory({
         projectRoot,
-        sanitize: (filePath) => sanitizer.sanitize(filePath),
+        sanitize: (filePath) => sanitizer.resolveExisting(filePath),
       }).getStore(workspaceId, 'local');
+
+      const symbolIgnoreMatcher = picomatch(normalizeIgnorePaths(ignorePaths), { windows: true });
+      const symbolRetrievalService = new SymbolRetrievalService({
+        catalog: metadataStore,
+        sanitizer,
+        isExcluded: (filePath) => symbolIgnoreMatcher(filePath),
+      });
 
       return buildNexusRuntime({
         projectRoot,
@@ -531,6 +539,7 @@ export class NexusServerFactory {
         watcher,
         loadFileContent,
         contentStore,
+        symbolRetrievalService,
         metricsCollectorRegistry: metricsCollector.registry,
         metricsPort: config.metricsPort,
         storageDir: config.storage.rootDir,

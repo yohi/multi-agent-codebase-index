@@ -27,7 +27,7 @@ jobs:
       run: npm ci
 
     - name: Security Audit (Production only)
-      run: npm audit --omit=dev --audit-level=high
+      run: npm audit --omit=dev --audit-level=high --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=1000 --fetch-retry-maxtimeout=30000
 
     - name: Run lint
       run: npm run lint

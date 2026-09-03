@@ -85,5 +85,6 @@ export interface IVectorStore {
   removeGenerationRows(filePath: string, generationId: string): Promise<void>;
   beginStructuredShadowTable(): Promise<StructuredShadowTable>;
   swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
+  abortStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void>;
   reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void>;
 }

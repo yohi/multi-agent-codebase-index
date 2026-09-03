@@ -122,7 +122,7 @@ describe('HTTP v2 server', () => {
     expect(response.headers.get('mcp-session-id')).toBeNull();
     const body = await readJsonRpc(response);
     const result = body['result'] as { tools: unknown[] };
-    expect(result.tools).toHaveLength(6);
+    expect(result.tools).toHaveLength(9);
   });
 
   it('returns 405 for non-POST /mcp and 404 for unrelated paths', async () => {

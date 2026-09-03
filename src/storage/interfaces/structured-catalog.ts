@@ -4,6 +4,16 @@ import type {
   StructuredImport,
 } from '../../structured/contracts.js';
 
+export interface StructuredImportRecord {
+  readonly id: string;
+  readonly moduleSpecifier?: string;
+  readonly bindingName?: string;
+  readonly startByte: number;
+  readonly endByte: number;
+  readonly sourceHash: string;
+  readonly completeness: 'complete' | 'partial';
+}
+
 export interface StructuredPendingClear {
   readonly filePath: string;
   readonly expectedActiveGeneration: string | null;
@@ -44,6 +54,7 @@ export interface StructuredIndexState {
   readonly lastErrorCode: string | null;
   readonly counts: StructuredIndexCounts;
   readonly activeGenerations: ReadonlyMap<string, string>;
+  readonly reindexRequired: boolean;
 }
 
 export interface StructuredActivationResult {
@@ -57,7 +68,7 @@ export type StructuredFileResolution =
   | { readonly kind: 'missing' };
 
 export type StructuredSymbolResolution =
-  | { readonly kind: 'active'; readonly declaration: StructuredDeclaration }
+  | { readonly kind: 'active'; readonly declaration: StructuredDeclaration; readonly filePath: string }
   | { readonly kind: 'tombstone'; readonly tombstone: StructuredTombstone }
   | { readonly kind: 'missing' };
 
@@ -89,6 +100,8 @@ export interface StructuredReconciliationResult {
 export interface IStructuredCatalog {
   bootstrapStructuredSchema(): Promise<void>;
   getStructuredIndexState(): Promise<StructuredIndexState>;
+  setStructuredRebuildState(input: { rebuildState: string; lastErrorCode?: string | null }): Promise<void>;
+  incrementRebuildEpoch(): Promise<number>;
   stageGeneration(input: StructuredGenerationStage): Promise<void>;
   activateGeneration(input: StructuredGenerationActivation): Promise<StructuredActivationResult>;
   clearPendingGeneration(input: StructuredPendingClear): Promise<{ cleared: boolean }>;
@@ -99,5 +112,7 @@ export interface IStructuredCatalog {
   getPendingSymbol(symbolId: string): Promise<StructuredPendingSymbolResolution>;
   getTombstone(symbolId: string): Promise<StructuredTombstone | null>;
   getStructuredCounts(): Promise<StructuredIndexCounts>;
+  getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]>;
+  getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]>;
   reconcileStructuredState(): Promise<StructuredReconciliationResult>;
 }

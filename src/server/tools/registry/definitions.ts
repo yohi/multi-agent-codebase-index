@@ -6,7 +6,10 @@ export type ToolName =
   | 'hybrid_search'
   | 'get_context'
   | 'index_status'
-  | 'reindex';
+  | 'reindex'
+  | 'get_file_outline'
+  | 'get_symbol_source'
+  | 'get_symbol_context';
 
 export interface ToolDefinition {
   name: ToolName;
@@ -97,6 +100,31 @@ export const REINDEX_DEFINITION: ToolDefinition = {
   },
 };
 
+export const GET_FILE_OUTLINE_DEFINITION: ToolDefinition = {
+  name: 'get_file_outline',
+  description: 'Return a source-free structured outline of a known file.',
+  input: {
+    filePath: { kind: 'string' },
+  },
+};
+
+export const GET_SYMBOL_SOURCE_DEFINITION: ToolDefinition = {
+  name: 'get_symbol_source',
+  description: 'Return exact source for a structured symbol ID.',
+  input: {
+    symbolId: { kind: 'string', pattern: '^symbol_v1_[A-Za-z0-9_-]{43}$' },
+  },
+};
+
+export const GET_SYMBOL_CONTEXT_DEFINITION: ToolDefinition = {
+  name: 'get_symbol_context',
+  description: 'Return bounded context (verified imports + exact symbol source) for a symbol ID.',
+  input: {
+    symbolId: { kind: 'string', pattern: '^symbol_v1_[A-Za-z0-9_-]{43}$' },
+    tokenBudget: { kind: 'integer', minimum: 1, maximum: 100000 },
+  },
+};
+
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   SEMANTIC_SEARCH_DEFINITION,
   GREP_SEARCH_DEFINITION,
@@ -104,4 +132,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   GET_CONTEXT_DEFINITION,
   INDEX_STATUS_DEFINITION,
   REINDEX_DEFINITION,
+  GET_FILE_OUTLINE_DEFINITION,
+  GET_SYMBOL_SOURCE_DEFINITION,
+  GET_SYMBOL_CONTEXT_DEFINITION,
 ];

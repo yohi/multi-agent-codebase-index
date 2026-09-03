@@ -14,6 +14,7 @@ import type {
   StructuredFileResolution,
   StructuredGenerationActivation,
   StructuredGenerationStage,
+  StructuredImportRecord,
   StructuredIndexCounts,
   StructuredIndexState,
   StructuredPendingClear,
@@ -40,18 +41,43 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   private readonly tombstones = new Map<string, StructuredTombstone>();
 
   private rebuildEpoch = 0;
+  private rebuildState: string | null = null;
+  private lastErrorCode: string | null = null;
 
   async initialize(): Promise<void> {
     return;
   }
 
-  async bootstrapStructuredSchema(): Promise<void> {}
+  private schemaVersion: number | null = null;
+
+  async bootstrapStructuredSchema(): Promise<void> {
+    this.schemaVersion = 1;
+  }
 
   async getStructuredIndexState(): Promise<StructuredIndexState> {
-    return { schemaVersion: null, rebuildState: null, rebuildEpoch: this.rebuildEpoch, lastErrorCode: null, counts: await this.getStructuredCounts(), activeGenerations: await this.getActiveGenerationMap([...this.active.keys()]) };
+    return {
+      schemaVersion: this.schemaVersion,
+      rebuildState: this.rebuildState,
+      rebuildEpoch: this.rebuildEpoch,
+      lastErrorCode: this.lastErrorCode,
+      counts: await this.getStructuredCounts(),
+      activeGenerations: await this.getActiveGenerationMap([...this.active.keys()]),
+      reindexRequired: this.schemaVersion === null,
+    };
+  }
+
+  async setStructuredRebuildState(input: { rebuildState: string; lastErrorCode?: string | null }): Promise<void> {
+    this.rebuildState = input.rebuildState;
+    this.lastErrorCode = input.lastErrorCode ?? null;
+  }
+
+  async incrementRebuildEpoch(): Promise<number> {
+    this.rebuildEpoch += 1;
+    return this.rebuildEpoch;
   }
 
   async stageGeneration(input: StructuredGenerationStage): Promise<void> {
+    // If a pending generation exists for this file, replace it with the new one.
     this.rebuildEpoch = input.rebuildEpoch;
     this.pending.set(input.filePath, input);
   }
@@ -104,7 +130,10 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
   }
 
   async resolveSymbol(symbolId: string): Promise<StructuredSymbolResolution> {
-    for (const generation of this.active.values()) { const declaration = generation.declarations.find((item) => item.symbolId === symbolId); if (declaration) return { kind: 'active', declaration }; }
+    for (const [filePath, generation] of this.active.entries()) {
+      const declaration = generation.declarations.find((item) => item.symbolId === symbolId);
+      if (declaration) return { kind: 'active', declaration, filePath };
+    }
     const tombstone = this.tombstones.get(symbolId);
     return tombstone ? { kind: 'tombstone', tombstone } : { kind: 'missing' };
   }
@@ -118,6 +147,36 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
 
   async getStructuredCounts(): Promise<StructuredIndexCounts> {
     return { activeFiles: this.active.size, activeSymbols: [...this.active.values()].reduce((sum, item) => sum + item.declarations.length, 0), pendingFiles: this.pending.size, pendingSymbols: [...this.pending.values()].reduce((sum, item) => sum + item.declarations.length, 0), tombstones: this.tombstones.size };
+  }
+
+  async getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]> {
+    for (const generation of this.active.values()) {
+      const declaration = generation.declarations.find((item) => item.symbolId === symbolId);
+      if (declaration !== undefined) {
+        const bindingIds = new Set(declaration.importBindingIds ?? []);
+        return generation.imports
+          .filter((imported) => bindingIds.has(imported.id))
+          .map((imported) => ({
+            id: imported.id,
+            moduleSpecifier: imported.moduleSpecifier,
+            bindingName: imported.bindingName,
+            startByte: imported.startByte,
+            endByte: imported.endByte,
+            sourceHash: imported.sourceHash,
+            completeness: imported.completeness,
+          }));
+      }
+    }
+    return [];
+  }
+
+  async getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]> {
+    const active = this.active.get(filePath);
+    if (active === undefined) return [];
+    return [...active.declarations].sort((a, b) => {
+      if (a.startByte !== b.startByte) return a.startByte - b.startByte;
+      return a.qualifiedName.localeCompare(b.qualifiedName);
+    });
   }
 
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> {

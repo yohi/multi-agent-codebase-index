@@ -24,7 +24,7 @@ v1 からの移行手順と前提条件は [docs/setup.md](docs/setup.md) を参
 - **ハイブリッド検索**: LanceDB によるベクトル検索と ripgrep による高速な文字列検索を統合。
 - **インテリジェント・チャンキング**: AST 解析に基づき、関数のセマンティクスを維持したままコードを分割。
 - **低レイテンシ**: ローカル実行に特化し、ネットワーク遅延のない高速なレスポンスを実現。
-- **ストリーミング対応**: 巨大な検索結果も Streamable HTTP transport により効率的に処理。
+- **構造化 symbol 検索**: `semantic_search` / `hybrid_search` の結果に含まれる `symbolId` を使い、`get_symbol_source` / `get_symbol_context` / `get_file_outline` で正確なソースと関連コンテキストを取得できます。
 - **自律的メンテナンス**: ファイル監視 (Watcher) とデッドレターキュー (DLQ) による自動的なインデックス更新とリカバリ。
 - **初回バックグラウンド Full Index**: 未インデックスのプロジェクトを通常サービスとして起動すると、
   サーバーを利用可能なまま Full Index を一度だけ開始します。
@@ -66,6 +66,7 @@ When using **Nexus MCP** tools for codebase exploration and semantic search, adh
 - **Vague or conceptual search**: Use `hybrid_search` (combines vector & ripgrep via RRF).
 - **Exact symbol or error-string search**: Use `grep_search`.
 - **Minimal file context retrieval**: Use `get_context` with explicit `startLine` and `endLine`.
+- **Structured symbol retrieval**: When `semantic_search` / `hybrid_search` results include `chunk.symbolId`, prefer `get_symbol_source` for the exact source or `get_symbol_context` for validated imports and bounded context. Use `get_file_outline` for known supported files when you need a symbol map before selecting a symbol. Fall back to `get_context` for line-oriented hits, unsupported declarations, or non-indexed files.
 
 ### 3. One-Call & Deferred Loading Patterns
 - **One-Call pattern**: After `hybrid_search` or `grep_search` returns candidates, call `get_context` for the top 1-3 candidates before answering. The first response should contain an actionable, evidence-based summary with file paths and line ranges, not just a list of hits.
@@ -397,6 +398,9 @@ Nexus は社内 Claude Code plugin marketplace（Bitbucket Cloud）を通じて 
 | `semantic_search` | ベクトル検索による意味的なコード探索 |
 | `grep_search` | ripgrep を用いた正確な文字列検索 |
 | `get_context` | ファイルの指定範囲のコードをコンテキストとして取得 |
+| `get_file_outline` | 既知ファイルのシンボル・アウトラインを取得 |
+| `get_symbol_source` | 構造化シンボル ID の正確なソースを取得 |
+| `get_symbol_context` | 構造化シンボル ID の検証済み関連コンテキストを取得 |
 | `index_status` | 現在のインデックス進捗や統計情報の確認 |
 | `reindex` | インデックスの手動再作成 |
 

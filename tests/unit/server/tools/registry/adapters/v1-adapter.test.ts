@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildToolHandlers } from '../../../../../../src/server/tools/tool-support.js';
-import { registerV1Tools } from '../../../../../../src/server/tools/registry/adapters/v1-adapter.js';
+import { registerV1Tools, toZodV3Field } from '../../../../../../src/server/tools/registry/adapters/v1-adapter.js';
 import { createTestNexusOptions } from '../../../../../shared/create-test-nexus-options.js';
 
 const EXPECTED_TOOLS = [
@@ -38,6 +38,21 @@ const EXPECTED_TOOLS = [
     description: 'Manually rebuild the local search index.',
     required: [],
   },
+  {
+    name: 'get_file_outline',
+    description: 'Return a source-free structured outline of a known file.',
+    required: ['filePath'],
+  },
+  {
+    name: 'get_symbol_source',
+    description: 'Return exact source for a structured symbol ID.',
+    required: ['symbolId'],
+  },
+  {
+    name: 'get_symbol_context',
+    description: 'Return bounded context (verified imports + exact symbol source) for a symbol ID.',
+    required: ['symbolId', 'tokenBudget'],
+  },
 ] as const;
 
 describe('v1 adapter parity', () => {
@@ -64,7 +79,7 @@ describe('v1 adapter parity', () => {
     return client;
   };
 
-  it('lists the 6 tools with legacy names, descriptions and required params', async () => {
+  it('lists the 9 tools with legacy names, descriptions and required params', async () => {
     const connected = await connect();
     const listed = await connected.listTools();
     expect(listed.tools.map((tool) => tool.name)).toEqual(EXPECTED_TOOLS.map((tool) => tool.name));
@@ -90,5 +105,18 @@ describe('v1 adapter parity', () => {
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({ error: true });
     expect(result.structuredContent).not.toHaveProperty('code');
+  });
+
+  it('allows integer minimum of 0 in the v1 adapter', () => {
+    const schema = toZodV3Field({ kind: 'integer', minimum: 0 });
+    expect(schema.safeParse(0).success).toBe(true);
+    expect(schema.safeParse(-1).success).toBe(false);
+    expect(schema.safeParse(1).success).toBe(true);
+  });
+
+  it('preserves default integer minimum of 1', () => {
+    const schema = toZodV3Field({ kind: 'integer' });
+    expect(schema.safeParse(0).success).toBe(false);
+    expect(schema.safeParse(1).success).toBe(true);
   });
 });
