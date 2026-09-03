@@ -11,6 +11,8 @@ import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript
 import { TestEmbeddingProvider } from '../unit/plugins/embeddings/test-embedding-provider.js';
 import { SqliteMetadataStore } from '../../src/storage/metadata-store.js';
 import { LanceVectorStore } from '../../src/storage/vector-store.js';
+import { StructuredIndexCoordinator } from '../../src/indexer/structured-index-coordinator.js';
+import { ProjectWriteCoordinator } from '../../src/indexer/project-write-coordinator.js';
 
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
 
@@ -119,6 +121,58 @@ describe('IndexPipeline integration', () => {
     await expect(vectorStore.getStats()).resolves.toEqual(
       expect.objectContaining({ totalChunks: 0, totalFiles: 0 }),
     );
+  });
+
+  it('stages and activates structured generations through the coordinator', async () => {
+    metadataStore = new SqliteMetadataStore({
+      databasePath: path.join(tempDir, 'structured-pipeline-metadata.db'),
+    });
+    vectorStore = new LanceVectorStore({ dimensions: 64 });
+    const registry = new PluginRegistry();
+    registry.registerLanguage(new TypeScriptLanguagePlugin());
+    await metadataStore.initialize();
+    await vectorStore.initialize();
+    await metadataStore.bootstrapStructuredSchema();
+
+    const coordinator = new StructuredIndexCoordinator({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(registry),
+      projectWriteCoordinator: new ProjectWriteCoordinator(),
+      config: { embedding: { dimensions: 64 } },
+    });
+
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(registry),
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+      structuredIndexCoordinator: coordinator,
+    });
+
+    const original = await readFile(fixturePath, 'utf8');
+    await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: fixturePath,
+          contentHash: 'hash-1',
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => original,
+    );
+
+    const resolution = await metadataStore.resolveFile(fixturePath);
+    expect(resolution.kind).toBe('active');
+
+    const state = await metadataStore.getStructuredIndexState();
+    expect(state.counts.activeFiles).toBe(1);
+    expect(state.counts.activeSymbols).toBeGreaterThan(0);
+
+    const declarations = await metadataStore.getFileDeclarations(fixturePath);
+    expect(declarations.length).toBeGreaterThan(0);
   });
 
   it('handles manual reindex with observable side-effects', async () => {

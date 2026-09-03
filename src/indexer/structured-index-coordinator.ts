@@ -1,5 +1,5 @@
 import type { StructuredDeclaration, StructuredImport, StructuredSource } from '../structured/contracts.js';
-import type { IVectorStore } from '../types/index.js';
+import type { CodeChunk, IVectorStore } from '../types/index.js';
 import type { Chunker } from './chunker.js';
 import type { IStructuredCatalog, StructuredGenerationStage, StructuredGenerationActivation, StructuredFileRetirement } from '../storage/interfaces/structured-catalog.js';
 import type { StructuredShadowTable } from '../storage/interfaces/vector-store.js';
@@ -34,6 +34,8 @@ export class StructuredIndexCoordinator {
     imports: StructuredImport[];
     parserId?: string;
     parserVersion?: string;
+    chunks?: CodeChunk[];
+    embeddings?: number[][];
   }): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
       const state = await this.options.metadataStore.getStructuredIndexState();
@@ -59,7 +61,7 @@ export class StructuredIndexCoordinator {
 
       await this.options.metadataStore.stageGeneration(stage);
 
-      const chunks = await this.options.chunker.chunkStructuredFile(
+      const chunks = input.chunks ?? await this.options.chunker.chunkStructuredFile(
         {
           filePath: input.source.filePath,
           language: input.source.language,
@@ -72,8 +74,10 @@ export class StructuredIndexCoordinator {
         },
       );
 
-      // Placeholder embeddings: real pipeline will compute embeddings before staging.
-      const embeddings = chunks.map(() => new Array<number>(this.options.config.embedding.dimensions).fill(0));
+      const embeddings = input.embeddings ?? chunks.map(() => new Array<number>(this.options.config.embedding.dimensions).fill(0));
+      if (embeddings.length !== chunks.length) {
+        throw new Error(`StructuredIndexCoordinator.stageFile: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`);
+      }
 
       try {
         await this.options.vectorStore.stageGenerationChunks({

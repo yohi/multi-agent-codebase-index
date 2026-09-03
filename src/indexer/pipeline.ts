@@ -25,12 +25,16 @@ import {
   type IndexStatsRow,
   type ReindexOptions,
 } from '../types/index.js';
+import type { StructuredSource, StructuredDeclaration, StructuredImport } from '../structured/contracts.js';
+import type { StructuredIndexCoordinator } from './structured-index-coordinator.js';
+import { sha256Hex } from '../structured/hash.js';
 interface IndexPipelineOptions {
   metadataStore: IMetadataStore;
   vectorStore: IVectorStore;
   chunker: Chunker;
   embeddingProvider: EmbeddingProvider;
   pluginRegistry: PluginRegistry;
+  structuredIndexCoordinator?: StructuredIndexCoordinator;
   eventQueue?: EventQueue;
   maxFileBytes?: number;
   chunkConcurrency?: number;
@@ -53,9 +57,22 @@ interface ProcessEventsResult {
   chunksIndexed: number;
 }
 
+interface StructuredFileWork {
+  source: StructuredSource;
+  generationId: string;
+  contentHash: string;
+  fileCompleteness: 'complete' | 'partial';
+  declarations: StructuredDeclaration[];
+  imports: StructuredImport[];
+  parserId: string;
+  parserVersion: string;
+  chunks: CodeChunk[];
+}
+
 interface FileWork {
   event: IndexEvent;
   chunks: CodeChunk[];
+  structured?: StructuredFileWork;
   skipped: boolean;
   skipReason?: string;
 }
@@ -325,19 +342,86 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     const content = await loadContent(event.filePath);
-    const bytes = fileSize ?? Buffer.byteLength(content, 'utf8');
-    if (this.options.maxFileBytes !== undefined && bytes > this.options.maxFileBytes) {
-      return { event, chunks: [], skipped: true, skipReason: `file too large: ${bytes} bytes` };
+    const byteLength = fileSize ?? Buffer.byteLength(content, 'utf8');
+    if (this.options.maxFileBytes !== undefined && byteLength > this.options.maxFileBytes) {
+      return { event, chunks: [], skipped: true, skipReason: `file too large: ${byteLength} bytes` };
     }
 
+    const language = this.detectLanguage(event.filePath);
     const chunks = await this.options.chunker.chunkFiles([
       {
         filePath: event.filePath,
-        language: this.detectLanguage(event.filePath),
+        language,
         content,
       },
     ]);
-    return { event, chunks, skipped: false };
+
+    let structured: StructuredFileWork | undefined;
+    if (this.options.structuredIndexCoordinator !== undefined) {
+      structured = await this.readStructuredFile(event.filePath, language, content);
+    }
+
+    return { event, chunks, structured, skipped: false };
+  }
+
+  private async readStructuredFile(
+    filePath: string,
+    language: string,
+    content: string,
+  ): Promise<StructuredFileWork | undefined> {
+    const plugin = this.options.pluginRegistry.getLanguagePlugin(filePath);
+    if (plugin === undefined || plugin.createStructuredParser === undefined) {
+      return undefined;
+    }
+
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await readFile(filePath));
+    } catch {
+      bytes = new Uint8Array(Buffer.from(content, 'utf8'));
+    }
+
+    try {
+      const parser = await plugin.createStructuredParser();
+      const source: StructuredSource = { filePath, language, bytes, text: content };
+      const result = await parser.parseStructured(source);
+      if (result.declarations.length === 0) {
+        return undefined;
+      }
+
+      const fileCompleteness = result.retrievability === 'exact' ? 'complete' : 'partial';
+      const generation = result.generation ?? {
+        generationId: sha256Hex(bytes),
+        schemaVersion: 1 as const,
+        parserId: plugin.languageId,
+        parserVersion: '1',
+        fileHash: sha256Hex(bytes),
+        fileCompleteness,
+      };
+
+      const structuredChunks = await this.options.chunker.chunkStructuredFile(
+        { filePath, language, content, bytes },
+        { declarations: result.declarations, imports: result.imports },
+      );
+
+      return {
+        source,
+        generationId: generation.generationId,
+        contentHash: generation.fileHash,
+        fileCompleteness: generation.fileCompleteness,
+        declarations: [...result.declarations],
+        imports: [...result.imports],
+        parserId: generation.parserId,
+        parserVersion: generation.parserVersion,
+        chunks: structuredChunks,
+      };
+    } catch (error) {
+      this.safeLogProgress(
+        `Structured parsing failed for ${filePath}: ${error instanceof Error ? error.message : 'unknown'}`,
+        filePath,
+      );
+      return undefined;
+    }
   }
 
   /**
@@ -358,8 +442,10 @@ export class IndexPipeline implements IIndexPipeline {
     );
 
     // Stage 2: L1 (memory) + L2 (persistent) cache-aware embed.
-    const toEmbed = works.filter((work) => !work.skipped && work.chunks.length > 0);
-    const allChunks = toEmbed.flatMap((work) => work.chunks);
+    const toEmbed = works.filter((work) => !work.skipped && (work.chunks.length > 0 || (work.structured?.chunks.length ?? 0) > 0));
+    const legacyChunks = toEmbed.flatMap((work) => work.chunks);
+    const structuredChunks = toEmbed.flatMap((work) => work.structured?.chunks ?? []);
+    const allChunks = [...legacyChunks, ...structuredChunks];
 
     // allChunks index → filePath mapping for precise DLQ routing on embed failure.
     const chunkToFilePath = new Map<number, string>();
@@ -368,6 +454,12 @@ export class IndexPipeline implements IIndexPipeline {
       for (let i = 0; i < work.chunks.length; i++) {
         chunkToFilePath.set(globalChunkIdx, work.event.filePath);
         globalChunkIdx++;
+      }
+      if (work.structured !== undefined) {
+        for (let i = 0; i < work.structured.chunks.length; i++) {
+          chunkToFilePath.set(globalChunkIdx, work.event.filePath);
+          globalChunkIdx++;
+        }
       }
     }
     // L1 cache check.
@@ -458,8 +550,12 @@ export class IndexPipeline implements IIndexPipeline {
       }
 
       // Extract embeddings and advance offset regardless of skip or DLQ-routing status to keep aligned
-      const embeddings = allEmbeddings.slice(embeddingOffset, embeddingOffset + work.chunks.length);
-      embeddingOffset += work.chunks.length;
+      const legacyCount = work.chunks.length;
+      const structuredCount = work.structured?.chunks.length ?? 0;
+      const workEmbeddings = allEmbeddings.slice(embeddingOffset, embeddingOffset + legacyCount + structuredCount);
+      embeddingOffset += legacyCount + structuredCount;
+      const legacyEmbeddings = workEmbeddings.slice(0, legacyCount);
+      const structuredEmbeddings = workEmbeddings.slice(legacyCount);
 
       if (work.skipped) {
         if (trackProgress) {
@@ -477,7 +573,7 @@ export class IndexPipeline implements IIndexPipeline {
         continue;
       }
 
-      if (work.chunks.length === 0) {
+      if (legacyCount === 0 && structuredCount === 0) {
         // Valid file that produced no chunks (e.g. empty file): drop stale vectors, keep Merkle current.
         await this.options.vectorStore.deleteByFilePath(work.event.filePath);
         await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
@@ -503,10 +599,32 @@ export class IndexPipeline implements IIndexPipeline {
         continue;
       }
 
-      await this.options.vectorStore.upsertChunks(work.chunks, embeddings, [work.event.filePath]);
+      if (legacyCount > 0) {
+        await this.options.vectorStore.upsertChunks(work.chunks, legacyEmbeddings, [work.event.filePath]);
+      }
+
+      if (work.structured !== undefined && this.options.structuredIndexCoordinator !== undefined) {
+        await this.options.structuredIndexCoordinator.stageFile({
+          source: work.structured.source,
+          generationId: work.structured.generationId,
+          contentHash: work.structured.contentHash,
+          fileCompleteness: work.structured.fileCompleteness,
+          declarations: work.structured.declarations,
+          imports: work.structured.imports,
+          parserId: work.structured.parserId,
+          parserVersion: work.structured.parserVersion,
+          chunks: work.structured.chunks,
+          embeddings: structuredEmbeddings,
+        });
+        await this.options.structuredIndexCoordinator.activateFile({
+          filePath: work.event.filePath,
+          generationId: work.structured.generationId,
+        });
+      }
+
       await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
       this.skippedFiles.delete(work.event.filePath);
-      chunksIndexed += work.chunks.length;
+      chunksIndexed += legacyCount;
       if (trackProgress) {
         this.progress.processedFiles++;
       }
@@ -534,6 +652,7 @@ export class IndexPipeline implements IIndexPipeline {
       }
     } else {
       await this.options.vectorStore.deleteByFilePath(filePath);
+      await this.options.structuredIndexCoordinator?.deleteFile({ filePath });
       await this.merkleTree.remove(filePath);
       this.skippedFiles.delete(filePath);
       await this.deadLetterQueue.removeByFilePath(filePath);
