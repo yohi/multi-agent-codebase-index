@@ -11,32 +11,9 @@ import { createNexusServer } from '../../src/server/index.js';
 import { NexusServerFactory } from '../../src/server/factory.js';
 import { createStreamableHttpHandler } from '../../src/server/transport.js';
 import { loadConfig } from '../../src/config/index.js';
-import { Chunker } from '../../src/indexer/chunker.js';
-import { IndexPipeline } from '../../src/indexer/pipeline.js';
-import { PluginRegistry } from '../../src/plugins/registry.js';
-import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript.js';
-import { SearchOrchestrator } from '../../src/search/orchestrator.js';
-import { SemanticSearch } from '../../src/search/semantic.js';
-import { TestEmbeddingProvider } from '../unit/plugins/embeddings/test-embedding-provider.js';
-import { TestGrepEngine } from '../unit/search/test-grep-engine.js';
-import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.js';
-import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
 import { SqliteMetadataStore } from '../../src/storage/metadata-store.js';
-import { PathSanitizer } from '../../src/server/path-sanitizer.js';
-import type { CodeChunk } from '../../src/types/index.js';
 import { createMockMetricsHooks } from '../shared/test-helpers.js';
-
-const makeChunk = (overrides: Partial<CodeChunk>): CodeChunk => ({
-  id: overrides.id ?? 'chunk-1',
-  filePath: overrides.filePath ?? 'src/auth.ts',
-  content: overrides.content ?? 'export function authenticate() {}',
-  language: overrides.language ?? 'typescript',
-  symbolName: overrides.symbolName,
-  symbolKind: overrides.symbolKind ?? 'function',
-  startLine: overrides.startLine ?? 1,
-  endLine: overrides.endLine ?? 1,
-  hash: overrides.hash ?? 'hash-1',
-});
+import { createTestNexusOptions } from '../shared/create-test-nexus-options.js';
 
 describe('Phase 2 MCP protocol integration', () => {
   let httpServer: ReturnType<typeof createServer>;
@@ -53,56 +30,13 @@ describe('Phase 2 MCP protocol integration', () => {
   };
 
   beforeEach(async () => {
-    const metadataStore = new InMemoryMetadataStore();
-    const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
-    await metadataStore.initialize();
-    await vectorStore.initialize();
-
-    const embeddingProvider = new TestEmbeddingProvider();
-    const pluginRegistry = new PluginRegistry();
-    pluginRegistry.registerLanguage(new TypeScriptLanguagePlugin());
-    pluginRegistry.registerEmbeddingProvider('test', embeddingProvider);
-    pluginRegistry.setActiveEmbeddingProvider('test');
-
-    const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
-    const grepEngine = new TestGrepEngine();
-    grepEngine.addFile('src/auth.ts', 'export function authenticate() {}\n');
-
-    const chunk = makeChunk({
-      id: 'src/auth.ts:1',
-      filePath: 'src/auth.ts',
-      content: 'export function authenticate() {}',
-      symbolName: 'authenticate',
-    });
-    await vectorStore.upsertChunks([chunk], await embeddingProvider.embed([chunk.content]));
-
-    const orchestrator = new SearchOrchestrator({ semanticSearch, grepEngine, projectRoot: fixtureRoot });
-    const pipeline = new IndexPipeline({
-      metadataStore,
-      vectorStore,
-      chunker: new Chunker(pluginRegistry),
-      embeddingProvider,
-      pluginRegistry,
-    });
-
-    const sanitizer = await PathSanitizer.create(fixtureRoot);
     mockMetricsHooks = createMockMetricsHooks();
-
-    const createTestServer = () =>
-      createNexusServer({
-        projectRoot: fixtureRoot,
-        sanitizer,
-        semanticSearch,
-        grepEngine,
-        orchestrator,
-        vectorStore,
-        metadataStore,
-        pipeline,
-        pluginRegistry,
-        runReindex: async () => [],
-        loadFileContent: async (filePath) => fs.readFile(filePath, 'utf8'),
-        metricsHooks: mockMetricsHooks,
-      });
+    const { options } = await createTestNexusOptions({
+      projectRoot: fixtureRoot,
+      loadFileContent: async (filePath) => fs.readFile(filePath, 'utf8'),
+      metricsHooks: mockMetricsHooks,
+    });
+    const createTestServer = () => createNexusServer(options);
     const handler = createStreamableHttpHandler({ createServer: createTestServer });
 
     httpServer = createServer((req, res) => {
@@ -297,13 +231,6 @@ describe('Phase 2 MCP protocol integration', () => {
     client = new Client({ name: 'phase2-client', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
     await client.connect(transport);
-
-    const parseResult = (result: any) => {
-      if (result.content?.[0]?.type === 'text') {
-        return JSON.parse(result.content[0].text);
-      }
-      return result.structuredContent;
-    };
 
     const hybrid = await client.callTool({
       name: 'hybrid_search',

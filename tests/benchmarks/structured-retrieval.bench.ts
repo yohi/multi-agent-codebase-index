@@ -1,29 +1,19 @@
 import os from 'node:os';
 import path from 'node:path';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 
 import { bench, describe } from 'vitest';
 
-import { Chunker } from '../../src/indexer/chunker.js';
-import { IndexPipeline } from '../../src/indexer/pipeline.js';
-import { ProjectWriteCoordinator } from '../../src/indexer/project-write-coordinator.js';
-import { StructuredIndexCoordinator } from '../../src/indexer/structured-index-coordinator.js';
-import { PluginRegistry } from '../../src/plugins/registry.js';
-import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript.js';
 import { PathSanitizer } from '../../src/server/path-sanitizer.js';
 import { SymbolRetrievalService } from '../../src/structured/retrieval-service.js';
 import { createGenerationId, createSymbolId } from '../../src/structured/identity.js';
-import { sha256Hex, decodeUtf8 } from '../../src/structured/hash.js';
-import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.js';
-import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
-import type { StructuredSource } from '../../src/structured/contracts.js';
+import { sha256Hex } from '../../src/structured/hash.js';
+import {
+  createStructuredCoordinatorFixture,
+  createStructuredSource,
+} from '../shared/structured-test-helpers.js';
 
 const DECLARATION_COUNTS = [10, 50, 100] as const;
-
-const makeSource = (filePath: string, text: string): StructuredSource => {
-  const bytes = Buffer.from(text, 'utf8');
-  return { filePath, language: 'typescript', bytes, text: decodeUtf8(bytes) };
-};
 
 const buildFile = (declarationCount: number): { filePath: string; text: string; symbolIds: string[]; generationId: string; contentHash: string } => {
   const filePath = 'src/module.ts';
@@ -55,48 +45,36 @@ const buildFile = (declarationCount: number): { filePath: string; text: string; 
 };
 
 const withCatalog = async <T>(
+  declarationCount: number,
   run: (service: SymbolRetrievalService, symbolIds: string[]) => Promise<T>,
 ): Promise<T> => {
-  const projectRoot = path.join(os.tmpdir(), `nexus-structured-bench-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  await mkdir(path.join(projectRoot, 'src'), { recursive: true });
-
-  const metadataStore = new InMemoryMetadataStore();
-  const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
-  await metadataStore.initialize();
-  await metadataStore.bootstrapStructuredSchema();
-  await vectorStore.initialize();
-
-  const pluginRegistry = new PluginRegistry();
-  pluginRegistry.registerLanguage(new TypeScriptLanguagePlugin());
-
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'nexus-structured-bench-'));
   try {
+    await mkdir(path.join(projectRoot, 'src'), { recursive: true });
+    const { metadataStore, coordinator } = await createStructuredCoordinatorFixture({
+      bootstrapStructuredSchema: true,
+    });
     const sanitizer = await PathSanitizer.create(projectRoot);
     const service = new SymbolRetrievalService({ catalog: metadataStore, sanitizer });
-    const coordinator = new StructuredIndexCoordinator({
-      metadataStore,
-      vectorStore,
-      chunker: new Chunker(pluginRegistry),
-      projectWriteCoordinator: new ProjectWriteCoordinator(),
-    });
 
-    const file = buildFile(100);
+    const file = buildFile(declarationCount);
     await writeFile(path.join(projectRoot, file.filePath), file.text);
     const lines = file.text.split('\n');
-      const source = makeSource(file.filePath, file.text);
+    const source = createStructuredSource(file.filePath, file.text);
 
     await coordinator.stageFile({
-    source,
-    generationId: file.generationId,
-    contentHash: file.contentHash,
-    fileCompleteness: 'complete',
-    declarations: file.symbolIds.map((symbolId, index) => {
-    const lineText = lines[index];
-    if (lineText === undefined) {
-    throw new Error(`missing line ${index} in fixture`);
-    }
-    const line = index + 1;
-    return {
-    name: `fn_${index}`,
+      source,
+      generationId: file.generationId,
+      contentHash: file.contentHash,
+      fileCompleteness: 'complete',
+      declarations: file.symbolIds.map((symbolId, index) => {
+        const lineText = lines[index];
+        if (lineText === undefined) {
+          throw new Error(`missing line ${index} in fixture`);
+        }
+        const line = index + 1;
+        return {
+          name: `fn_${index}`,
             symbolId,
             qualifiedName: `fn_${index}`,
             kind: 'function' as const,
@@ -126,7 +104,7 @@ for (const declarationCount of DECLARATION_COUNTS) {
     bench(
       'get_file_outline',
       async () => {
-        await withCatalog(async (service) => {
+        await withCatalog(declarationCount, async (service) => {
           await service.getFileOutline({ filePath: 'src/module.ts' });
         });
       },
@@ -136,7 +114,7 @@ for (const declarationCount of DECLARATION_COUNTS) {
     bench(
       'get_symbol_source',
       async () => {
-        await withCatalog(async (service, symbolIds) => {
+        await withCatalog(declarationCount, async (service, symbolIds) => {
           const symbolId = symbolIds[Math.floor(symbolIds.length / 2)];
           if (symbolId === undefined) {
             throw new Error('fixture has no symbol ids');
@@ -150,7 +128,7 @@ for (const declarationCount of DECLARATION_COUNTS) {
     bench(
       'get_symbol_context',
       async () => {
-        await withCatalog(async (service, symbolIds) => {
+        await withCatalog(declarationCount, async (service, symbolIds) => {
           const symbolId = symbolIds[Math.floor(symbolIds.length / 2)];
           if (symbolId === undefined) {
             throw new Error('fixture has no symbol ids');

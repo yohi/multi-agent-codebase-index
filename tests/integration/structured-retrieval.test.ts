@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -9,28 +9,13 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 import { createNexusServer } from '../../src/server/index.js';
 import { createStreamableHttpHandler } from '../../src/server/transport.js';
-import { Chunker } from '../../src/indexer/chunker.js';
-import { IndexPipeline } from '../../src/indexer/pipeline.js';
-import { PluginRegistry } from '../../src/plugins/registry.js';
-import { TypeScriptLanguagePlugin } from '../../src/plugins/languages/typescript.js';
-import { SearchOrchestrator } from '../../src/search/orchestrator.js';
-import { SemanticSearch } from '../../src/search/semantic.js';
-import { PathSanitizer } from '../../src/server/path-sanitizer.js';
-import { TestEmbeddingProvider } from '../unit/plugins/embeddings/test-embedding-provider.js';
-import { TestGrepEngine } from '../unit/search/test-grep-engine.js';
-import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.js';
-import { InMemoryVectorStore } from '../unit/storage/in-memory-vector-store.js';
-import { SymbolRetrievalService } from '../../src/structured/retrieval-service.js';
 import { createMockMetricsHooks } from '../shared/test-helpers.js';
-import { createGenerationId, createSymbolId } from '../../src/structured/identity.js';
-import { sha256Hex, decodeUtf8 } from '../../src/structured/hash.js';
-import type { StructuredSource } from '../../src/structured/contracts.js';
-import type { CodeChunk } from '../../src/types/index.js';
-
-const makeSource = (filePath: string, text: string): StructuredSource => {
-  const bytes = Buffer.from(text, 'utf8');
-  return { filePath, language: 'typescript', bytes, text: decodeUtf8(bytes) };
-};
+import { createTestNexusOptions } from '../shared/create-test-nexus-options.js';
+import {
+  createStructuredCoordinator,
+  createStructuredStage,
+  stageStructuredFile,
+} from '../shared/structured-test-helpers.js';
 
 const parseResult = (result: any) => {
   if (result.content?.[0]?.type === 'text') {
@@ -47,131 +32,35 @@ describe('Structured retrieval MCP integration', () => {
   let mockMetricsHooks: ReturnType<typeof createMockMetricsHooks>;
 
   beforeEach(async () => {
-    projectRoot = path.join(
-      os.tmpdir(),
-      `nexus-structured-retrieval-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    );
+    projectRoot = await mkdtemp(path.join(os.tmpdir(), 'nexus-structured-retrieval-'));
     await mkdir(path.join(projectRoot, 'src'), { recursive: true });
 
-    const metadataStore = new InMemoryMetadataStore();
-    const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
-    await metadataStore.initialize();
-    await metadataStore.bootstrapStructuredSchema();
-    await vectorStore.initialize();
-
-    const embeddingProvider = new TestEmbeddingProvider();
-    const pluginRegistry = new PluginRegistry();
-    pluginRegistry.registerLanguage(new TypeScriptLanguagePlugin());
-    pluginRegistry.registerEmbeddingProvider('test', embeddingProvider);
-    pluginRegistry.setActiveEmbeddingProvider('test');
-
-    const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
-    const grepEngine = new TestGrepEngine();
-    const orchestrator = new SearchOrchestrator({
-      semanticSearch,
-      grepEngine,
-      projectRoot,
-    });
-    const pipeline = new IndexPipeline({
-      metadataStore,
-      vectorStore,
-      chunker: new Chunker(pluginRegistry),
-      embeddingProvider,
-      pluginRegistry,
-    });
-    const sanitizer = await PathSanitizer.create(projectRoot);
-    mockMetricsHooks = createMockMetricsHooks();
-    const symbolRetrievalService = new SymbolRetrievalService({ catalog: metadataStore, sanitizer });
-
-    // Seed an indexed chunk with symbolId so semantic/hybrid results can reference it.
     const chunkText = 'export function authenticate() { return true; }';
-    const chunk: CodeChunk = {
-      id: 'src/auth.ts:1',
-      filePath: 'src/auth.ts',
-      content: chunkText,
-      language: 'typescript',
-      symbolName: 'authenticate',
-      symbolKind: 'function',
-      startLine: 1,
-      endLine: 1,
-      hash: 'hash-auth',
-    };
-    await vectorStore.upsertChunks([chunk], await embeddingProvider.embed([chunk.content]));
-    grepEngine.addFile('src/auth.ts', chunkText);
+    mockMetricsHooks = createMockMetricsHooks();
 
     await writeFile(path.join(projectRoot, 'src/auth.ts'), chunkText);
 
-    // Stage a structured record so get_file_outline / get_symbol_source / get_symbol_context work.
-    const source = makeSource('src/auth.ts', chunkText);
-    const contentHash = sha256Hex(source.bytes);
-    const generationId = createGenerationId({
-      schemaVersion: 1,
-      parserId: 'typescript',
-      parserVersion: '1.0.0',
-      contentHash,
+    const context = await createTestNexusOptions({
+      projectRoot,
+      fileContent: chunkText,
+      chunkContent: chunkText,
+      bootstrapStructuredSchema: true,
+      metricsHooks: mockMetricsHooks,
     });
-    const symbolId = createSymbolId({
-      filePath: 'src/auth.ts',
-      qualifiedName: 'authenticate',
-      kind: 'function',
+    const { options, metadataStore, vectorStore } = context;
+    const stage = createStructuredStage('src/auth.ts', chunkText, 'authenticate', {
       signatureDiscriminator: '()',
-      occurrence: 0,
+      endColumn: chunkText.length,
     });
-
-    const coordinator = new (await import('../../src/indexer/structured-index-coordinator.js')).StructuredIndexCoordinator({
+    const coordinator = createStructuredCoordinator({
       metadataStore,
       vectorStore,
-      chunker: new Chunker(pluginRegistry),
-      projectWriteCoordinator: new (await import('../../src/indexer/project-write-coordinator.js')).ProjectWriteCoordinator(),
+      pluginRegistry: options.pluginRegistry,
     });
+    await stageStructuredFile(coordinator, stage);
+    await coordinator.activateFile({ filePath: stage.source.filePath, generationId: stage.generationId });
 
-    await coordinator.stageFile({
-      source,
-      generationId,
-      contentHash,
-      fileCompleteness: 'complete',
-      declarations: [
-        {
-          name: 'authenticate',
-          symbolId,
-          qualifiedName: 'authenticate',
-          kind: 'function',
-          signatureDiscriminator: '()',
-          position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: chunkText.length },
-          startByte: 0,
-          endByte: source.bytes.length,
-          sourceHash: contentHash,
-          languageId: 'typescript',
-          isExact: true,
-        },
-      ],
-      imports: [],
-      parserId: 'typescript',
-      parserVersion: '1.0.0',
-    });
-    await coordinator.activateFile({ filePath: 'src/auth.ts', generationId });
-
-    const createTestServer = () =>
-      createNexusServer({
-        projectRoot,
-        sanitizer,
-        semanticSearch,
-        grepEngine,
-        orchestrator,
-        vectorStore,
-        metadataStore,
-        pipeline,
-        pluginRegistry,
-        runReindex: async () => [],
-        loadFileContent: async (filePath) => {
-          if (filePath === 'src/auth.ts' || path.relative(projectRoot, filePath) === 'src/auth.ts') {
-            return chunkText;
-          }
-          throw new Error(`unexpected file: ${filePath}`);
-        },
-        metricsHooks: mockMetricsHooks,
-        symbolRetrievalService,
-      });
+    const createTestServer = () => createNexusServer(options);
     const handler = createStreamableHttpHandler({ createServer: createTestServer });
 
     httpServer = createServer((req, res) => {

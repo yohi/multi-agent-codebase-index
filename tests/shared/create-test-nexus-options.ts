@@ -11,6 +11,7 @@ import { SemanticSearch } from '../../src/search/semantic.js';
 import { PathSanitizer } from '../../src/server/path-sanitizer.js';
 import type { NexusServerOptions } from '../../src/server/tools/types.js';
 import type { CodeChunk } from '../../src/types/index.js';
+import type { MetricsHooks } from '../../src/observability/types.js';
 import { TestEmbeddingProvider } from '../unit/plugins/embeddings/test-embedding-provider.js';
 import { TestGrepEngine } from '../unit/search/test-grep-engine.js';
 import { InMemoryMetadataStore } from '../unit/storage/in-memory-metadata-store.js';
@@ -23,12 +24,30 @@ export interface TestNexusContext {
   grepEngine: TestGrepEngine;
 }
 
-export const createTestNexusOptions = async (): Promise<TestNexusContext> => {
-  const projectRoot = process.cwd();
+export interface TestNexusOptionsConfig {
+  readonly projectRoot?: string;
+  readonly fileContent?: string;
+  readonly chunkContent?: string;
+  readonly bootstrapStructuredSchema?: boolean;
+  readonly loadFileContent?: NexusServerOptions['loadFileContent'];
+  readonly metricsHooks?: MetricsHooks;
+}
+
+export const createTestNexusOptions = async ({
+  projectRoot = process.cwd(),
+  fileContent = 'export function authenticate() {}\n',
+  chunkContent = 'export function authenticate() {}',
+  bootstrapStructuredSchema = false,
+  loadFileContent,
+  metricsHooks,
+}: TestNexusOptionsConfig = {}): Promise<TestNexusContext> => {
   const metadataStore = new InMemoryMetadataStore();
   const vectorStore = new InMemoryVectorStore({ dimensions: 64 });
   await metadataStore.initialize();
   await vectorStore.initialize();
+  if (bootstrapStructuredSchema) {
+    await metadataStore.bootstrapStructuredSchema();
+  }
 
   const embeddingProvider = new TestEmbeddingProvider();
   const pluginRegistry = new PluginRegistry();
@@ -38,12 +57,12 @@ export const createTestNexusOptions = async (): Promise<TestNexusContext> => {
 
   const semanticSearch = new SemanticSearch({ vectorStore, embeddingProvider });
   const grepEngine = new TestGrepEngine();
-  grepEngine.addFile('src/auth.ts', 'export function authenticate() {}\n');
+  grepEngine.addFile('src/auth.ts', fileContent);
 
   const chunk: CodeChunk = {
     id: 'src/auth.ts:1',
     filePath: 'src/auth.ts',
-    content: 'export function authenticate() {}',
+    content: chunkContent,
     language: 'typescript',
     symbolName: 'authenticate',
     symbolKind: 'function',
@@ -75,15 +94,18 @@ export const createTestNexusOptions = async (): Promise<TestNexusContext> => {
     metadataStore,
     pipeline,
     pluginRegistry,
-    runReindex: async () => [],
-    loadFileContent: async (filePath: string) => {
-      const relativePath = path.relative(projectRoot, filePath);
-      if (relativePath === 'src/auth.ts' || filePath === 'src/auth.ts') {
-        return 'export function authenticate() {}\n';
-      }
-      throw new Error(`unexpected file: ${filePath}`);
-    },
+    runReindex: () => Promise.resolve([]),
+    loadFileContent:
+      loadFileContent ??
+      ((filePath: string) => {
+        const relativePath = path.relative(projectRoot, filePath);
+        if (relativePath === 'src/auth.ts' || filePath === 'src/auth.ts') {
+          return Promise.resolve(fileContent);
+        }
+        throw new Error(`unexpected file: ${filePath}`);
+      }),
     symbolRetrievalService,
+    ...(metricsHooks === undefined ? {} : { metricsHooks }),
   };
 
   return { options, metadataStore, vectorStore, grepEngine };
