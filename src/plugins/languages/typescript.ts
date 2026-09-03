@@ -1,5 +1,7 @@
 import ts from 'typescript';
 import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile, SymbolKind } from '../../types/index.js';
+import type { StructuredLanguageParser } from '../../structured/contracts.js';
+import { TypeScriptStructuredParser } from './typescript-structured.js';
 
 const getLineRange = (sourceFile: ts.SourceFile, node: ts.Node): { startLine: number; endLine: number } => {
   const startLine = sourceFile.getLineAndCharacterOfPosition(node.getFullStart()).line + 1;
@@ -161,11 +163,9 @@ class TypeScriptParser {
       }
     }
 
-    declarations.sort((left, right) => left.startLine - right.startLine);
-
     return {
       rootType: 'program',
-      declarations,
+      declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
     };
   }
 }
@@ -181,5 +181,9 @@ export class TypeScriptLanguagePlugin implements LanguagePlugin {
 
   async createParser(): Promise<TypeScriptParser> {
     return new TypeScriptParser();
+  }
+
+  async createStructuredParser(): Promise<StructuredLanguageParser> {
+    return new TypeScriptStructuredParser();
   }
 }
