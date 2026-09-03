@@ -34,9 +34,7 @@ export interface StructuredFileRetirement {
   readonly filePath: string;
   readonly expectedActiveGeneration: string | null;
   readonly rebuildEpoch: number;
-  readonly retiredGenerationId?: string;
   readonly tombstoneTimestamp?: number;
-  readonly retiredSymbolIds?: readonly string[];
 }
 
 export interface StructuredIndexState {

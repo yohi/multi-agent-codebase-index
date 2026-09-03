@@ -29,6 +29,7 @@ export interface CodeChunk {
   endLine: number;
   hash: string;
   symbolId?: string;
+  generationId?: string;
 }
 
 export interface SearchResult {
@@ -70,6 +71,7 @@ export interface FileToChunk {
 export interface ParsedDeclaration {
   type: SymbolKind;
   name: string;
+  symbolId?: string;
   startLine: number;
   endLine: number;
   content: string;
@@ -82,10 +84,12 @@ export interface ParsedSourceFile {
 
 export type {
   IMetadataStore,
+  StructuredCapableMetadataStore,
   MerkleNodeRow,
   IndexStatsRow,
   EmbeddingCacheEntry,
 } from '../storage/interfaces/metadata-store.js';
+export { supportsStructuredCatalog } from '../storage/interfaces/metadata-store.js';
 export type {
   ActiveGeneration,
   CompactionConfig,

@@ -2,6 +2,7 @@ import type { IVectorStore } from '../types/index.js';
 import type { Chunker } from './chunker.js';
 import type { IStructuredCatalog, StructuredGenerationStage, StructuredGenerationActivation, StructuredFileRetirement } from '../storage/interfaces/structured-catalog.js';
 import type { ProjectWriteCoordinator } from './project-write-coordinator.js';
+import type { StructuredDeclaration, StructuredImport, StructuredSource } from '../structured/contracts.js';
 
 export interface StructuredIndexCoordinatorOptions {
   metadataStore: IStructuredCatalog;
@@ -14,12 +15,12 @@ export class StructuredIndexCoordinator {
   constructor(private readonly options: StructuredIndexCoordinatorOptions) {}
 
   async stageFile(input: {
-    source: import('../structured/contracts.js').StructuredSource;
+    source: StructuredSource;
     generationId: string;
     contentHash: string;
     fileCompleteness: 'complete' | 'partial';
-    declarations: import('../structured/contracts.js').StructuredDeclaration[];
-    imports: import('../structured/contracts.js').StructuredImport[];
+    declarations: StructuredDeclaration[];
+    imports: StructuredImport[];
     parserId?: string;
     parserVersion?: string;
   }): Promise<void> {
@@ -58,7 +59,7 @@ export class StructuredIndexCoordinator {
       );
 
       // Placeholder embeddings: real pipeline will compute embeddings before staging.
-      const embeddings = chunks.map(() => new Array(64).fill(0));
+      const embeddings = chunks.map(() => new Array<number>(64).fill(0));
 
       try {
         await this.options.vectorStore.stageGenerationChunks({

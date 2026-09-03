@@ -64,3 +64,24 @@ export interface IMetadataStore extends Partial<IStructuredCatalog> {
   clearEmbeddings(): Promise<void>;
   pruneEmbeddings(maxAgeDays: number): Promise<number>;
 }
+
+export type StructuredCapableMetadataStore = IMetadataStore & IStructuredCatalog;
+
+const structuredCatalogMethods = [
+  'bootstrapStructuredSchema',
+  'getStructuredIndexState',
+  'stageGeneration',
+  'activateGeneration',
+  'clearPendingGeneration',
+  'retireFile',
+  'resolveFile',
+  'getActiveGenerationMap',
+  'resolveSymbol',
+  'getPendingSymbol',
+  'getTombstone',
+  'getStructuredCounts',
+  'reconcileStructuredState',
+] as const satisfies readonly (keyof IStructuredCatalog)[];
+
+export const supportsStructuredCatalog = (store: IMetadataStore): store is StructuredCapableMetadataStore =>
+  structuredCatalogMethods.every((method) => typeof store[method] === 'function');

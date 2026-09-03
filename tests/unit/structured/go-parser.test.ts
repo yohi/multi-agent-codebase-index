@@ -55,6 +55,95 @@ describe('Go structured parser', () => {
     expect(names.has('unexportedHelper')).toBe(false);
   });
 
+  it('emits single and grouped type aliases as typeAlias declarations', async () => {
+    const text = [
+      'package aliases',
+      '',
+      'type Alias = string',
+      '',
+      'type (',
+      '\tGroupedAlias = Alias',
+      '\tAnotherAlias = map[string]Alias',
+      ')',
+    ].join('\n');
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new GoLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({ filePath: 'aliases.go', language: 'go', bytes, text });
+
+    expect(result.declarations.filter((item) => item.kind === 'typeAlias').map((item) => item.name)).toEqual([
+      'Alias',
+      'GroupedAlias',
+      'AnotherAlias',
+    ]);
+  });
+
+  it('exports standalone functions only when the first Unicode code point is uppercase', async () => {
+    const uppercaseAstral = String.fromCodePoint(0x10400);
+    const lowercaseAstral = String.fromCodePoint(0x10428);
+    const text = [
+      'package names',
+      '',
+      'func _helper() {}',
+      'func \u65e5\u672c\u8a9e() {}',
+      `func ${uppercaseAstral}Exported() {}`,
+      `func ${lowercaseAstral}unexported() {}`,
+      'func Exported() {}',
+    ].join('\n');
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new GoLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({ filePath: 'unicode.go', language: 'go', bytes, text });
+    const names = new Set(result.declarations.map((item) => item.qualifiedName));
+
+    expect(names).toEqual(new Set(['Exported', `${uppercaseAstral}Exported`]));
+  });
+
+  it('preserves UTF-8 byte ranges after Unicode comments and strings', async () => {
+    const text = [
+      '// 日本語のドキュメント',
+      'package unicode',
+      '',
+      'import (',
+      '\t"fmt"',
+      '\t"strings"',
+      ')',
+      '',
+      'const greeting = "こんにちは"',
+      '',
+      'func Exported() string {',
+      '\treturn greeting + " 世界"',
+      '}',
+      '',
+    ].join('\n');
+    const bytes = new TextEncoder().encode(text);
+    const parser = await new GoLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({ filePath: 'unicode-ranges.go', language: 'go', bytes, text });
+    const declaration = result.declarations.find((item) => item.name === 'Exported');
+    const declarationStart = text.indexOf('func Exported()');
+    const declarationEnd = text.indexOf('}\n', declarationStart) + 1;
+    const importStart = text.indexOf('import (');
+    const importEnd = text.indexOf(')\n\nconst', importStart) + 1;
+    const expectedDeclarationRange = [
+      Buffer.byteLength(text.slice(0, declarationStart), 'utf8'),
+      Buffer.byteLength(text.slice(0, declarationEnd), 'utf8'),
+    ];
+    const expectedImportRange = [
+      Buffer.byteLength(text.slice(0, importStart), 'utf8'),
+      Buffer.byteLength(text.slice(0, importEnd), 'utf8'),
+    ];
+
+    expect(result.status).toBe('ok');
+    expect(declaration?.signatureDiscriminator).toBe('func Exported() string');
+    expect([declaration?.startByte, declaration?.endByte]).toEqual(expectedDeclarationRange);
+    expect(declaration?.rawSource).toBe(text.slice(declarationStart, declarationEnd));
+    expect(result.imports).toHaveLength(2);
+    expect(result.imports.map(({ startByte, endByte }) => [startByte, endByte])).toEqual([
+      expectedImportRange,
+      expectedImportRange,
+    ]);
+    expect(result.imports.every(({ startByte, endByte, sourceHash }) =>
+      sourceHash === sha256Hex(bytes.subarray(startByte, endByte)))).toBe(true);
+  });
+
   it('hashes symbol source from exact UTF-8 byte slices', async () => {
     const { bytes, result } = await parseGoFixture('exactness.go');
     const open = result.declarations.find((item) => item.name === 'Open')!;
@@ -68,6 +157,33 @@ describe('Go structured parser', () => {
     const result = await parser.parseStructured({ filePath: 'src/x.go', language: 'go', bytes: undefined as unknown as Uint8Array, text: 'package x' });
 
     expect(result.status).toBe('degraded');
+    expect(result.failure?.reasonCode).toBe('invariant_violation');
+  });
+
+  it('returns failed invalid_utf8 when original source bytes are not valid UTF-8', async () => {
+    const text = 'package invalid';
+    const validBytes = new TextEncoder().encode(text);
+    const bytes = new Uint8Array([...validBytes, 0xc3, 0x28]);
+    const parser = await new GoLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({ filePath: 'invalid.go', language: 'go', bytes, text });
+
+    expect(result.status).toBe('failed');
+    expect(result.retrievability).toBe('none');
+    expect(result.declarations).toEqual([]);
+    expect(result.imports).toEqual([]);
+    expect(result.failure?.reasonCode).toBe('invalid_utf8');
+  });
+
+  it('returns failed invariant_violation when source text differs from original bytes', async () => {
+    const text = 'package mismatch\n\nfunc Exported() {}';
+    const bytes = new TextEncoder().encode(text.replace('Exported', 'Other'));
+    const parser = await new GoLanguagePlugin().createStructuredParser();
+    const result = await parser.parseStructured({ filePath: 'mismatch.go', language: 'go', bytes, text });
+
+    expect(result.status).toBe('failed');
+    expect(result.retrievability).toBe('none');
+    expect(result.declarations).toEqual([]);
+    expect(result.imports).toEqual([]);
     expect(result.failure?.reasonCode).toBe('invariant_violation');
   });
 

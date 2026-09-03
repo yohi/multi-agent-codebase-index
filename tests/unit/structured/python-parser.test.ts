@@ -28,7 +28,7 @@ describe('Python structured parser', () => {
     const { result } = await parsePythonFixture('exactness.py');
     const decorated = result.declarations.find((item) => item.qualifiedName === 'Service.fetch');
 
-    expect(decorated?.rawSource).toMatch(/^@cache\n    async def fetch/);
+    expect(decorated?.rawSource).toMatch(/^@cache\n\x20{4}async def fetch/);
     expect(decorated?.rawSource).not.toContain('# unrelated');
   });
 
@@ -161,11 +161,9 @@ later = 1
     const parser = await new PythonLanguagePlugin().createStructuredParser();
     const result = await parser.parseStructured(source);
 
-    expect(result).toEqual(expect.objectContaining({
-      status: 'degraded',
-      retrievability: 'partial',
-      failure: expect.objectContaining({ reasonCode: 'invariant_violation' }),
-    }));
+    expect(result.status).toBe('degraded');
+    expect(result.retrievability).toBe('partial');
+    expect(result.failure?.reasonCode).toBe('invariant_violation');
   });
 
   it('falls back when Tree-sitter cannot be loaded', async () => {
@@ -173,6 +171,7 @@ later = 1
     vi.doMock('tree-sitter', () => {
       throw new Error('native parser unavailable');
     });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     try {
       const { PythonLanguagePlugin: IsolatedPythonLanguagePlugin } = await import('../../../src/plugins/languages/python.js');
@@ -181,6 +180,8 @@ later = 1
 
       expect(result.declarations).toEqual([expect.objectContaining({ type: 'function', name: 'fallback' })]);
     } finally {
+      expect(warning.mock.calls[0]?.[0]).toBe('python-structured-parser.fallback');
+      warning.mockRestore();
       vi.doUnmock('tree-sitter');
       vi.resetModules();
     }

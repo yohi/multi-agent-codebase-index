@@ -35,6 +35,7 @@ interface LanceRow {
   endline: number;
   hash: string;
   vector: number[] | Float32Array;
+  generationid?: string;
   _distance?: number;
   [key: string]: unknown;
 }
@@ -492,6 +493,7 @@ export class LanceVectorStore implements IVectorStore {
               startline: chunk.startLine,
               endline: chunk.endLine,
               hash: chunk.hash,
+              ...(chunk.generationId === undefined ? {} : { generationid: chunk.generationId }),
             };
           });
 
@@ -626,6 +628,7 @@ export class LanceVectorStore implements IVectorStore {
               hash: row.hash,
             },
             score: typeof row._distance === 'number' ? 1 - row._distance : 0,
+            ...(row.generationid === undefined ? {} : { generationId: row.generationid }),
           });
         }
       }
@@ -708,7 +711,7 @@ export class LanceVectorStore implements IVectorStore {
         hash: chunk.hash,
         symbolid: chunk.symbolId ?? null,
         generationid: batch.generationId,
-        visibility: 'pending' as StructuredRowVisibility,
+        visibility: 'pending',
       }));
 
       if (targetTable) {
@@ -796,8 +799,8 @@ export class LanceVectorStore implements IVectorStore {
       const allRowsRaw = await newTable.query().toArray() as unknown as LanceStructuredRow[];
       const allRows = allRowsRaw.map((row) => ({
         ...row,
-        vector: Array.from(row.vector as unknown as Iterable<number>),
-        visibility: 'active' as StructuredRowVisibility,
+        vector: Array.from(row.vector),
+        visibility: 'active',
       }));
       await this.db.dropTable(oldShadowName).catch(() => {});
       if (allRows.length > 0) {

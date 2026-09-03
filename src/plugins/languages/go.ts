@@ -205,11 +205,11 @@ class GoParser {
       }
     }
 
-    declarations.sort((left, right) => left.startLine - right.startLine);
+    const sortedDeclarations = declarations.toSorted((left, right) => left.startLine - right.startLine);
 
     return {
       rootType: 'source_file',
-      declarations,
+      declarations: sortedDeclarations,
     };
   }
 }
@@ -237,7 +237,7 @@ const projectLegacyResult = (result: Awaited<ReturnType<StructuredLanguageParser
     content: rawSource ?? '',
   }));
   const ranges = [...new Map(result.imports.map((item) => [`${item.startByte}:${item.endByte}`, item])).values()]
-    .sort((left, right) => left.startByte - right.startByte);
+    .toSorted((left, right) => left.startByte - right.startByte);
   for (const item of ranges) {
     declarations.push({
       type: 'import',
@@ -247,7 +247,10 @@ const projectLegacyResult = (result: Awaited<ReturnType<StructuredLanguageParser
       content: decodeUtf8(source.bytes.subarray(item.startByte, item.endByte)),
     });
   }
-  return { rootType: 'source_file', declarations: declarations.sort((left, right) => left.startLine - right.startLine) };
+  return {
+    rootType: 'source_file',
+    declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
+  };
 };
 
 export class GoLanguagePlugin implements LanguagePlugin {
