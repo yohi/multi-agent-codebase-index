@@ -16,6 +16,9 @@ export const toZodV3Field = (field: NeutralField): z.ZodTypeAny => {
     }
     case 'integer': {
       let integer = z.number().int().min(field.minimum ?? 1);
+      if (field.maximum !== undefined) {
+        integer = integer.max(field.maximum);
+      }
       return integer;
     }
     case 'number':

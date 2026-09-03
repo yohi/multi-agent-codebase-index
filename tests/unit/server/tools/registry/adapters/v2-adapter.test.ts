@@ -30,16 +30,16 @@ describe('v1/v2 schema parity', () => {
     }
   });
 
-  it('rejects over-limit integers only in v4', () => {
+  it('rejects over-limit integers in both v3 and v4', () => {
     const hybrid = TOOL_DEFINITIONS.find((definition) => definition.name === 'hybrid_search');
     const grep = TOOL_DEFINITIONS.find((definition) => definition.name === 'grep_search');
     if (hybrid === undefined || grep === undefined) {
       throw new Error('expected definitions are missing');
     }
-    expect(z3.object(toZodV3Shape(hybrid.input)).safeParse({ query: 'auth', topK: 101 }).success).toBe(true);
+    expect(z3.object(toZodV3Shape(hybrid.input)).safeParse({ query: 'auth', topK: 101 }).success).toBe(false);
     expect(toZodV4Object(hybrid.input).safeParse({ query: 'auth', topK: 101 }).success).toBe(false);
     expect(toZodV4Object(hybrid.input).safeParse({ query: 'auth', contextLines: 21 }).success).toBe(false);
-    expect(z3.object(toZodV3Shape(grep.input)).safeParse({ pattern: 'x', maxResults: 1001 }).success).toBe(true);
+    expect(z3.object(toZodV3Shape(grep.input)).safeParse({ pattern: 'x', maxResults: 1001 }).success).toBe(false);
     expect(toZodV4Object(grep.input).safeParse({ pattern: 'x', maxResults: 1001 }).success).toBe(false);
   });
 
