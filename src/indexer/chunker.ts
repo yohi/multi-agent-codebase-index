@@ -14,6 +14,8 @@ export interface ChunkerOptions {
   maxChunkChars?: number;
 }
 
+type GeneratedChunkFields = 'id' | 'content' | 'startLine' | 'endLine' | 'hash';
+
 export class Chunker {
   private readonly maxChunkChars: number;
 
@@ -69,7 +71,7 @@ export class Chunker {
     declaration: StructuredDeclaration,
     file: FileToChunk,
   ): Promise<CodeChunk[]> {
-    const base: Omit<CodeChunk, 'id' | 'content' | 'startLine' | 'endLine' | 'hash'> = {
+    const base: Omit<CodeChunk, GeneratedChunkFields> = {
       filePath: file.filePath,
       language: file.language,
       symbolName: declaration.name,

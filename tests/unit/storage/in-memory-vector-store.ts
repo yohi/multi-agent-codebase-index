@@ -269,7 +269,7 @@ export class InMemoryVectorStore implements IVectorStore {
   async removeGenerationRows(filePath: string, generationId: string): Promise<void> {
     for (const key of this.structuredRecords.keys()) {
       const row = this.structuredRecords.get(key);
-      if (row && row.chunk.filePath === filePath && row.generationId === generationId) {
+      if (row?.chunk.filePath === filePath && row.generationId === generationId) {
         this.structuredRecords.delete(key);
       }
     }

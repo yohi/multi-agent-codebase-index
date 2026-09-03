@@ -32,6 +32,7 @@ const makeStage = (filePath: string, text: string, qualifiedName: string) => {
   return {
     source,
     symbolId,
+    qualifiedName,
     generationId: createGenerationId({
       schemaVersion: 1,
       parserId: 'test',
@@ -40,6 +41,32 @@ const makeStage = (filePath: string, text: string, qualifiedName: string) => {
     }),
     contentHash,
   };
+};
+
+const stageCoordinatorFile = async (
+  coordinator: StructuredIndexCoordinator,
+  stage: ReturnType<typeof makeStage>,
+): Promise<void> => {
+  await coordinator.stageFile({
+    source: stage.source,
+    generationId: stage.generationId,
+    contentHash: stage.contentHash,
+    fileCompleteness: 'complete',
+    declarations: [{
+      name: stage.qualifiedName,
+      symbolId: stage.symbolId,
+      qualifiedName: stage.qualifiedName,
+      kind: 'function',
+      signatureDiscriminator: 'fn',
+      position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 30 },
+      startByte: 0,
+      endByte: 30,
+      sourceHash: stage.contentHash,
+      languageId: 'typescript',
+      isExact: true,
+    }],
+    imports: [],
+  });
 };
 
 describe('StructuredIndexCoordinator', () => {
@@ -68,26 +95,7 @@ describe('StructuredIndexCoordinator', () => {
 
   it('keeps the active catalog and vectors visible when Lance staging fails mid-batch', async () => {
     const first = makeStage('src/a.ts', 'export function a() { return 1; }', 'a');
-    await coordinator.stageFile({
-      source: first.source,
-      generationId: first.generationId,
-      contentHash: first.contentHash,
-      fileCompleteness: 'complete',
-      declarations: [{
-        name: 'a',
-        symbolId: first.symbolId,
-        qualifiedName: 'a',
-        kind: 'function',
-        signatureDiscriminator: 'fn',
-        position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 30 },
-        startByte: 0,
-        endByte: 30,
-        sourceHash: first.contentHash,
-        languageId: 'typescript',
-        isExact: true,
-      }],
-      imports: [],
-    });
+    await stageCoordinatorFile(coordinator, first);
     await coordinator.activateFile({ filePath: 'src/a.ts', generationId: first.generationId });
 
     const embedding = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
@@ -96,26 +104,7 @@ describe('StructuredIndexCoordinator', () => {
 
     vectorStore.failOnBatch(2);
     const second = makeStage('src/b.ts', 'export function b() { return 2; }', 'b');
-    await expect(coordinator.stageFile({
-      source: second.source,
-      generationId: second.generationId,
-      contentHash: second.contentHash,
-      fileCompleteness: 'complete',
-      declarations: [{
-        name: 'b',
-        symbolId: second.symbolId,
-        qualifiedName: 'b',
-        kind: 'function',
-        signatureDiscriminator: 'fn',
-        position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 30 },
-        startByte: 0,
-        endByte: 30,
-        sourceHash: second.contentHash,
-        languageId: 'typescript',
-        isExact: true,
-      }],
-      imports: [],
-    })).rejects.toThrow();
+    await expect(stageCoordinatorFile(coordinator, second)).rejects.toThrow();
 
     const resultsAfter = await vectorStore.search(embedding, 10);
     expect(resultsAfter).toHaveLength(1);
@@ -124,26 +113,7 @@ describe('StructuredIndexCoordinator', () => {
 
   it('returns index_incomplete for a pending file instead of stale source', async () => {
     const stage = makeStage('src/a.ts', 'export function a() { return 1; }', 'a');
-    await coordinator.stageFile({
-      source: stage.source,
-      generationId: stage.generationId,
-      contentHash: stage.contentHash,
-      fileCompleteness: 'complete',
-      declarations: [{
-        name: 'a',
-        symbolId: stage.symbolId,
-        qualifiedName: 'a',
-        kind: 'function',
-        signatureDiscriminator: 'fn',
-        position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 30 },
-        startByte: 0,
-        endByte: 30,
-        sourceHash: stage.contentHash,
-        languageId: 'typescript',
-        isExact: true,
-      }],
-      imports: [],
-    });
+    await stageCoordinatorFile(coordinator, stage);
 
     const resolved = await metadataStore.resolveFile('src/a.ts');
     expect(resolved.kind).toBe('pending');
@@ -151,26 +121,7 @@ describe('StructuredIndexCoordinator', () => {
 
   it('deletes structured file rows and catalog entries on delete', async () => {
     const stage = makeStage('src/a.ts', 'export function a() { return 1; }', 'a');
-    await coordinator.stageFile({
-      source: stage.source,
-      generationId: stage.generationId,
-      contentHash: stage.contentHash,
-      fileCompleteness: 'complete',
-      declarations: [{
-        name: 'a',
-        symbolId: stage.symbolId,
-        qualifiedName: 'a',
-        kind: 'function',
-        signatureDiscriminator: 'fn',
-        position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 30 },
-        startByte: 0,
-        endByte: 30,
-        sourceHash: stage.contentHash,
-        languageId: 'typescript',
-        isExact: true,
-      }],
-      imports: [],
-    });
+    await stageCoordinatorFile(coordinator, stage);
     await coordinator.activateFile({ filePath: 'src/a.ts', generationId: stage.generationId });
 
     await coordinator.deleteFile({ filePath: 'src/a.ts' });
