@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildToolHandlers } from '../../../../../../src/server/tools/tool-support.js';
-import { registerV1Tools } from '../../../../../../src/server/tools/registry/adapters/v1-adapter.js';
+import { registerV1Tools, toZodV3Field } from '../../../../../../src/server/tools/registry/adapters/v1-adapter.js';
 import { createTestNexusOptions } from '../../../../../shared/create-test-nexus-options.js';
 
 const EXPECTED_TOOLS = [
@@ -105,5 +105,18 @@ describe('v1 adapter parity', () => {
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({ error: true });
     expect(result.structuredContent).not.toHaveProperty('code');
+  });
+
+  it('allows integer minimum of 0 in the v1 adapter', () => {
+    const schema = toZodV3Field({ kind: 'integer', minimum: 0 });
+    expect(schema.safeParse(0).success).toBe(true);
+    expect(schema.safeParse(-1).success).toBe(false);
+    expect(schema.safeParse(1).success).toBe(true);
+  });
+
+  it('preserves default integer minimum of 1', () => {
+    const schema = toZodV3Field({ kind: 'integer' });
+    expect(schema.safeParse(0).success).toBe(false);
+    expect(schema.safeParse(1).success).toBe(true);
   });
 });

@@ -31,7 +31,8 @@ describe('MetricsCollector', () => {
     const metrics = await registry.metrics();
     expect(metrics).toMatch(metricPattern('nexus_structured_retrieval_outcomes_total', 1, 'tool="get_symbol_source"', 'status="ok"'));
     expect(metrics).toMatch(metricPattern('nexus_structured_parser_outcomes_total', 1, 'language="typescript"', 'parse_status="exact"'));
-    expect(metrics).toMatch(metricPattern('nexus_structured_context_tokens_count', 2, 'tool="get_symbol_context"'));
+    expect(metrics).toMatch(metricPattern('nexus_structured_context_tokens_count', 1, 'tool="get_symbol_context"', 'measurement="requested"'));
+    expect(metrics).toMatch(metricPattern('nexus_structured_context_tokens_count', 1, 'tool="get_symbol_context"', 'measurement="actual"'));
     expect(metrics).toMatch(metricPattern('nexus_structured_budget_overflows_total', 3, 'tool="get_symbol_context"'));
     expect(metrics).toMatch(metricPattern('nexus_structured_catalog_symbols', 87));
     expect(metrics).toMatch(metricPattern('nexus_structured_catalog_files', 10, 'coverage="exact"'));

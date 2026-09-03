@@ -50,6 +50,7 @@ export const createStructuredCoordinator = ({
     vectorStore,
     chunker: new Chunker(pluginRegistry),
     projectWriteCoordinator: new ProjectWriteCoordinator(),
+    config: { embedding: { dimensions: 64 } },
   });
 
 export const createStructuredCoordinatorFixture = async (

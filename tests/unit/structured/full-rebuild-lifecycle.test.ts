@@ -29,7 +29,7 @@ describe('full rebuild lifecycle', () => {
     });
   });
 
-  it('does not activate a swapped shadow table when final SQLite activation fails', async () => {
+  it('keeps a swapped shadow table available when final SQLite activation fails', async () => {
     const stage = createStructuredStage('src/a.ts', 'export function a() { return 1; }', 'a', {
       startByte: 0,
       endByte: 30,
@@ -48,6 +48,10 @@ describe('full rebuild lifecycle', () => {
 
     const state = await metadataStore.getStructuredIndexState();
     expect(state.rebuildState).toBe('failed');
-    expect(await vectorStore.search(embedding, 10)).toHaveLength(0);
+    expect(await vectorStore.search(embedding, 10)).toHaveLength(1);
+    expect(await metadataStore.resolveFile(stage.source.filePath)).toEqual({
+      kind: 'pending',
+      generationId: stage.generationId,
+    });
   });
 });

@@ -134,7 +134,7 @@ describe('SQLite structured catalog', () => {
     await store.activateGeneration({ filePath: 'src/a.ts', generationId: 'g1', expectedActiveGeneration: null, expectedRebuildEpoch: 1 });
 
     await expect(store.getImportsForSymbol('symbol-a')).resolves.toEqual([
-      expect.objectContaining({ id: 'pkg\u0000name', moduleSpecifier: 'pkg', bindingName: 'name', startByte: 0, endByte: 3, completeness: 'complete' }),
+      expect.objectContaining({ id: bindingId, moduleSpecifier: 'pkg', bindingName: 'name', startByte: 0, endByte: 3, completeness: 'complete' }),
     ]);
   });
 
@@ -148,6 +148,47 @@ describe('SQLite structured catalog', () => {
     expect(importIndexes.map((index) => index.name)).toContain('imports_file_generation_idx');
   });
 
+  it('migrates legacy source-keyed import links to stable import IDs', async () => {
+    const databasePath = path.join(dir, 'metadata.db');
+    await store.close();
+
+    const database = new Database(databasePath);
+    try {
+      database.exec(`
+        CREATE TABLE structured_files (
+          file_path TEXT PRIMARY KEY, active_generation TEXT, pending_generation TEXT
+        );
+        CREATE TABLE imports (
+          file_path TEXT NOT NULL, generation TEXT NOT NULL, source TEXT NOT NULL,
+          imported_names TEXT NOT NULL, start_line INTEGER NOT NULL, start_column INTEGER NOT NULL,
+          end_line INTEGER NOT NULL, end_column INTEGER NOT NULL,
+          start_byte INTEGER NOT NULL DEFAULT 0, end_byte INTEGER NOT NULL DEFAULT 0,
+          source_hash TEXT NOT NULL, is_complete INTEGER NOT NULL DEFAULT 1, diagnostics_json TEXT
+        );
+        CREATE TABLE symbol_imports (
+          file_path TEXT NOT NULL, generation TEXT NOT NULL, symbol_id TEXT NOT NULL,
+          source TEXT NOT NULL, source_hash TEXT NOT NULL,
+          PRIMARY KEY (file_path, generation, symbol_id, source)
+        );
+      `);
+      database.prepare('INSERT INTO structured_files (file_path,active_generation) VALUES (?,?)').run('src/a.ts', 'g1');
+      const importRow = database.prepare('INSERT INTO imports (file_path,generation,source,imported_names,start_line,start_column,end_line,end_column,start_byte,end_byte,source_hash,is_complete,diagnostics_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      importRow.run('src/a.ts', 'g1', 'pkg', 'alpha', 1, 0, 1, 1, 0, 1, 'hash-alpha', 1, '[]');
+      importRow.run('src/a.ts', 'g1', 'pkg', 'beta', 2, 0, 2, 1, 2, 3, 'hash-beta', 1, '[]');
+      database.prepare('INSERT INTO symbol_imports (file_path,generation,symbol_id,source,source_hash) VALUES (?,?,?,?,?)').run('src/a.ts', 'g1', 'symbol-a', 'pkg', 'legacy-hash');
+    } finally {
+      database.close();
+    }
+
+    store = new SqliteMetadataStore({ databasePath });
+    await store.initialize();
+
+    await expect(store.getImportsForSymbol('symbol-a')).resolves.toEqual([
+      expect.objectContaining({ id: 'pkg\u0000alpha', bindingName: 'alpha', startByte: 0, endByte: 1 }),
+      expect.objectContaining({ id: 'pkg\u0000beta', bindingName: 'beta', startByte: 2, endByte: 3 }),
+    ]);
+  });
+
   it('reconciles orphaned generation data and stale active tombstones', async () => {
     await store.initialize();
     await store.stageGeneration({ ...stage('src/a.ts', 'g1', 'live'), rebuildEpoch: 2 });
@@ -158,8 +199,8 @@ describe('SQLite structured catalog', () => {
     try {
       database.prepare('INSERT INTO symbol_generations (file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch) VALUES (?,?,?,?,?,?,?)').run('src/a.ts', 'orphan', 1, 'test', '1', 'orphan-hash', 2);
       database.prepare('INSERT INTO symbols (file_path,generation,symbol_id,name,qualified_name,kind,signature_discriminator,start_line,start_column,end_line,end_column,start_byte,end_byte,parent_symbol_id,language_id,is_exact,source_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('src/a.ts', 'orphan', 'orphan-symbol', 'orphan', 'orphan', 'function', 'sig', 1, 0, 1, 1, 0, 3, null, 'typescript', 1, '');
-      database.prepare('INSERT INTO imports (file_path,generation,source,imported_names,start_line,start_column,end_line,end_column,source_hash,is_complete,diagnostics_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run('src/a.ts', 'orphan', 'pkg', 'name', 1, 0, 1, 1, '', 1, '[]');
-      database.prepare('INSERT INTO symbol_imports (file_path,generation,symbol_id,source,source_hash) VALUES (?,?,?,?,?)').run('src/a.ts', 'orphan', 'orphan-symbol', 'pkg', '');
+      database.prepare('INSERT INTO imports (file_path,generation,id,source,imported_names,start_line,start_column,end_line,end_column,source_hash,is_complete,diagnostics_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run('src/a.ts', 'orphan', 'pkg\u0000name', 'pkg', 'name', 1, 0, 1, 1, '', 1, '[]');
+      database.prepare('INSERT INTO symbol_imports (file_path,generation,symbol_id,import_binding_id,source,source_hash) VALUES (?,?,?,?,?,?)').run('src/a.ts', 'orphan', 'orphan-symbol', 'pkg\u0000name', 'pkg', '');
       database.prepare('INSERT INTO symbol_tombstones (symbol_id,file_path,generation,retired_at_rebuild_epoch,retired_at) VALUES (?,?,?,?,?)').run('live', 'src/a.ts', 'old', 1, 0);
       database.prepare('UPDATE index_stats SET structured_last_error_code=? WHERE id=?').run('parse_error', 'primary');
     } finally {

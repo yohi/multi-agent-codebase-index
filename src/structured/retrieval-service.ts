@@ -105,6 +105,7 @@ export class SymbolRetrievalService {
       tokenBudget: input.tokenBudget,
     });
 
+    const importsById = new Map(importRecords.map((record) => [record.id, record]));
     const filePath = verified.filePath;
     const importsCompleteness = this.mergeCompleteness(importRecords);
 
@@ -115,7 +116,7 @@ export class SymbolRetrievalService {
       filePath,
       imports: packed.imports.map((item) => ({
         id: item.id,
-        moduleSpecifier: this.extractModuleSpecifier(item.id),
+        moduleSpecifier: importsById.get(item.id)?.moduleSpecifier,
         startByte: item.startByte,
         rawSource: item.rawSource,
       })),
@@ -174,9 +175,12 @@ export class SymbolRetrievalService {
     if (activeGeneration === undefined) {
       return { ok: false, status: { status: 'index_incomplete', reasonCode: 'INDEX_PENDING_GENERATION', request: { symbolId: input.symbolId } } };
     }
+    if (this.options.isSupportedLanguage && !this.options.isSupportedLanguage(resolution.declaration.languageId)) {
+      return { ok: false, status: { status: 'unsupported', reasonCode: 'unsupported_language', request: { symbolId: input.symbolId } } };
+    }
 
     const projectRoot = this.options.sanitizer.getProjectRoot();
-    const readResult = await this.readCurrentBytes(filePath, projectRoot);
+    const readResult = await this.readCurrentBytes(filePath, projectRoot, input.signal);
     if (readResult.status !== 'ok') {
       return { ok: false, status: { status: 'stale', reasonCode: readResult.reasonCode, request: { symbolId: input.symbolId } } };
     }
@@ -213,19 +217,18 @@ export class SymbolRetrievalService {
     return importRecords.every((item) => item.completeness === 'complete') ? 'complete' : 'partial';
   }
 
-  private extractModuleSpecifier(id: string): string | undefined {
-    const parts = id.split('\u0000');
-    return parts[0] || undefined;
-  }
-
-  private async readCurrentBytes(filePath: string, projectRoot: string): Promise<{ status: 'ok'; bytes: Uint8Array } | { status: 'stale'; reasonCode: 'INDEX_FILE_MISSING' | 'PATH_EXCLUDED' }> {
+  private async readCurrentBytes(
+    filePath: string,
+    projectRoot: string,
+    signal?: AbortSignal,
+  ): Promise<{ status: 'ok'; bytes: Uint8Array } | { status: 'stale'; reasonCode: 'INDEX_FILE_MISSING' | 'PATH_EXCLUDED' }> {
     if (this.options.isExcluded) {
       const excluded = await this.options.isExcluded(filePath);
       if (excluded) return { status: 'stale', reasonCode: 'PATH_EXCLUDED' };
     }
     try {
       const absolutePath = join(projectRoot, filePath);
-      const buffer = await readFile(absolutePath);
+      const buffer = await readFile(absolutePath, { signal });
       return { status: 'ok', bytes: new Uint8Array(buffer) };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;

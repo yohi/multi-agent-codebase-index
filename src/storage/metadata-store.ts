@@ -124,17 +124,24 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       ['last_error', 'TEXT'],
       ['structured_schema_version', 'INTEGER'],
       ['structured_rebuild_state', 'TEXT'],
-      ['structured_rebuild_epoch', 'INTEGER'],
+      ['structured_rebuild_epoch', 'INTEGER NOT NULL DEFAULT 0'],
       ['structured_last_error_code', 'TEXT'],
     ]);
     this.db.prepare('INSERT OR IGNORE INTO index_stats (id,total_files,total_chunks,last_indexed_at,last_full_scan_at,overflow_count,last_error,structured_rebuild_epoch) VALUES (?,?,?,?,?,?,?,?)').run(PRIMARY_STATS_ID, 0, 0, null, null, 0, null, 0);
+    this.db.prepare('UPDATE index_stats SET structured_rebuild_epoch = COALESCE(structured_rebuild_epoch, 0) WHERE structured_rebuild_epoch IS NULL').run();
     this.addMissingColumns('imports', [
+      ['id', "TEXT NOT NULL DEFAULT ''"],
       ['start_byte', 'INTEGER NOT NULL DEFAULT 0'],
       ['end_byte', 'INTEGER NOT NULL DEFAULT 0'],
       ['source_hash', "TEXT NOT NULL DEFAULT ''"],
       ['is_complete', 'INTEGER NOT NULL DEFAULT 1'],
       ['diagnostics_json', 'TEXT'],
     ]);
+    this.migrateImportsPrimaryKey();
+    this.addMissingColumns('symbol_imports', [
+      ['import_binding_id', "TEXT NOT NULL DEFAULT ''"],
+    ]);
+    this.migrateSymbolImportsPrimaryKey();
     this.addMissingColumns('symbols', [
       ['start_byte', 'INTEGER NOT NULL DEFAULT 0'],
       ['end_byte', 'INTEGER NOT NULL DEFAULT 0'],
@@ -146,6 +153,54 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     if (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='structured_generations'").get()) {
       this.db.exec('INSERT OR IGNORE INTO symbol_generations SELECT file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch FROM structured_generations');
     }
+  }
+
+  private migrateImportsPrimaryKey(): void {
+    const info = this.db.pragma('table_info(imports)') as Array<{ name: string; pk: number }>;
+    const pkColumns = info.filter((column) => column.pk > 0).map((column) => column.name);
+    if (pkColumns.includes('id')) return;
+
+    this.db.exec(`
+      CREATE TABLE imports_new (
+        file_path TEXT NOT NULL, generation TEXT NOT NULL, id TEXT NOT NULL,
+        source TEXT NOT NULL, imported_names TEXT NOT NULL, start_line INTEGER NOT NULL, start_column INTEGER NOT NULL,
+        end_line INTEGER NOT NULL, end_column INTEGER NOT NULL,
+        start_byte INTEGER NOT NULL DEFAULT 0, end_byte INTEGER NOT NULL DEFAULT 0,
+        source_hash TEXT NOT NULL,
+        is_complete INTEGER NOT NULL DEFAULT 1, diagnostics_json TEXT,
+        PRIMARY KEY (file_path, generation, id)
+      );
+      INSERT OR IGNORE INTO imports_new
+        SELECT file_path, generation, source || char(0) || imported_names, source, imported_names,
+               start_line, start_column, end_line, end_column, start_byte, end_byte, source_hash, is_complete, diagnostics_json
+        FROM imports;
+      DROP TABLE imports;
+      ALTER TABLE imports_new RENAME TO imports;
+      CREATE INDEX imports_file_generation_idx ON imports (file_path, generation);
+    `);
+  }
+
+  private migrateSymbolImportsPrimaryKey(): void {
+    const info = this.db.pragma('table_info(symbol_imports)') as Array<{ name: string; pk: number }>;
+    const pkColumns = info.filter((column) => column.pk > 0).map((column) => column.name);
+    if (pkColumns.includes('import_binding_id')) return;
+
+    this.db.exec(`
+      CREATE TABLE symbol_imports_new (
+        file_path TEXT NOT NULL, generation TEXT NOT NULL, symbol_id TEXT NOT NULL,
+        import_binding_id TEXT NOT NULL, source TEXT NOT NULL, source_hash TEXT NOT NULL,
+        PRIMARY KEY (file_path, generation, symbol_id, import_binding_id)
+      );
+      INSERT OR IGNORE INTO symbol_imports_new
+        SELECT si.file_path, si.generation, si.symbol_id, i.id, si.source, si.source_hash
+        FROM symbol_imports AS si
+        JOIN imports AS i
+          ON i.file_path = si.file_path
+         AND i.generation = si.generation
+         AND i.source = si.source;
+      DROP TABLE symbol_imports;
+      ALTER TABLE symbol_imports_new RENAME TO symbol_imports;
+    `);
   }
 
   async initialize(): Promise<void> {
@@ -220,18 +275,19 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       );
       CREATE INDEX IF NOT EXISTS symbols_symbol_id_idx ON symbols (symbol_id);
       CREATE TABLE IF NOT EXISTS imports (
-        file_path TEXT NOT NULL, generation TEXT NOT NULL, source TEXT NOT NULL,
-        imported_names TEXT NOT NULL, start_line INTEGER NOT NULL, start_column INTEGER NOT NULL,
+        file_path TEXT NOT NULL, generation TEXT NOT NULL, id TEXT NOT NULL,
+        source TEXT NOT NULL, imported_names TEXT NOT NULL, start_line INTEGER NOT NULL, start_column INTEGER NOT NULL,
         end_line INTEGER NOT NULL, end_column INTEGER NOT NULL,
         start_byte INTEGER NOT NULL DEFAULT 0, end_byte INTEGER NOT NULL DEFAULT 0,
         source_hash TEXT NOT NULL,
-        is_complete INTEGER NOT NULL DEFAULT 1, diagnostics_json TEXT
+        is_complete INTEGER NOT NULL DEFAULT 1, diagnostics_json TEXT,
+        PRIMARY KEY (file_path, generation, id)
       );
       CREATE INDEX IF NOT EXISTS imports_file_generation_idx ON imports (file_path, generation);
       CREATE TABLE IF NOT EXISTS symbol_imports (
         file_path TEXT NOT NULL, generation TEXT NOT NULL, symbol_id TEXT NOT NULL,
-        source TEXT NOT NULL, source_hash TEXT NOT NULL,
-        PRIMARY KEY (file_path, generation, symbol_id, source)
+        import_binding_id TEXT NOT NULL, source TEXT NOT NULL, source_hash TEXT NOT NULL,
+        PRIMARY KEY (file_path, generation, symbol_id, import_binding_id)
       );
       CREATE TABLE IF NOT EXISTS symbol_tombstones (
         symbol_id TEXT PRIMARY KEY, file_path TEXT NOT NULL, generation TEXT NOT NULL,
@@ -261,19 +317,18 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       this.db.prepare('DELETE FROM imports WHERE file_path = ? AND generation = ?').run(input.filePath, input.generation.generationId);
       const symbol = this.db.prepare('INSERT INTO symbols (file_path,generation,symbol_id,name,qualified_name,kind,signature_discriminator,start_line,start_column,end_line,end_column,start_byte,end_byte,parent_symbol_id,language_id,is_exact,source_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
       for (const declaration of input.declarations) symbol.run(input.filePath, input.generation.generationId, declaration.symbolId, declaration.name, declaration.qualifiedName, declaration.kind, declaration.signatureDiscriminator, declaration.position.startLine, declaration.position.startColumn, declaration.position.endLine, declaration.position.endColumn, declaration.startByte, declaration.endByte, declaration.parentSymbolId ?? null, declaration.languageId, declaration.isExact ? 1 : 0, sha256Hex(input.bytes.subarray(declaration.startByte, declaration.endByte)));
-      const importRow = this.db.prepare('INSERT INTO imports (file_path,generation,source,imported_names,start_line,start_column,end_line,end_column,start_byte,end_byte,source_hash,is_complete,diagnostics_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
-      const bindingRow = this.db.prepare('INSERT INTO symbol_imports (file_path,generation,symbol_id,source,source_hash) VALUES (?,?,?,?,?)');
+      const importRow = this.db.prepare('INSERT INTO imports (file_path,generation,id,source,imported_names,start_line,start_column,end_line,end_column,start_byte,end_byte,source_hash,is_complete,diagnostics_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      const bindingRow = this.db.prepare('INSERT INTO symbol_imports (file_path,generation,symbol_id,import_binding_id,source,source_hash) VALUES (?,?,?,?,?,?)');
       const importsById = new Map(input.imports.map((imported) => [imported.id, imported]));
-      for (const imported of input.imports) importRow.run(input.filePath, input.generation.generationId, imported.moduleSpecifier ?? '', imported.bindingName ?? '', imported.position.startLine, imported.position.startColumn, imported.position.endLine, imported.position.endColumn, imported.startByte, imported.endByte, sha256Hex(input.bytes.subarray(imported.startByte, imported.endByte)), imported.completeness === 'complete' ? 1 : 0, JSON.stringify(imported.diagnostics ?? []));
+      for (const imported of input.imports) importRow.run(input.filePath, input.generation.generationId, imported.id, imported.moduleSpecifier ?? '', imported.bindingName ?? '', imported.position.startLine, imported.position.startColumn, imported.position.endLine, imported.position.endColumn, imported.startByte, imported.endByte, sha256Hex(input.bytes.subarray(imported.startByte, imported.endByte)), imported.completeness === 'complete' ? 1 : 0, JSON.stringify(imported.diagnostics ?? []));
       for (const declaration of input.declarations) {
-        const linkedSources = new Set<string>();
+        const linkedBindingIds = new Set<string>();
         for (const bindingId of declaration.importBindingIds ?? []) {
           const imported = importsById.get(bindingId);
           if (imported === undefined) continue;
-          const source = imported.moduleSpecifier ?? '';
-          if (linkedSources.has(source)) continue;
-          linkedSources.add(source);
-          bindingRow.run(input.filePath, input.generation.generationId, declaration.symbolId, source, sha256Hex(input.bytes.subarray(imported.startByte, imported.endByte)));
+          if (linkedBindingIds.has(imported.id)) continue;
+          linkedBindingIds.add(imported.id);
+          bindingRow.run(input.filePath, input.generation.generationId, declaration.symbolId, imported.id, imported.moduleSpecifier ?? '', sha256Hex(input.bytes.subarray(imported.startByte, imported.endByte)));
         }
       }
       this.db.prepare('INSERT INTO structured_files (file_path,pending_generation) VALUES (?,?) ON CONFLICT(file_path) DO UPDATE SET pending_generation=excluded.pending_generation').run(input.filePath, input.generation.generationId);
@@ -381,14 +436,15 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
   async getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]> {
     await this.asyncBoundary();
     const rows = this.db.prepare(`
-      SELECT i.source AS moduleSpecifier, i.imported_names AS bindingName,
+      SELECT i.id AS bindingId, i.source AS moduleSpecifier, i.imported_names AS bindingName,
              i.start_byte AS startByte, i.end_byte AS endByte,
              i.source_hash AS sourceHash, i.is_complete AS isComplete
       FROM symbol_imports si
-      JOIN imports i ON i.file_path = si.file_path AND i.generation = si.generation AND i.source = si.source
+      JOIN imports i ON i.file_path = si.file_path AND i.generation = si.generation AND i.id = si.import_binding_id
       JOIN structured_files f ON f.file_path = si.file_path AND f.active_generation = si.generation
       WHERE si.symbol_id = ?
     `).all(symbolId) as Array<{
+      bindingId: string;
       moduleSpecifier: string;
       bindingName: string;
       startByte: number;
@@ -397,7 +453,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       isComplete: number;
     }>;
     return rows.map((row) => ({
-      id: `${row.moduleSpecifier}\u0000${row.bindingName}`,
+      id: row.bindingId,
       moduleSpecifier: row.moduleSpecifier || undefined,
       bindingName: row.bindingName || undefined,
       startByte: row.startByte,
@@ -449,7 +505,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
 
   async incrementRebuildEpoch(): Promise<number> {
     await this.asyncBoundary();
-    this.db.prepare('UPDATE index_stats SET structured_rebuild_epoch = structured_rebuild_epoch + 1 WHERE id=?').run(PRIMARY_STATS_ID);
+    this.db.prepare('UPDATE index_stats SET structured_rebuild_epoch = COALESCE(structured_rebuild_epoch, 0) + 1 WHERE id=?').run(PRIMARY_STATS_ID);
     const row = this.db.prepare('SELECT structured_rebuild_epoch AS epoch FROM index_stats WHERE id=?').get(PRIMARY_STATS_ID) as { epoch: number } | undefined;
     return row?.epoch ?? 0;
   }

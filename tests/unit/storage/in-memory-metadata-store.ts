@@ -151,17 +151,20 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
 
   async getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]> {
     for (const generation of this.active.values()) {
-      const hasSymbol = generation.declarations.some((item) => item.symbolId === symbolId);
-      if (hasSymbol) {
-        return generation.imports.map((imported) => ({
-          id: `${imported.moduleSpecifier ?? ''}\u0000${imported.bindingName ?? ''}`,
-          moduleSpecifier: imported.moduleSpecifier,
-          bindingName: imported.bindingName,
-          startByte: imported.startByte,
-          endByte: imported.endByte,
-          sourceHash: imported.sourceHash,
-          completeness: imported.completeness,
-        }));
+      const declaration = generation.declarations.find((item) => item.symbolId === symbolId);
+      if (declaration !== undefined) {
+        const bindingIds = new Set(declaration.importBindingIds ?? []);
+        return generation.imports
+          .filter((imported) => bindingIds.has(imported.id))
+          .map((imported) => ({
+            id: imported.id,
+            moduleSpecifier: imported.moduleSpecifier,
+            bindingName: imported.bindingName,
+            startByte: imported.startByte,
+            endByte: imported.endByte,
+            sourceHash: imported.sourceHash,
+            completeness: imported.completeness,
+          }));
       }
     }
     return [];

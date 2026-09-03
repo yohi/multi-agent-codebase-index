@@ -518,7 +518,12 @@ export class NexusServerFactory {
         sanitize: (filePath) => sanitizer.resolveExisting(filePath),
       }).getStore(workspaceId, 'local');
 
-      const symbolRetrievalService = new SymbolRetrievalService({ catalog: metadataStore, sanitizer });
+      const symbolIgnoreMatcher = picomatch(normalizeIgnorePaths(ignorePaths), { windows: true });
+      const symbolRetrievalService = new SymbolRetrievalService({
+        catalog: metadataStore,
+        sanitizer,
+        isExcluded: (filePath) => symbolIgnoreMatcher(filePath),
+      });
 
       return buildNexusRuntime({
         projectRoot,

@@ -192,7 +192,7 @@ export class MetricsCollector implements MetricsHooks {
     this.structuredContextTokens = new Histogram({
       name: 'nexus_structured_context_tokens',
       help: 'Structured context token counts',
-      labelNames: ['tool'] as const,
+      labelNames: ['tool', 'measurement'] as const,
       buckets: [0, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000],
       registers: [this.registry],
     });
@@ -310,10 +310,10 @@ export class MetricsCollector implements MetricsHooks {
 
   onStructuredContextTokens(toolName: string, requested: number, actual: number): void {
     if (requested >= 0) {
-      this.structuredContextTokens.labels(toolName).observe(requested);
+      this.structuredContextTokens.labels(toolName, 'requested').observe(requested);
     }
     if (actual >= 0) {
-      this.structuredContextTokens.labels(toolName).observe(actual);
+      this.structuredContextTokens.labels(toolName, 'actual').observe(actual);
     }
   }
 

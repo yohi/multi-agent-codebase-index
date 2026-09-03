@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 // When running under a git worktree, __dirname may be inside .worktrees/.../feat/branch,
 // so locate the project root by walking up until package.json is found instead of assuming
 // a fixed number of parent directories.
@@ -20,7 +20,7 @@ const findProjectRoot = (start: string): string => {
   throw new Error(`Could not find project root from ${start}`);
 };
 
-const PROJECT_ROOT = findProjectRoot(__dirname);
+const PROJECT_ROOT = findProjectRoot(dirname(fileURLToPath(import.meta.url)));
 
 function readGuidanceFile(filePath: string): string {
   return readFileSync(join(PROJECT_ROOT, filePath), "utf-8");

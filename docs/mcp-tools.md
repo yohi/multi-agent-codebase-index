@@ -276,8 +276,9 @@ semantic search と grep search を統合した ranking search です。
 
 ## `get_symbol_context`
 
-構造化シンボル ID の検証済み関連 import と正確なシンボルソースを、
-要求されたトークン予算内に収めて返します。
+構造化シンボル ID の検証済み関連 import と正確なシンボルソースを返します。
+`tokenBudget` は関連 import の選択にのみ適用され、シンボルソース自体は常に完全に返されます。
+import の追加で予算を超過した場合、`budget.exceeded: true` と `omittedForBudget` カウントで報告します。
 
 ### 引数
 

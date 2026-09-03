@@ -5,7 +5,7 @@ import { TOOL_DEFINITIONS, type ToolName } from '../definitions.js';
 import type { NeutralField, NeutralSchema } from '../schemas-neutral.js';
 import type { ToolHandler } from '../../types.js';
 
-const toZodV3Field = (field: NeutralField): z.ZodTypeAny => {
+export const toZodV3Field = (field: NeutralField): z.ZodTypeAny => {
   switch (field.kind) {
     case 'string': {
       let stringField = z.string();
@@ -15,10 +15,7 @@ const toZodV3Field = (field: NeutralField): z.ZodTypeAny => {
       return stringField;
     }
     case 'integer': {
-      let integer = z.number().int().positive();
-      if (field.minimum !== undefined) {
-        integer = integer.min(field.minimum);
-      }
+      let integer = z.number().int().min(field.minimum ?? 1);
       return integer;
     }
     case 'number':

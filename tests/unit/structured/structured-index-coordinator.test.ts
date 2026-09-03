@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import {
   createStructuredCoordinatorFixture,
   createStructuredStage,
+  runStructuredFullRebuild,
   stageStructuredFile,
 } from '../../shared/structured-test-helpers.js';
 import type { StructuredIndexCoordinator } from '../../../src/indexer/structured-index-coordinator.js';
@@ -53,6 +54,23 @@ describe('StructuredIndexCoordinator', () => {
       kind: 'active',
       generationId: first.generationId,
     });
+  });
+
+  it('keeps omitted files and clears pending payloads when full rebuild staging fails', async () => {
+    const existing = createStructuredStage('src/existing.ts', 'export function existing() { return 1; }', 'existing');
+    await stageStructuredFile(coordinator, existing);
+    await coordinator.activateFile({ filePath: existing.source.filePath, generationId: existing.generationId });
+
+    vectorStore.failOnBatch(2);
+    const replacement = createStructuredStage('src/replacement.ts', 'export function replacement() { return 2; }', 'replacement');
+    await expect(runStructuredFullRebuild(coordinator, replacement)).rejects.toThrow();
+
+    expect(await metadataStore.resolveFile(existing.source.filePath)).toEqual({
+      kind: 'active',
+      generationId: existing.generationId,
+    });
+    expect(await metadataStore.resolveFile(replacement.source.filePath)).toEqual({ kind: 'missing' });
+    expect(await vectorStore.search(new Array<number>(64).fill(0), 10)).toHaveLength(1);
   });
 
   it('returns index_incomplete for a pending file instead of stale source', async () => {

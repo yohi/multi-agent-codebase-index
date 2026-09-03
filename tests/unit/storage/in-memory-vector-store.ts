@@ -304,7 +304,6 @@ export class InMemoryVectorStore implements IVectorStore {
 
   async abortStructuredShadowTable(_shadowTable: StructuredShadowTable): Promise<void> {
     this.structuredShadow = undefined;
-    this.structuredRecords.clear();
   }
 
   async reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void> {

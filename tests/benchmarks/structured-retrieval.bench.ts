@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 
-import { bench, describe } from 'vitest';
+import { afterAll, bench, describe } from 'vitest';
 
 import { PathSanitizer } from '../../src/server/path-sanitizer.js';
 import { SymbolRetrievalService } from '../../src/structured/retrieval-service.js';
@@ -15,13 +15,23 @@ import {
 
 const DECLARATION_COUNTS = [10, 50, 100] as const;
 
-const buildFile = (declarationCount: number): { filePath: string; text: string; symbolIds: string[]; generationId: string; contentHash: string } => {
+const buildFile = (declarationCount: number): {
+  filePath: string;
+  text: string;
+  symbolIds: string[];
+  generationId: string;
+  contentHash: string;
+  declarationSpans: Array<{ startByte: number; endByte: number; text: string }>;
+} => {
   const filePath = 'src/module.ts';
   const declarations: string[] = [];
   const symbolIds: string[] = [];
+  const declarationSpans: Array<{ startByte: number; endByte: number; text: string }> = [];
+  let offset = 0;
   for (let i = 0; i < declarationCount; i += 1) {
     const name = `fn_${i}`;
-    declarations.push(`export function ${name}(x: number): number { return x + ${i}; }`);
+    const text = `export function ${name}(x: number): number { return x + ${i}; }`;
+    declarations.push(text);
     symbolIds.push(
       createSymbolId({
         filePath,
@@ -31,6 +41,10 @@ const buildFile = (declarationCount: number): { filePath: string; text: string; 
         occurrence: 0,
       }),
     );
+    const startByte = offset;
+    const endByte = offset + Buffer.byteLength(text, 'utf8');
+    declarationSpans.push({ startByte, endByte, text });
+    offset = endByte + 1;
   }
   const text = declarations.join('\n');
   const bytes = Buffer.from(text, 'utf8');
@@ -41,105 +55,133 @@ const buildFile = (declarationCount: number): { filePath: string; text: string; 
     parserVersion: '1.0.0',
     contentHash,
   });
-  return { filePath, text, symbolIds, generationId, contentHash };
+  return { filePath, text, symbolIds, generationId, contentHash, declarationSpans };
 };
 
-const withCatalog = async <T>(
-  declarationCount: number,
-  run: (service: SymbolRetrievalService, symbolIds: string[]) => Promise<T>,
-): Promise<T> => {
+interface CatalogFixture {
+  projectRoot: string;
+  service: SymbolRetrievalService;
+  symbolIds: string[];
+}
+
+const catalogFixtures = new Map<number, CatalogFixture>();
+
+const withCatalogSetup = async (declarationCount: number): Promise<CatalogFixture> => {
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'nexus-structured-bench-'));
-  try {
-    await mkdir(path.join(projectRoot, 'src'), { recursive: true });
-    const { metadataStore, coordinator } = await createStructuredCoordinatorFixture({
-      bootstrapStructuredSchema: true,
-    });
-    const sanitizer = await PathSanitizer.create(projectRoot);
-    const service = new SymbolRetrievalService({ catalog: metadataStore, sanitizer });
+  await mkdir(path.join(projectRoot, 'src'), { recursive: true });
+  const { metadataStore, coordinator } = await createStructuredCoordinatorFixture({
+    bootstrapStructuredSchema: true,
+  });
+  const sanitizer = await PathSanitizer.create(projectRoot);
+  const service = new SymbolRetrievalService({ catalog: metadataStore, sanitizer });
 
-    const file = buildFile(declarationCount);
-    await writeFile(path.join(projectRoot, file.filePath), file.text);
-    const lines = file.text.split('\n');
-    const source = createStructuredSource(file.filePath, file.text);
+  const file = buildFile(declarationCount);
+  await writeFile(path.join(projectRoot, file.filePath), file.text);
+  const source = createStructuredSource(file.filePath, file.text);
 
-    await coordinator.stageFile({
-      source,
-      generationId: file.generationId,
-      contentHash: file.contentHash,
-      fileCompleteness: 'complete',
-      declarations: file.symbolIds.map((symbolId, index) => {
-        const lineText = lines[index];
-        if (lineText === undefined) {
-          throw new Error(`missing line ${index} in fixture`);
-        }
-        const line = index + 1;
-        return {
-          name: `fn_${index}`,
-            symbolId,
-            qualifiedName: `fn_${index}`,
-            kind: 'function' as const,
-            signatureDiscriminator: '(x: number): number',
-            position: { startLine: line, startColumn: 0, endLine: line, endColumn: lineText.length },
-          startByte: 0,
-          endByte: source.bytes.length,
-          sourceHash: file.contentHash,
-          languageId: 'typescript',
-          isExact: true,
-        };
-      }),
-      imports: [],
-      parserId: 'typescript',
-      parserVersion: '1.0.0',
-    });
-    await coordinator.activateFile({ filePath: file.filePath, generationId: file.generationId });
+  await coordinator.stageFile({
+    source,
+    generationId: file.generationId,
+    contentHash: file.contentHash,
+    fileCompleteness: 'complete',
+    declarations: file.symbolIds.map((symbolId, index) => {
+      const span = file.declarationSpans[index];
+      if (span === undefined) {
+        throw new Error(`missing declaration span ${index} in fixture`);
+      }
+      const line = index + 1;
+      return {
+        name: `fn_${index}`,
+        symbolId,
+        qualifiedName: `fn_${index}`,
+        kind: 'function' as const,
+        signatureDiscriminator: '(x: number): number',
+        position: { startLine: line, startColumn: 0, endLine: line, endColumn: span.text.length },
+        startByte: span.startByte,
+        endByte: span.endByte,
+        sourceHash: sha256Hex(source.bytes.subarray(span.startByte, span.endByte)),
+        languageId: 'typescript',
+        isExact: true,
+      };
+    }),
+    imports: [],
+    parserId: 'typescript',
+    parserVersion: '1.0.0',
+  });
+  await coordinator.activateFile({ filePath: file.filePath, generationId: file.generationId });
 
-    return await run(service, file.symbolIds);
-  } finally {
-    await rm(projectRoot, { recursive: true, force: true });
-  }
+  return { projectRoot, service, symbolIds: file.symbolIds };
 };
 
 for (const declarationCount of DECLARATION_COUNTS) {
   describe(`structured retrieval (${declarationCount} declarations)`, () => {
+    afterAll(async () => {
+      const fixture = catalogFixtures.get(declarationCount);
+      if (fixture !== undefined) {
+        await rm(fixture.projectRoot, { recursive: true, force: true });
+      }
+    });
+
     bench(
       'get_file_outline',
       async () => {
-        await withCatalog(declarationCount, async (service) => {
-          await service.getFileOutline({ filePath: 'src/module.ts' });
-        });
+        const fixture = catalogFixtures.get(declarationCount);
+        if (fixture === undefined) throw new Error('fixture not initialized');
+        await fixture.service.getFileOutline({ filePath: 'src/module.ts' });
       },
-      { iterations: 10 },
+      {
+        iterations: 10,
+        setup: async () => {
+          if (!catalogFixtures.has(declarationCount)) {
+            catalogFixtures.set(declarationCount, await withCatalogSetup(declarationCount));
+          }
+        },
+      },
     );
 
     bench(
       'get_symbol_source',
       async () => {
-        await withCatalog(declarationCount, async (service, symbolIds) => {
-          const symbolId = symbolIds[Math.floor(symbolIds.length / 2)];
-          if (symbolId === undefined) {
-            throw new Error('fixture has no symbol ids');
-          }
-          await service.getSymbolSource({ symbolId });
-        });
+        const fixture = catalogFixtures.get(declarationCount);
+        if (fixture === undefined) throw new Error('fixture not initialized');
+        const symbolId = fixture.symbolIds[Math.floor(fixture.symbolIds.length / 2)];
+        if (symbolId === undefined) {
+          throw new Error('fixture has no symbol ids');
+        }
+        await fixture.service.getSymbolSource({ symbolId });
       },
-      { iterations: 10 },
+      {
+        iterations: 10,
+        setup: async () => {
+          if (!catalogFixtures.has(declarationCount)) {
+            catalogFixtures.set(declarationCount, await withCatalogSetup(declarationCount));
+          }
+        },
+      },
     );
 
     bench(
       'get_symbol_context',
       async () => {
-        await withCatalog(declarationCount, async (service, symbolIds) => {
-          const symbolId = symbolIds[Math.floor(symbolIds.length / 2)];
-          if (symbolId === undefined) {
-            throw new Error('fixture has no symbol ids');
-          }
-          await service.getSymbolContext({
-            symbolId,
-            tokenBudget: 1000,
-          });
+        const fixture = catalogFixtures.get(declarationCount);
+        if (fixture === undefined) throw new Error('fixture not initialized');
+        const symbolId = fixture.symbolIds[Math.floor(fixture.symbolIds.length / 2)];
+        if (symbolId === undefined) {
+          throw new Error('fixture has no symbol ids');
+        }
+        await fixture.service.getSymbolContext({
+          symbolId,
+          tokenBudget: 1000,
         });
       },
-      { iterations: 10 },
+      {
+        iterations: 10,
+        setup: async () => {
+          if (!catalogFixtures.has(declarationCount)) {
+            catalogFixtures.set(declarationCount, await withCatalogSetup(declarationCount));
+          }
+        },
+      },
     );
   });
 }

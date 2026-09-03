@@ -66,6 +66,7 @@ const makeImportFixture = (): ImportFixture => {
     sourceHash: sha256Hex(source.bytes.subarray(symbolStart, source.bytes.length)),
     languageId: 'typescript',
     isExact: true,
+    importBindingIds: ['import-1'],
   };
   const importRecord: StructuredImport = {
     id: 'import-1',
@@ -206,7 +207,7 @@ describe('SymbolRetrievalService', () => {
           name: 'a', symbolId, qualifiedName: 'a', kind: 'function', signatureDiscriminator: 'fn',
           position: { startLine: 3, startColumn: 0, endLine: 3, endColumn: symbolText.length },
           startByte: smallEnd + 1, endByte: source.bytes.length, sourceHash: sha256Hex(source.bytes.subarray(smallEnd + 1, source.bytes.length)),
-          languageId: 'typescript', isExact: true,
+          languageId: 'typescript', isExact: true, importBindingIds: ['large', 'small'],
         }],
         imports: [
           {
@@ -231,5 +232,60 @@ describe('SymbolRetrievalService', () => {
     const result = await service.getSymbolContext({ symbolId, tokenBudget: 20 });
     expect((result as { imports: Array<{ moduleSpecifier?: string }> }).imports.map((item) => item.moduleSpecifier)).toEqual(['./small.js']);
     expect((result as { budget: { omittedForBudget: number } }).budget.omittedForBudget).toBe(1);
+  });
+
+  it('returns unsupported_language before reading the file for unsupported languages', async () => {
+    const fixture = makeImportFixture();
+    await runImportFixture(coordinator, fixture);
+    await writeFile(join(projectRoot, 'src/a.ts'), fixture.text);
+
+    const restrictedService = new SymbolRetrievalService({
+      catalog,
+      sanitizer,
+      isSupportedLanguage: (language) => language === 'typescript',
+    });
+
+    const unsupportedDeclaration: StructuredDeclaration = { ...fixture.declaration, languageId: 'binary' };
+    await coordinator.runFullRebuild({
+      files: [{
+        source: fixture.source,
+        generationId: createGenerationId({ schemaVersion: 1, parserId: 'test', parserVersion: '2', contentHash: fixture.contentHash }),
+        contentHash: fixture.contentHash,
+        fileCompleteness: 'complete',
+        declarations: [unsupportedDeclaration],
+        imports: [fixture.importRecord],
+      }],
+    });
+
+    const result = await restrictedService.getSymbolSource({ symbolId: fixture.symbolId });
+    expect(result).toEqual({
+      status: 'unsupported',
+      reasonCode: 'unsupported_language',
+      request: { symbolId: fixture.symbolId },
+    });
+  });
+
+  it('returns PATH_EXCLUDED when the file matches the ignore matcher', async () => {
+    const fixture = makeImportFixture();
+    await runImportFixture(coordinator, fixture);
+
+    const excludedService = new SymbolRetrievalService({
+      catalog,
+      sanitizer,
+      isExcluded: (filePath) => filePath === 'src/a.ts',
+    });
+
+    const result = await excludedService.getSymbolSource({ symbolId: fixture.symbolId });
+    expect(result).toMatchObject({ status: 'stale', reasonCode: 'PATH_EXCLUDED' });
+  });
+
+  it('propagates an AbortSignal to the file read', async () => {
+    const text = 'export function a() { return 1; }';
+    const stage = createStructuredStage('src/a.ts', text, 'a');
+    await runStructuredFullRebuild(coordinator, stage);
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(service.getSymbolSource({ symbolId: stage.symbolId, signal: controller.signal })).rejects.toThrow();
   });
 });
