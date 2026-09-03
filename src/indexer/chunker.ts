@@ -81,9 +81,12 @@ export class Chunker {
     };
 
     const content = declaration.rawSource ?? this.declarationContent(declaration, file);
+    const contentStartLine = declaration.rawSource === undefined
+      ? declaration.position.startLine
+      : Math.max(1, declaration.position.endLine - this.countLines(content) + 1);
     const subChunks = await this.splitByMaxChars(
       content,
-      declaration.position.startLine,
+      contentStartLine,
       declaration.name,
       file.filePath,
       base,
@@ -92,8 +95,14 @@ export class Chunker {
     // Align line ranges to the declaration boundaries when rawSource is available.
     if (declaration.rawSource !== undefined && subChunks.length > 1) {
       const endLine = declaration.position.endLine;
-      for (const chunk of subChunks) {
-        chunk.endLine = Math.min(chunk.endLine, endLine);
+      for (const [index, chunk] of subChunks.entries()) {
+        chunk.endLine = Math.max(chunk.startLine, Math.min(chunk.endLine, endLine));
+        chunk.id = this.createChunkId(
+          file.filePath,
+          chunk.startLine,
+          chunk.endLine,
+          `${declaration.name}-part${index + 1}`,
+        );
       }
     }
 

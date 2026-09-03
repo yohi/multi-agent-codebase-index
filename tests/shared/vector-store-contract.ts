@@ -200,6 +200,17 @@ export function vectorStoreContractTests(
       await expectSearchResults(store, { count: 1, generationId: 'gen-2' });
     });
 
+    it('stages a new generation after reconciling all structured rows', async () => {
+      await stageGeneration(store, { filePath: 'src/a.ts', generationId: 'gen-1', chunkId: 'a1', symbolId: 'symbol-1' });
+      await store.activateGenerationRows('src/a.ts', 'gen-1');
+      await store.reconcileStructuredRows([]);
+
+      await stageGeneration(store, { filePath: 'src/b.ts', generationId: 'gen-2', chunkId: 'b1', symbolId: 'symbol-2' });
+      await store.activateGenerationRows('src/b.ts', 'gen-2');
+
+      await expectSearchResults(store, { count: 1, chunkId: 'b1', generationId: 'gen-2' });
+    });
+
     it('shadow table swap replaces structured rows atomically', async () => {
       await stageGeneration(store, { filePath: 'src/a.ts', generationId: 'gen-1', chunkId: 'a1', symbolId: 'symbol-1' });
       await store.activateGenerationRows('src/a.ts', 'gen-1');
@@ -244,6 +255,23 @@ export function vectorStoreContractTests(
       expect(results).toHaveLength(1);
       expect(results[0]?.generationId).toBeUndefined();
       expect(results[0]?.chunk.symbolId).toBeUndefined();
+    });
+
+    it('deduplicates a chunk ID shared by legacy and structured rows', async () => {
+      await upsertChunks(store, [makeChunk({ id: 'duplicate', filePath: 'src/duplicate.ts' })]);
+      await stageGeneration(store, {
+        filePath: 'src/duplicate.ts',
+        generationId: 'gen-1',
+        chunkId: 'duplicate',
+        symbolId: 'symbol-1',
+      });
+      await store.activateGenerationRows('src/duplicate.ts', 'gen-1');
+
+      const results = await store.search(embedding, 10);
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.chunk.id).toBe('duplicate');
+      expect(results[0]?.generationId).toBe('gen-1');
     });
   });
 }

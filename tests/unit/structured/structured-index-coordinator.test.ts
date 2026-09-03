@@ -93,6 +93,15 @@ describe('StructuredIndexCoordinator', () => {
     });
   });
 
+  it('preserves the catalog rebuild epoch while staging a file', async () => {
+    const stage = makeStage('src/a.ts', 'export function a() { return 1; }', 'a');
+
+    expect((await metadataStore.getStructuredIndexState()).rebuildEpoch).toBe(0);
+    await stageCoordinatorFile(coordinator, stage);
+
+    expect((await metadataStore.getStructuredIndexState()).rebuildEpoch).toBe(0);
+  });
+
   it('keeps the active catalog and vectors visible when Lance staging fails mid-batch', async () => {
     const first = makeStage('src/a.ts', 'export function a() { return 1; }', 'a');
     await stageCoordinatorFile(coordinator, first);

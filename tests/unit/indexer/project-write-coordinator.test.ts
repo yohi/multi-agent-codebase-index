@@ -26,4 +26,25 @@ describe('ProjectWriteCoordinator', () => {
     await operation;
     expect(await coordinator.isLocked()).toBe(false);
   });
+
+  it('rejects a queued operation after the configured lock timeout', async () => {
+    const coordinator = new ProjectWriteCoordinator({ lockTimeoutMs: 20 });
+    let resolveStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    let resolveOperation: (() => void) | undefined;
+    const heldOperation = coordinator.run(async () => {
+      resolveStarted?.();
+      await new Promise<void>((resolve) => {
+        resolveOperation = resolve;
+      });
+    });
+
+    await started;
+    await expect(coordinator.run(async () => {})).rejects.toThrow();
+
+    resolveOperation?.();
+    await heldOperation;
+  });
 });

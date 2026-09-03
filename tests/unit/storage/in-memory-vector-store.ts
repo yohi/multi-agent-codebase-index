@@ -204,9 +204,7 @@ export class InMemoryVectorStore implements IVectorStore {
         generationId: row.generationId,
       }));
 
-    const allCandidates = [...legacyCandidates, ...structuredCandidates];
-
-    return allCandidates
+    const candidates = [...structuredCandidates, ...legacyCandidates]
       .filter((candidate) => {
         if (filter?.filePathPrefix !== undefined && !candidate.chunk.filePath.startsWith(filter.filePathPrefix)) {
           return false;
@@ -219,8 +217,21 @@ export class InMemoryVectorStore implements IVectorStore {
         }
         return true;
       })
-      .sort((left, right) => right.score - left.score || left.chunk.filePath.localeCompare(right.chunk.filePath))
-      .slice(0, topK);
+      .sort((left, right) => right.score - left.score || left.chunk.filePath.localeCompare(right.chunk.filePath));
+    const seen = new Set<string>();
+    const results: VectorSearchResult[] = [];
+    for (const candidate of candidates) {
+      if (seen.has(candidate.chunk.id)) {
+        continue;
+      }
+      seen.add(candidate.chunk.id);
+      results.push(candidate);
+      if (results.length >= topK) {
+        break;
+      }
+    }
+
+    return results;
   }
 
   async stageGenerationChunks(batch: GenerationChunkBatch): Promise<void> {

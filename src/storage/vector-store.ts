@@ -839,7 +839,6 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.structuredTable) return;
       if (activeGenerations.length === 0) {
         await this.structuredTable.delete('true');
-        this.structuredTable = undefined;
         return;
       }
 

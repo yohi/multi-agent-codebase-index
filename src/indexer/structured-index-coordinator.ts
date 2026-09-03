@@ -27,7 +27,7 @@ export class StructuredIndexCoordinator {
     return this.options.projectWriteCoordinator.run(async () => {
       const state = await this.options.metadataStore.getStructuredIndexState();
       const expectedActiveGeneration = state.activeGenerations.get(input.source.filePath) ?? null;
-      const rebuildEpoch = Date.now();
+      const rebuildEpoch = state.rebuildEpoch;
       const stage: StructuredGenerationStage = {
         filePath: input.source.filePath,
         generation: {

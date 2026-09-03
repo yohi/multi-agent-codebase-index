@@ -238,4 +238,43 @@ describe('Chunker – maxChunkChars', () => {
 
     expect(chunks.every((c) => c.content.length <= 100)).toBe(true);
   });
+
+  it('keeps raw-source subchunk ranges and IDs aligned with leading Go comments', async () => {
+    const rawSource = [
+      '//go:noinline',
+      '// Open opens a resource.',
+      'func Open() {',
+      '  return',
+      '}',
+    ].join('\n');
+    const bytes = Buffer.from(rawSource, 'utf8');
+    const declaration: StructuredDeclaration = {
+      name: 'Open',
+      symbolId: 'symbol-open',
+      qualifiedName: 'Open',
+      kind: 'function',
+      signatureDiscriminator: 'Open()',
+      position: { startLine: 3, startColumn: 0, endLine: 5, endColumn: 1 },
+      startByte: 0,
+      endByte: bytes.length,
+      sourceHash: 'hash-open',
+      languageId: 'go',
+      isExact: true,
+      rawSource,
+    };
+    const chunker = new Chunker(new PluginRegistry(), { maxChunkChars: 20 });
+
+    const chunks = await chunker.chunkStructuredFile(
+      { filePath: 'src/open.go', language: 'go', content: rawSource, bytes },
+      { declarations: [declaration], imports: [] },
+    );
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks[0]?.startLine).toBe(1);
+    expect(chunks.at(-1)?.endLine).toBe(5);
+    expect(chunks.every((chunk) => chunk.startLine <= chunk.endLine)).toBe(true);
+    expect(chunks.every((chunk, index) =>
+      chunk.id === `src/open.go:${chunk.startLine}-${chunk.endLine}:Open-part${index + 1}`,
+    )).toBe(true);
+  });
 });
