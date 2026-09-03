@@ -9,14 +9,19 @@ namespace Outer {
   }
 }
 
-type Alias = string;
+type Alias = string | number;
 enum State { Ready, Done }
 const single = 1;
 export const constant = dependency.value;
 function overloaded(value: string): string;
 function overloaded(value: number): string;
-function overloaded(value: string | number): string { return String(value); }
-export default class DefaultClass {}
+function overloaded(value: string | number): string {
+  if (typeof value === 'string') return value;
+  return value.toString();
+}
+export default class DefaultClass {
+  readonly marker = true;
+}
 const arrow = () => 'arrow';
 const expression = function () { return 'expression'; };
 const { destructured } = { destructured: 'x' };

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PythonLanguagePlugin } from '../../../../src/plugins/languages/python.js';
+import { fixedLineFallback } from '../../../../src/plugins/languages/python-legacy.js';
 
 describe('PythonLanguagePlugin bugs', () => {
   it('detects backslash line-continuations in imports', async () => {
@@ -180,5 +181,87 @@ class TopLevel:
     
     expect(methodDecls.map(m => m.name)).not.toContain('nested_method');
     expect(methodDecls.map(m => m.name)).toContain('top_method');
+  });
+
+  it('does not detect declarations inside triple-quoted strings in the fallback parser', () => {
+    const content = [
+      '"""',
+      'def fake_module():',
+      '    pass',
+      '"""',
+      '',
+      'def outer():',
+      '    """',
+      '    def fake_nested():',
+      '        pass',
+      '    """',
+      '    return 1',
+      '',
+      'def real():',
+      '    return 2',
+    ].join('\n');
+
+    const result = fixedLineFallback({ filePath: 'strings.py', language: 'python', content });
+
+    expect(result.declarations.map((declaration) => declaration.name)).toEqual(['outer', 'real']);
+  });
+
+  it('keeps multiline headers and excludes blank lines from fallback ranges', () => {
+    const content = [
+      'def multiline(',
+      '    value: int,',
+      '):',
+      '    return value',
+      '',
+      'def next_function():',
+      '    return 2',
+      '',
+    ].join('\n');
+
+    const result = fixedLineFallback({ filePath: 'ranges.py', language: 'python', content });
+    const multiline = result.declarations.find((declaration) => declaration.name === 'multiline');
+    const next = result.declarations.find((declaration) => declaration.name === 'next_function');
+
+    expect(multiline).toEqual(expect.objectContaining({ startLine: 1, endLine: 4 }));
+    expect(next).toEqual(expect.objectContaining({ startLine: 6, endLine: 7 }));
+  });
+
+  it('reports structured parser load failures before using the fallback parser', async () => {
+    const plugin = new PythonLanguagePlugin();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(plugin, 'createStructuredParser').mockRejectedValueOnce(new Error('load failure'));
+
+    try {
+      const parser = await plugin.createParser();
+      const result = await parser.parse({ filePath: 'fallback.py', language: 'python', content: 'def fallback():\n    return 1' });
+
+      expect(result.declarations.map((declaration) => declaration.name)).toContain('fallback');
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(warning.mock.calls[0]?.[0]).toBe('python-structured-parser.fallback');
+      expect(warning.mock.calls[0]?.[1]).toBeInstanceOf(Error);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('reports structured parser errors before using the fallback parser', async () => {
+    const plugin = new PythonLanguagePlugin();
+    const parseError = new Error('parse failure');
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(plugin, 'createStructuredParser').mockResolvedValue({
+      parseStructured: () => Promise.reject(parseError),
+    });
+
+    try {
+      const parser = await plugin.createParser();
+      const result = await parser.parse({ filePath: 'fallback.py', language: 'python', content: 'def fallback():\n    return 1' });
+
+      expect(result.declarations.map((declaration) => declaration.name)).toContain('fallback');
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(warning.mock.calls[0]?.[0]).toBe('python-structured-parser.fallback');
+      expect(warning.mock.calls[0]?.[1]).toBe(parseError);
+    } finally {
+      warning.mockRestore();
+    }
   });
 });

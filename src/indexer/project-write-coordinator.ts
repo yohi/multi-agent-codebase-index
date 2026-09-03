@@ -1,13 +1,18 @@
-import { Mutex } from 'async-mutex';
+import { Mutex, type MutexInterface, withTimeout } from 'async-mutex';
 
 export interface ProjectWriteCoordinatorOptions {
   lockTimeoutMs?: number;
 }
 
 export class ProjectWriteCoordinator {
-  private readonly mutex = new Mutex();
+  private readonly mutex: MutexInterface;
 
-  constructor(private readonly options: ProjectWriteCoordinatorOptions = {}) {}
+  constructor(options: ProjectWriteCoordinatorOptions = {}) {
+    const mutex = new Mutex();
+    this.mutex = options.lockTimeoutMs === undefined
+      ? mutex
+      : withTimeout(mutex, options.lockTimeoutMs);
+  }
 
   async run<T>(operation: () => Promise<T>): Promise<T> {
     const release = await this.mutex.acquire();
@@ -18,7 +23,7 @@ export class ProjectWriteCoordinator {
     }
   }
 
-  isLocked(): boolean {
-    return !this.mutex.isLocked();
+  isLocked(): Promise<boolean> {
+    return Promise.resolve(this.mutex.isLocked());
   }
 }

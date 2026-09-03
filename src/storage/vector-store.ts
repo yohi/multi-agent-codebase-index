@@ -35,6 +35,7 @@ interface LanceRow {
   endline: number;
   hash: string;
   vector: number[] | Float32Array;
+  generationid?: string;
   _distance?: number;
   [key: string]: unknown;
 }
@@ -232,7 +233,6 @@ export class LanceVectorStore implements IVectorStore {
           // Prevent cleanup in finally block
           localDb = undefined;
           localTable = undefined;
-          localStructuredTable = undefined;
         }
       } finally {
         // Cleanup transient resources if they weren't committed (e.g., on error or close)
@@ -346,75 +346,69 @@ export class LanceVectorStore implements IVectorStore {
       this.activeTimeouts.clear();
 
       // 2. Wait for in-flight operations to settle with a timeout
-      if (this.inflightOps > 0) {
-        const effectiveTimeout = timeoutMs ?? LanceVectorStore.CLOSE_TIMEOUT_MS;
-        const inflightDone = new Promise<void>((resolve) => {
-          if (this.inflightOps === 0) {
-            resolve();
-          } else {
-            this.closingResolve = resolve;
-          }
-        });
-        let timerHandle: NodeJS.Timeout | undefined = undefined;
-        const timeout = new Promise<'timeout'>((resolve) => {
-          timerHandle = setTimeout(() => { resolve('timeout'); }, effectiveTimeout);
-        });
-        const result = await Promise.race([inflightDone.then(() => 'done' as const), timeout]);
-        if (timerHandle) {
-          clearTimeout(timerHandle);
-        }
-        if (result === 'timeout') {
-          console.error(
-            `[LanceVectorStore] close() timed out after ${effectiveTimeout}ms ` +
-            `with ${this.inflightOps} in-flight operation(s). Forcing resource release.`
-          );
-        }
-      }
+      await this.waitForInflightOperations(timeoutMs);
 
       // 3. Release LanceDB resources
-      try {
-        if (this.structuredShadowTable && 'close' in this.structuredShadowTable && typeof (this.structuredShadowTable as unknown as Record<string, unknown>).close === 'function') {
-          await (this.structuredShadowTable as unknown as Closable).close();
-        }
-      } catch (e) {
-        console.error('[LanceVectorStore] Error closing structured shadow table resources:', e);
-      } finally {
-        this.structuredShadowTable = undefined;
-      }
-
-      try {
-        if (this.structuredTable && 'close' in this.structuredTable && typeof (this.structuredTable as unknown as Record<string, unknown>).close === 'function') {
-          await (this.structuredTable as unknown as Closable).close();
-        }
-      } catch (e) {
-        console.error('[LanceVectorStore] Error closing structured table resources:', e);
-      } finally {
-        this.structuredTable = undefined;
-      }
-
-      try {
-        if (this.table && 'close' in this.table && typeof (this.table as unknown as Record<string, unknown>).close === 'function') {
-          await (this.table as unknown as Closable).close();
-        }
-      } catch (e) {
-        console.error('[LanceVectorStore] Error closing table resources:', e);
-      } finally {
-        this.table = undefined;
-      }
-
-      try {
-        if (this.db && 'close' in this.db && typeof (this.db as unknown as Record<string, unknown>).close === 'function') {
-          await (this.db as unknown as Closable).close();
-        }
-      } catch (e) {
-        console.error('[LanceVectorStore] Error closing DB connection:', e);
-      } finally {
-        this.db = undefined;
-      }
+      await this.releaseLanceResources();
       this.closingResolve = undefined;
     })();
 
     await this.closePromise;
+  }
+
+  private async waitForInflightOperations(timeoutMs?: number): Promise<void> {
+    if (this.inflightOps === 0) {
+      return;
+    }
+
+    const effectiveTimeout = timeoutMs ?? LanceVectorStore.CLOSE_TIMEOUT_MS;
+    const inflightDone = new Promise<void>((resolve) => {
+      if (this.inflightOps === 0) {
+        resolve();
+      } else {
+        this.closingResolve = resolve;
+      }
+    });
+    let timerHandle: NodeJS.Timeout | undefined;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timerHandle = setTimeout(() => resolve('timeout'), effectiveTimeout);
+    });
+    const result = await Promise.race([inflightDone.then(() => 'done' as const), timeout]);
+    if (timerHandle) {
+      clearTimeout(timerHandle);
+    }
+    if (result === 'timeout') {
+      console.error(
+        `[LanceVectorStore] close() timed out after ${effectiveTimeout}ms ` +
+        `with ${this.inflightOps} in-flight operation(s). Forcing resource release.`,
+      );
+    }
+  }
+
+  private async releaseLanceResources(): Promise<void> {
+    await this.closeResource(this.structuredShadowTable, 'structured shadow table resources');
+    this.structuredShadowTable = undefined;
+    await this.closeResource(this.structuredTable, 'structured table resources');
+    this.structuredTable = undefined;
+    await this.closeResource(this.table, 'table resources');
+    this.table = undefined;
+    await this.closeResource(this.db, 'DB connection');
+    this.db = undefined;
+  }
+
+  private async closeResource(resource: unknown, resourceName: string): Promise<void> {
+    try {
+      if (
+        typeof resource === 'object' &&
+        resource !== null &&
+        'close' in resource &&
+        typeof (resource as Record<string, unknown>).close === 'function'
+      ) {
+        await (resource as Closable).close();
+      }
+    } catch (error) {
+      console.error(`[LanceVectorStore] Error closing ${resourceName}:`, error);
+    }
   }
 
   async upsertChunks(chunks: CodeChunk[], embeddings?: number[][], affectedFilePaths?: string[]): Promise<void> {
@@ -492,6 +486,7 @@ export class LanceVectorStore implements IVectorStore {
               startline: chunk.startLine,
               endline: chunk.endLine,
               hash: chunk.hash,
+              ...(chunk.generationId === undefined ? {} : { generationid: chunk.generationId }),
             };
           });
 
@@ -601,79 +596,96 @@ export class LanceVectorStore implements IVectorStore {
       await this.writeMutex;
 
       const sqlFilter = this.buildSqlFilter(filter);
-
-      const legacyResults: VectorSearchResult[] = [];
-      if (this.table) {
-        let legacyQuery = this.table.vectorSearch(queryVector)
-          .column('vector')
-          .distanceType('cosine')
-          .limit(topK);
-        if (sqlFilter) {
-          legacyQuery = legacyQuery.where(sqlFilter);
-        }
-        const resultsRaw = await legacyQuery.toArray() as unknown as LanceRow[];
-        for (const row of resultsRaw) {
-          legacyResults.push({
-            chunk: {
-              id: row.id,
-              filePath: row.filepath,
-              content: row.content,
-              language: row.language,
-              symbolName: row.symbolname || undefined,
-              symbolKind: row.symbolkind,
-              startLine: row.startline,
-              endLine: row.endline,
-              hash: row.hash,
-            },
-            score: typeof row._distance === 'number' ? 1 - row._distance : 0,
-          });
-        }
-      }
-
-      const structuredResults: VectorSearchResult[] = [];
-      if (this.structuredTable) {
-        let structuredQuery = this.structuredTable.vectorSearch(queryVector)
-          .column('vector')
-          .distanceType('cosine')
-          .limit(topK)
-          .where("visibility = 'active'");
-        if (sqlFilter) {
-          structuredQuery = structuredQuery.where(`${sqlFilter} AND visibility = 'active'`);
-        }
-        const resultsRaw = await structuredQuery.toArray() as unknown as LanceStructuredRow[];
-        for (const row of resultsRaw) {
-          structuredResults.push({
-            chunk: {
-              id: row.id,
-              filePath: row.filepath,
-              content: row.content,
-              language: row.language,
-              symbolName: row.symbolname || undefined,
-              symbolKind: row.symbolkind,
-              startLine: row.startline,
-              endLine: row.endline,
-              hash: row.hash,
-              symbolId: row.symbolid ?? undefined,
-            },
-            score: typeof row._distance === 'number' ? 1 - row._distance : 0,
-            generationId: row.generationid,
-          });
-        }
-      }
-
-      const seen = new Set<string>();
-      const combined: VectorSearchResult[] = [];
-      // Prefer structured active rows over legacy rows for the same chunk id.
-      const candidates = [...structuredResults, ...legacyResults]
-        .sort((left, right) => right.score - left.score || left.chunk.filePath.localeCompare(right.chunk.filePath));
-      for (const candidate of candidates) {
-        if (seen.has(candidate.chunk.id)) continue;
-        seen.add(candidate.chunk.id);
-        combined.push(candidate);
-        if (combined.length >= topK) break;
-      }
-      return combined.slice(0, topK);
+      const legacyResults = await this.searchLegacyResults(queryVector, topK, sqlFilter);
+      const structuredResults = await this.searchStructuredResults(queryVector, topK, sqlFilter);
+      return this.mergeSearchResults(structuredResults, legacyResults, topK);
     });
+  }
+
+  private async searchLegacyResults(
+    queryVector: number[],
+    topK: number,
+    sqlFilter: string | undefined,
+  ): Promise<VectorSearchResult[]> {
+    if (!this.table) {
+      return [];
+    }
+
+    let query = this.table.vectorSearch(queryVector)
+      .column('vector')
+      .distanceType('cosine')
+      .limit(topK);
+    if (sqlFilter) {
+      query = query.where(sqlFilter);
+    }
+
+    const rows = await query.toArray() as unknown as LanceRow[];
+    return rows.map((row) => this.toSearchResult(row));
+  }
+
+  private async searchStructuredResults(
+    queryVector: number[],
+    topK: number,
+    sqlFilter: string | undefined,
+  ): Promise<VectorSearchResult[]> {
+    if (!this.structuredTable) {
+      return [];
+    }
+
+    let query = this.structuredTable.vectorSearch(queryVector)
+      .column('vector')
+      .distanceType('cosine')
+      .limit(topK)
+      .where("visibility = 'active'");
+    if (sqlFilter) {
+      query = query.where(`${sqlFilter} AND visibility = 'active'`);
+    }
+
+    const rows = await query.toArray() as unknown as LanceStructuredRow[];
+    return rows.map((row) => this.toSearchResult(row));
+  }
+
+  private toSearchResult(row: LanceRow): VectorSearchResult {
+    const structuredRow = row as Partial<LanceStructuredRow>;
+    return {
+      chunk: {
+        id: row.id,
+        filePath: row.filepath,
+        content: row.content,
+        language: row.language,
+        symbolName: row.symbolname || undefined,
+        symbolKind: row.symbolkind,
+        startLine: row.startline,
+        endLine: row.endline,
+        hash: row.hash,
+        ...(structuredRow.symbolid === undefined ? {} : { symbolId: structuredRow.symbolid ?? undefined }),
+      },
+      score: typeof row._distance === 'number' ? 1 - row._distance : 0,
+      ...(row.generationid === undefined ? {} : { generationId: row.generationid }),
+    };
+  }
+
+  private mergeSearchResults(
+    structuredResults: VectorSearchResult[],
+    legacyResults: VectorSearchResult[],
+    topK: number,
+  ): VectorSearchResult[] {
+    const seen = new Set<string>();
+    const combined: VectorSearchResult[] = [];
+    // Prefer structured active rows over legacy rows for the same chunk id.
+    const candidates = [...structuredResults, ...legacyResults]
+      .sort((left, right) => right.score - left.score || left.chunk.filePath.localeCompare(right.chunk.filePath));
+    for (const candidate of candidates) {
+      if (seen.has(candidate.chunk.id)) {
+        continue;
+      }
+      seen.add(candidate.chunk.id);
+      combined.push(candidate);
+      if (combined.length >= topK) {
+        break;
+      }
+    }
+    return combined.slice(0, topK);
   }
 
   async stageGenerationChunks(batch: GenerationChunkBatch): Promise<void> {
@@ -708,7 +720,7 @@ export class LanceVectorStore implements IVectorStore {
         hash: chunk.hash,
         symbolid: chunk.symbolId ?? null,
         generationid: batch.generationId,
-        visibility: 'pending' as StructuredRowVisibility,
+        visibility: 'pending',
       }));
 
       if (targetTable) {
@@ -743,9 +755,9 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.db) {
         throw new Error('VectorStore not initialized');
       }
-      this.structuredShadowName = `${STRUCTURED_SHADOW_PREFIX}${randomUUID().replace(/-/g, '_')}`;
+      this.structuredShadowName = `${STRUCTURED_SHADOW_PREFIX}${randomUUID().replaceAll('-', '_')}`;
       const sample: LanceStructuredRow[] = [{
-        vector: Array(this.dimensions).fill(0),
+        vector: new Array<number>(this.dimensions).fill(0),
         id: 'placeholder',
         filepath: 'placeholder',
         content: '',
@@ -792,19 +804,33 @@ export class LanceVectorStore implements IVectorStore {
         console.error('[LanceVectorStore] Error dropping old structured table during swap:', e);
       }
 
-      // Rename shadow table to live name by copying rows, then mark all rows active.
-      const allRowsRaw = await newTable.query().toArray() as unknown as LanceStructuredRow[];
-      const allRows = allRowsRaw.map((row) => ({
-        ...row,
-        vector: Array.from(row.vector as unknown as Iterable<number>),
-        visibility: 'active' as StructuredRowVisibility,
-      }));
-      await this.db.dropTable(oldShadowName).catch(() => {});
-      if (allRows.length > 0) {
-        this.structuredTable = await this.db.createTable(STRUCTURED_TABLE_NAME, allRows);
-      } else {
-        this.structuredTable = undefined;
+      const batchSize = 500;
+      let offset = 0;
+      let liveTable: Table | undefined;
+      while (true) {
+        const rowsRaw = await newTable.query().limit(batchSize).offset(offset).toArray() as unknown as LanceStructuredRow[];
+        if (rowsRaw.length === 0) {
+          break;
+        }
+
+        const rows: LanceStructuredRow[] = rowsRaw.map((row) => ({
+          ...row,
+          vector: Array.from(row.vector),
+          visibility: 'active',
+        }));
+        if (liveTable === undefined) {
+          liveTable = await this.db.createTable(STRUCTURED_TABLE_NAME, rows);
+        } else {
+          await liveTable.add(rows);
+        }
+
+        offset += rows.length;
+        if (rows.length < batchSize) {
+          break;
+        }
       }
+      await this.db.dropTable(oldShadowName).catch(() => {});
+      this.structuredTable = liveTable;
     });
   }
 
@@ -827,7 +853,6 @@ export class LanceVectorStore implements IVectorStore {
       if (!this.structuredTable) return;
       if (activeGenerations.length === 0) {
         await this.structuredTable.delete('true');
-        this.structuredTable = undefined;
         return;
       }
 

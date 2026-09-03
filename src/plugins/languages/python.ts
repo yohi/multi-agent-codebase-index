@@ -6,6 +6,7 @@ import { PythonStructuredParser } from './python-structured.js';
 import type { PythonTreeSitterRuntime } from './python-structured.js';
 
 const textEncoder = new TextEncoder();
+const warnFallback = (error: Error): void => console.warn('python-structured-parser.fallback', error);
 
 const sourceFor = (file: FileToChunk): StructuredSource => ({
   filePath: file.filePath,
@@ -24,7 +25,7 @@ const projectLegacyResult = (result: Awaited<ReturnType<StructuredLanguageParser
     type: kind, name, startLine: position.startLine, endLine: position.endLine, content: rawSource ?? '',
   }));
   const ranges = [...new Map(result.imports.map((item) => [`${item.startByte}:${item.endByte}`, item])).values()]
-    .sort((left, right) => left.startByte - right.startByte);
+    .toSorted((left, right) => left.startByte - right.startByte);
   const first = ranges[0];
   const last = ranges.at(-1);
   if (first && last) {
@@ -33,7 +34,10 @@ const projectLegacyResult = (result: Awaited<ReturnType<StructuredLanguageParser
       content: decodeUtf8(source.bytes.subarray(first.startByte, last.endByte)),
     });
   }
-  return { rootType: 'module', declarations: declarations.sort((left, right) => left.startLine - right.startLine) };
+  return {
+    rootType: 'module',
+    declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
+  };
 };
 
 export class PythonLanguagePlugin implements LanguagePlugin {
@@ -58,13 +62,19 @@ export class PythonLanguagePlugin implements LanguagePlugin {
             const source = sourceFor(file);
             return projectLegacyResult(await structured.parseStructured(source), source);
           } catch (error) {
-            if (error instanceof Error) return fixedLineFallback(file);
+            if (error instanceof Error) {
+              warnFallback(error);
+              return fixedLineFallback(file);
+            }
             throw error;
           }
         },
       };
     } catch (error) {
-      if (error instanceof Error) return { parse: async (file) => fixedLineFallback(file) };
+      if (error instanceof Error) {
+        warnFallback(error);
+        return { parse: async (file) => fixedLineFallback(file) };
+      }
       throw error;
     }
   }

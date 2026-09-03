@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import packageJson from "../../../package.json" with { type: "json" };
 
 import {
   buildCanonicalContext,
@@ -40,7 +41,7 @@ describe("canonical structured context", () => {
 
   it("counts tokens with the pinned local tokenizer", () => {
     expect(tokenCounter.tokenizer).toBe("cl100k_base");
-    expect(tokenCounter.tokenizerVersion).toBe("js-tiktoken@1.0.21");
+    expect(tokenCounter.tokenizerVersion).toBe(`js-tiktoken@${packageJson.dependencies["js-tiktoken"]}`);
     expect(tokenCounter.count("hello world")).toBe(2);
   });
 

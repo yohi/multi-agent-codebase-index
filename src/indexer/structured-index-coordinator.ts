@@ -1,4 +1,4 @@
-import type { StructuredSource, StructuredDeclaration, StructuredImport } from '../structured/contracts.js';
+import type { StructuredDeclaration, StructuredImport, StructuredSource } from '../structured/contracts.js';
 import type { IVectorStore } from '../types/index.js';
 import type { Chunker } from './chunker.js';
 import type { IStructuredCatalog, StructuredGenerationStage, StructuredGenerationActivation, StructuredFileRetirement } from '../storage/interfaces/structured-catalog.js';
@@ -35,6 +35,7 @@ export class StructuredIndexCoordinator {
   }): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
       const state = await this.options.metadataStore.getStructuredIndexState();
+      const expectedActiveGeneration = state.activeGenerations.get(input.source.filePath) ?? null;
       const rebuildEpoch = state.rebuildEpoch;
       const stage: StructuredGenerationStage = {
         filePath: input.source.filePath,
@@ -61,6 +62,7 @@ export class StructuredIndexCoordinator {
           filePath: input.source.filePath,
           language: input.source.language,
           content: input.source.text,
+          bytes: input.source.bytes,
         },
         {
           declarations: input.declarations,
@@ -79,7 +81,6 @@ export class StructuredIndexCoordinator {
           vectors: embeddings,
         });
       } catch (error) {
-        const expectedActiveGeneration = state.activeGenerations.get(input.source.filePath) ?? null;
         await this.options.metadataStore.clearPendingGeneration({
           filePath: input.source.filePath,
           expectedActiveGeneration,
@@ -131,6 +132,9 @@ export class StructuredIndexCoordinator {
 
       await this.options.metadataStore.retireFile(retirement);
 
+      if (expectedActiveGeneration !== null) {
+        await this.options.vectorStore.removeGenerationRows(input.filePath, expectedActiveGeneration);
+      }
       await this.options.vectorStore.deleteByFilePath(input.filePath);
     });
   }
