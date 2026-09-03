@@ -19,7 +19,7 @@ import type {
   StructuredSymbolResolution,
   StructuredTombstone,
 } from './interfaces/structured-catalog.js';
-import type { StructuredDeclaration } from '../structured/contracts.js';
+import type { StructuredDeclaration, StructuredGeneration } from '../structured/contracts.js';
 import { sha256Hex } from '../structured/hash.js';
 
 export interface SqliteMetadataStoreOptions {
@@ -473,6 +473,24 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       ORDER BY s.start_byte, s.qualified_name
     `).all(filePath) as Array<Record<string, unknown>>;
     return rows.map((row) => this.declaration(row));
+  }
+
+  async getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null> {
+    await this.asyncBoundary();
+    const row = this.db.prepare(`
+      SELECT file_path, generation, schema_version, parser_id, parser_version, content_hash
+      FROM symbol_generations
+      WHERE file_path = ? AND generation = ?
+    `).get(filePath, generationId) as { file_path: string; generation: string; schema_version: number; parser_id: string; parser_version: string; content_hash: string } | undefined;
+    if (row === undefined) return null;
+    return {
+      generationId: row.generation,
+      schemaVersion: row.schema_version as 1,
+      parserId: row.parser_id,
+      parserVersion: row.parser_version,
+      fileHash: row.content_hash,
+      fileCompleteness: 'complete' as const,
+    };
   }
 
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> {

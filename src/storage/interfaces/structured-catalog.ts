@@ -114,5 +114,6 @@ export interface IStructuredCatalog {
   getStructuredCounts(): Promise<StructuredIndexCounts>;
   getImportsForSymbol(symbolId: string): Promise<readonly StructuredImportRecord[]>;
   getFileDeclarations(filePath: string): Promise<readonly StructuredDeclaration[]>;
+  getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null>;
   reconcileStructuredState(): Promise<StructuredReconciliationResult>;
 }
