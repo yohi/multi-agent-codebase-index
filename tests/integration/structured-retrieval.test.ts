@@ -1,16 +1,18 @@
-import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 import { createNexusServer } from '../../src/server/index.js';
-import { createStreamableHttpHandler } from '../../src/server/transport.js';
 import { createMockMetricsHooks } from '../shared/test-helpers.js';
 import { createTestNexusOptions } from '../shared/create-test-nexus-options.js';
+import {
+  connectMcpClient,
+  startMcpHttpTestServer,
+  type McpHttpTestServer,
+} from '../shared/mcp-http-test-helpers.js';
 import {
   createStructuredCoordinator,
   createStructuredStage,
@@ -25,7 +27,7 @@ const parseResult = (result: any) => {
 };
 
 describe('Structured retrieval MCP integration', () => {
-  let httpServer: ReturnType<typeof createServer>;
+  let httpTestServer: McpHttpTestServer;
   let baseUrl: string;
   let client: Client | null = null;
   let projectRoot: string;
@@ -60,47 +62,29 @@ describe('Structured retrieval MCP integration', () => {
     await stageStructuredFile(coordinator, stage);
     await coordinator.activateFile({ filePath: stage.source.filePath, generationId: stage.generationId });
 
-    const createTestServer = () => createNexusServer(options);
-    const handler = createStreamableHttpHandler({ createServer: createTestServer });
-
-    httpServer = createServer((req, res) => {
-      void handler(req, res);
-    });
-
-    await new Promise<void>((resolve) => {
-      httpServer.listen(0, '127.0.0.1', () => resolve());
-    });
-
-    const address = httpServer.address();
-    if (address === null || typeof address === 'string') {
-      throw new Error('failed to bind test server');
-    }
-    baseUrl = `http://127.0.0.1:${address.port}/mcp`;
+    httpTestServer = await startMcpHttpTestServer(() => createNexusServer(options));
+    baseUrl = httpTestServer.baseUrl;
   });
+
+  const connectClient = async (): Promise<Client> => {
+    const connectedClient = await connectMcpClient(baseUrl, 'structured-client');
+    client = connectedClient;
+    return connectedClient;
+  };
 
   afterEach(async () => {
     if (client) {
       await client.close();
       client = null;
     }
-    await new Promise<void>((resolve, reject) => {
-      httpServer.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve();
-      });
-    });
+    await httpTestServer.dispose();
     await rm(projectRoot, { recursive: true, force: true });
   });
 
   it('exposes structured retrieval tools in the tool catalog', async () => {
-    client = new Client({ name: 'structured-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
+    const mcpClient = await connectClient();
 
-    const tools = await client.listTools();
+    const tools = await mcpClient.listTools();
     const names = tools.tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
       'get_context',
@@ -116,11 +100,9 @@ describe('Structured retrieval MCP integration', () => {
   });
 
   it('returns a file outline for a structured indexed file', async () => {
-    client = new Client({ name: 'structured-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
+    const mcpClient = await connectClient();
 
-    const result = await client.callTool({
+    const result = await mcpClient.callTool({
       name: 'get_file_outline',
       arguments: { filePath: 'src/auth.ts' },
     });
@@ -141,17 +123,15 @@ describe('Structured retrieval MCP integration', () => {
   });
 
   it('returns exact symbol source for a known symbol id', async () => {
-    client = new Client({ name: 'structured-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
+    const mcpClient = await connectClient();
 
     const outline = parseResult(
-      await client.callTool({ name: 'get_file_outline', arguments: { filePath: 'src/auth.ts' } }),
+      await mcpClient.callTool({ name: 'get_file_outline', arguments: { filePath: 'src/auth.ts' } }),
     );
     const symbolId = outline.symbols.find((d: any) => d.name === 'authenticate')?.symbolId;
     expect(symbolId).toBeDefined();
 
-    const result = await client.callTool({
+    const result = await mcpClient.callTool({
       name: 'get_symbol_source',
       arguments: { symbolId },
     });
@@ -165,17 +145,15 @@ describe('Structured retrieval MCP integration', () => {
   });
 
   it('returns bounded symbol context with budget metadata', async () => {
-    client = new Client({ name: 'structured-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
+    const mcpClient = await connectClient();
 
     const outline = parseResult(
-      await client.callTool({ name: 'get_file_outline', arguments: { filePath: 'src/auth.ts' } }),
+      await mcpClient.callTool({ name: 'get_file_outline', arguments: { filePath: 'src/auth.ts' } }),
     );
     const symbolId = outline.symbols.find((d: any) => d.name === 'authenticate')?.symbolId;
     expect(symbolId).toBeDefined();
 
-    const result = await client.callTool({
+    const result = await mcpClient.callTool({
       name: 'get_symbol_context',
       arguments: { symbolId, tokenBudget: 500 },
     });
@@ -196,11 +174,9 @@ describe('Structured retrieval MCP integration', () => {
   });
 
   it('returns an error response when the file is not structured-indexed', async () => {
-    client = new Client({ name: 'structured-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
+    const mcpClient = await connectClient();
 
-    const result = await client.callTool({
+    const result = await mcpClient.callTool({
       name: 'get_file_outline',
       arguments: { filePath: 'src/not-indexed.ts' },
     });
@@ -213,11 +189,9 @@ describe('Structured retrieval MCP integration', () => {
   });
 
   it('reports structured index status in index_status', async () => {
-    client = new Client({ name: 'structured-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
+    const mcpClient = await connectClient();
 
-    const result = parseResult(await client.callTool({ name: 'index_status', arguments: {} }));
+    const result = parseResult(await mcpClient.callTool({ name: 'index_status', arguments: {} }));
     expect(result.structuredIndex).toMatchObject({
       schemaVersion: 1,
       targetSchemaVersion: 1,

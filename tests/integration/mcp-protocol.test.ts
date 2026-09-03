@@ -14,9 +14,14 @@ import { loadConfig } from '../../src/config/index.js';
 import { SqliteMetadataStore } from '../../src/storage/metadata-store.js';
 import { createMockMetricsHooks } from '../shared/test-helpers.js';
 import { createTestNexusOptions } from '../shared/create-test-nexus-options.js';
+import {
+  connectMcpClient,
+  startMcpHttpTestServer,
+  type McpHttpTestServer,
+} from '../shared/mcp-http-test-helpers.js';
 
 describe('Phase 2 MCP protocol integration', () => {
-  let httpServer: ReturnType<typeof createServer>;
+  let httpTestServer: McpHttpTestServer;
   let baseUrl: string;
   let client: Client | null = null;
   let mockMetricsHooks: ReturnType<typeof createMockMetricsHooks>;
@@ -36,22 +41,8 @@ describe('Phase 2 MCP protocol integration', () => {
       loadFileContent: async (filePath) => fs.readFile(filePath, 'utf8'),
       metricsHooks: mockMetricsHooks,
     });
-    const createTestServer = () => createNexusServer(options);
-    const handler = createStreamableHttpHandler({ createServer: createTestServer });
-
-    httpServer = createServer((req, res) => {
-      void handler(req, res);
-    });
-
-    await new Promise<void>((resolve) => {
-      httpServer.listen(0, '127.0.0.1', () => resolve());
-    });
-
-    const address = httpServer.address();
-    if (address === null || typeof address === 'string') {
-      throw new Error('failed to bind test server');
-    }
-    baseUrl = `http://127.0.0.1:${address.port}/mcp`;
+    httpTestServer = await startMcpHttpTestServer(() => createNexusServer(options));
+    baseUrl = httpTestServer.baseUrl;
   });
 
   afterEach(async () => {
@@ -59,23 +50,19 @@ describe('Phase 2 MCP protocol integration', () => {
       await client.close();
       client = null;
     }
-    await new Promise<void>((resolve, reject) => {
-      httpServer.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve();
-      });
-    });
+    await httpTestServer.dispose();
   });
 
-  it('lets an MCP client call all six tools and receive structured responses', async () => {
-    client = new Client({ name: 'phase2-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
+  const connectClient = async (): Promise<Client> => {
+    const connectedClient = await connectMcpClient(baseUrl, 'phase2-client');
+    client = connectedClient;
+    return connectedClient;
+  };
 
-    const tools = await client.listTools();
+  it('lets an MCP client call all six tools and receive structured responses', async () => {
+    const mcpClient = await connectClient();
+
+    const tools = await mcpClient.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'get_context',
       'get_file_outline',
@@ -121,7 +108,7 @@ describe('Phase 2 MCP protocol integration', () => {
       semantic_search: ['filePattern', 'filePatterns', 'language', 'query', 'topK'],
     });
 
-    const semantic = await client.callTool({ name: 'semantic_search', arguments: { query: 'authenticate', topK: 3 } });
+    const semantic = await mcpClient.callTool({ name: 'semantic_search', arguments: { query: 'authenticate', topK: 3 } });
     expect(parseResult(semantic)).toMatchObject({
       results: [
         {
@@ -131,12 +118,12 @@ describe('Phase 2 MCP protocol integration', () => {
       ],
     });
 
-    const grep = await client.callTool({ name: 'grep_search', arguments: { pattern: 'authenticate', maxResults: 5 } });
+    const grep = await mcpClient.callTool({ name: 'grep_search', arguments: { pattern: 'authenticate', maxResults: 5 } });
     expect(parseResult(grep)).toMatchObject({
       matches: [expect.objectContaining({ filePath: 'src/auth.ts', lineNumber: 1 })],
     });
 
-    const hybrid = await client.callTool({
+    const hybrid = await mcpClient.callTool({
       name: 'hybrid_search',
       arguments: { query: 'authenticate token', grepPattern: 'authenticate', topK: 5 },
     });
@@ -150,7 +137,7 @@ describe('Phase 2 MCP protocol integration', () => {
       ],
     });
 
-    const context = await client.callTool({
+    const context = await mcpClient.callTool({
       name: 'get_context',
       arguments: { filePath: 'src/auth.ts', startLine: 1, endLine: 1 },
     });
@@ -161,14 +148,14 @@ describe('Phase 2 MCP protocol integration', () => {
       content: "import { randomUUID } from 'node:crypto';",
     });
 
-    const status = await client.callTool({ name: 'index_status', arguments: {} });
+    const status = await mcpClient.callTool({ name: 'index_status', arguments: {} });
     expect(parseResult(status)).toMatchObject({
       skippedFiles: 0,
       pluginHealth: expect.objectContaining({ healthy: true, embeddings: expect.objectContaining({ provider: 'test' }) }),
       vectorStats: expect.objectContaining({ totalFiles: 1, totalChunks: 1 }),
     });
 
-    const reindex = await client.callTool({
+    const reindex = await mcpClient.callTool({
       name: 'reindex',
       arguments: { fullRebuild: true, reason: 'startup-reconciliation' },
     });
@@ -179,11 +166,9 @@ describe('Phase 2 MCP protocol integration', () => {
   });
 
   it('records the preview line count via onContextLinesFetched for deferred get_context calls', async () => {
-    client = new Client({ name: 'phase2-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
+    const mcpClient = await connectClient();
 
-    const result = await client.callTool({
+    const result = await mcpClient.callTool({
       name: 'get_context',
       arguments: { filePath: 'src/auth.ts', mode: 'deferred', startLine: 5 },
     });
@@ -205,11 +190,9 @@ describe('Phase 2 MCP protocol integration', () => {
   });
 
   it('returns the full eager response shape when get_context mode is omitted', async () => {
-    client = new Client({ name: 'phase2-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
+    const mcpClient = await connectClient();
 
-    const result = await client.callTool({
+    const result = await mcpClient.callTool({
       name: 'get_context',
       arguments: { filePath: 'src/auth.ts', startLine: 1, endLine: 1 },
     });
@@ -228,11 +211,9 @@ describe('Phase 2 MCP protocol integration', () => {
   });
 
   it('attaches populated snippet fields to hybrid_search results when includeSnippet is true', async () => {
-    client = new Client({ name: 'phase2-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
-    await client.connect(transport);
+    const mcpClient = await connectClient();
 
-    const hybrid = await client.callTool({
+    const hybrid = await mcpClient.callTool({
       name: 'hybrid_search',
       arguments: { query: 'authenticate token', grepPattern: 'authenticate', includeSnippet: true },
     });

@@ -104,6 +104,50 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
     }
   }
 
+  private addMissingColumns(
+    tableName: string,
+    columns: readonly (readonly [name: string, definition: string])[],
+  ): void {
+    const existingColumns = new Set(
+      (this.db.pragma(`table_info(${tableName})`) as Array<{ name: string }>).map((column) => column.name),
+    );
+    for (const [name, definition] of columns) {
+      if (!existingColumns.has(name)) {
+        this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${name} ${definition}`);
+      }
+    }
+  }
+
+  private migrateSchema(): void {
+    this.addMissingColumns('dead_letter_queue', [['recovery_attempts', 'INTEGER NOT NULL DEFAULT 0']]);
+    this.addMissingColumns('index_stats', [
+      ['last_error', 'TEXT'],
+      ['structured_schema_version', 'INTEGER'],
+      ['structured_rebuild_state', 'TEXT'],
+      ['structured_rebuild_epoch', 'INTEGER'],
+      ['structured_last_error_code', 'TEXT'],
+    ]);
+    this.db.prepare('INSERT OR IGNORE INTO index_stats (id,total_files,total_chunks,last_indexed_at,last_full_scan_at,overflow_count,last_error,structured_rebuild_epoch) VALUES (?,?,?,?,?,?,?,?)').run(PRIMARY_STATS_ID, 0, 0, null, null, 0, null, 0);
+    this.addMissingColumns('imports', [
+      ['start_byte', 'INTEGER NOT NULL DEFAULT 0'],
+      ['end_byte', 'INTEGER NOT NULL DEFAULT 0'],
+      ['source_hash', "TEXT NOT NULL DEFAULT ''"],
+      ['is_complete', 'INTEGER NOT NULL DEFAULT 1'],
+      ['diagnostics_json', 'TEXT'],
+    ]);
+    this.addMissingColumns('symbols', [
+      ['start_byte', 'INTEGER NOT NULL DEFAULT 0'],
+      ['end_byte', 'INTEGER NOT NULL DEFAULT 0'],
+      ['parent_symbol_id', 'TEXT'],
+      ['language_id', "TEXT NOT NULL DEFAULT ''"],
+      ['is_exact', 'INTEGER NOT NULL DEFAULT 1'],
+    ]);
+    this.addMissingColumns('symbol_tombstones', [['retired_at', 'INTEGER NOT NULL DEFAULT 0']]);
+    if (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='structured_generations'").get()) {
+      this.db.exec('INSERT OR IGNORE INTO symbol_generations SELECT file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch FROM structured_generations');
+    }
+  }
+
   async initialize(): Promise<void> {
     await this.asyncBoundary();
     this.db.pragma('journal_mode = WAL');
@@ -194,38 +238,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
         retired_at_rebuild_epoch INTEGER NOT NULL, retired_at INTEGER NOT NULL DEFAULT 0
       );
     `);
-
-    // Idempotent migration: add recovery_attempts column if missing (existing DBs)
-    const columns = this.db.pragma('table_info(dead_letter_queue)') as Array<{ name: string }>;
-    const hasRecoveryAttempts = columns.some((col) => col.name === 'recovery_attempts');
-    if (!hasRecoveryAttempts) {
-      this.db.exec('ALTER TABLE dead_letter_queue ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0');
-    }
-
-    const indexStatsColumns = this.db.pragma('table_info(index_stats)') as Array<{ name: string }>;
-    const hasLastError = indexStatsColumns.some((col) => col.name === 'last_error');
-    if (!hasLastError) {
-      this.db.exec('ALTER TABLE index_stats ADD COLUMN last_error TEXT');
-    }
-    for (const [name, definition] of [['structured_schema_version', 'INTEGER'], ['structured_rebuild_state', 'TEXT'], ['structured_rebuild_epoch', 'INTEGER'], ['structured_last_error_code', 'TEXT']] as const) {
-      const currentColumns = this.db.pragma('table_info(index_stats)') as Array<{ name: string }>;
-      if (!currentColumns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE index_stats ADD COLUMN ${name} ${definition}`);
-    }
-    this.db.prepare('INSERT OR IGNORE INTO index_stats (id,total_files,total_chunks,last_indexed_at,last_full_scan_at,overflow_count,last_error,structured_rebuild_epoch) VALUES (?,?,?,?,?,?,?,?)').run(PRIMARY_STATS_ID, 0, 0, null, null, 0, null, 0);
-    const importColumns = this.db.pragma('table_info(imports)') as Array<{ name: string }>;
-    for (const [name, definition] of [['start_byte', 'INTEGER NOT NULL DEFAULT 0'], ['end_byte', 'INTEGER NOT NULL DEFAULT 0']] as const) {
-      if (!importColumns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE imports ADD COLUMN ${name} ${definition}`);
-    }
-    if (!importColumns.some((column) => column.name === 'source_hash')) this.db.exec("ALTER TABLE imports ADD COLUMN source_hash TEXT NOT NULL DEFAULT ''");
-    if (!importColumns.some((column) => column.name === 'is_complete')) this.db.exec('ALTER TABLE imports ADD COLUMN is_complete INTEGER NOT NULL DEFAULT 1');
-    if (!importColumns.some((column) => column.name === 'diagnostics_json')) this.db.exec('ALTER TABLE imports ADD COLUMN diagnostics_json TEXT');
-    const symbolColumns = this.db.pragma('table_info(symbols)') as Array<{ name: string }>;
-    for (const [name, definition] of [['start_byte', 'INTEGER NOT NULL DEFAULT 0'], ['end_byte', 'INTEGER NOT NULL DEFAULT 0'], ['parent_symbol_id', 'TEXT'], ['language_id', "TEXT NOT NULL DEFAULT ''"], ['is_exact', 'INTEGER NOT NULL DEFAULT 1']] as const) {
-      if (!symbolColumns.some((column) => column.name === name)) this.db.exec(`ALTER TABLE symbols ADD COLUMN ${name} ${definition}`);
-    }
-    const tombstoneColumns = this.db.pragma('table_info(symbol_tombstones)') as Array<{ name: string }>;
-    if (!tombstoneColumns.some((column) => column.name === 'retired_at')) this.db.exec('ALTER TABLE symbol_tombstones ADD COLUMN retired_at INTEGER NOT NULL DEFAULT 0');
-    if (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='structured_generations'").get()) this.db.exec('INSERT OR IGNORE INTO symbol_generations SELECT file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch FROM structured_generations');
+    this.migrateSchema();
   }
 
   async bootstrapStructuredSchema(): Promise<void> {

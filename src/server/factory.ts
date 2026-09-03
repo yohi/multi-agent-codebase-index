@@ -515,7 +515,7 @@ export class NexusServerFactory {
       const workspaceId = config.projectName ?? projectRoot.split(/[\\/]/).findLast(Boolean) ?? 'unknown';
       const contentStore = new LocalContentStoreFactory({
         projectRoot,
-        sanitize: (filePath) => sanitizer.sanitize(filePath),
+        sanitize: (filePath) => sanitizer.resolveExisting(filePath),
       }).getStore(workspaceId, 'local');
 
       const symbolRetrievalService = new SymbolRetrievalService({ catalog: metadataStore, sanitizer });

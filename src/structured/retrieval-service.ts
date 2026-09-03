@@ -1,11 +1,15 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type { IStructuredCatalog, StructuredImportRecord, StructuredIndexState } from '../storage/interfaces/structured-catalog.js';
+import type {
+  IStructuredCatalog,
+  StructuredImportRecord,
+  StructuredIndexState,
+  StructuredTombstone,
+} from '../storage/interfaces/structured-catalog.js';
 import type { PathSanitizer } from '../server/path-sanitizer.js';
 import { sha256Hex, decodeUtf8 } from './hash.js';
 import type { StructuredDeclaration, StructuredRetrievalReasonCode } from './contracts.js';
-import type { StructuredTombstone } from '../storage/interfaces/structured-catalog.js';
 import { packRelatedImports, tokenCounter } from './tokenizer.js';
 
 type SourceStatus =

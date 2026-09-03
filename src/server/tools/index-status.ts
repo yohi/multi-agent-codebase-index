@@ -1,6 +1,6 @@
 import type { PluginRegistry } from '../../plugins/registry.js';
 import type { IMetadataStore, IVectorStore, PipelineProgress, IIndexPipeline } from '../../types/index.js';
-import type { IStructuredCatalog, StructuredIndexState } from '../../storage/interfaces/structured-catalog.js';
+import type { StructuredIndexState } from '../../storage/interfaces/structured-catalog.js';
 
 export interface StructuredIndexStatus {
   schemaVersion: number | null;
@@ -74,4 +74,3 @@ const deriveStructuredStatus = (state: StructuredIndexState): StructuredIndexSta
   if (state.rebuildState === 'failed') return 'failed';
   return 'idle';
 };
-
