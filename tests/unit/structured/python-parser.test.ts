@@ -179,8 +179,8 @@ later = 1
       const result = await parser.parse({ filePath: 'fallback.py', language: 'python', content: 'def fallback():\n    pass' });
 
       expect(result.declarations).toEqual([expect.objectContaining({ type: 'function', name: 'fallback' })]);
-      expect(warning.mock.calls[0]?.[0]).toBe('python-structured-parser.fallback');
     } finally {
+      expect(warning.mock.calls[0]?.[0]).toBe('python-structured-parser.fallback');
       warning.mockRestore();
       vi.doUnmock('tree-sitter');
       vi.resetModules();

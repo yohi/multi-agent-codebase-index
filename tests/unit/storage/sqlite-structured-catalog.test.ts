@@ -21,7 +21,6 @@ const readRows = <T>(databasePath: string, sql: string): T[] => {
     database.close();
   }
 };
-
 describe('SQLite structured catalog', () => {
   let dir: string;
   let store: SqliteMetadataStore;
@@ -60,7 +59,6 @@ describe('SQLite structured catalog', () => {
     expect((await store.getPendingSymbol('one')).kind).toBe('missing');
     expect((await store.getPendingSymbol('two')).kind).toBe('pending');
   });
-
   it('uses the same activation reason precedence as the in-memory catalog', async () => {
     await store.initialize();
     await store.stageGeneration({ ...stage('src/a.ts', 'g1', 'one'), rebuildEpoch: 0 });

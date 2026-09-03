@@ -48,7 +48,6 @@ export const structuredCatalogContract = (createStore: () => Promise<IStructured
       expect(await store.clearPendingGeneration({ filePath: 'src/a.ts', expectedActiveGeneration: null, expectedPendingGeneration: 'g1', expectedRebuildEpoch: 0 })).toEqual({ cleared: false });
       expect(await store.resolveFile('src/a.ts')).toEqual({ kind: 'pending', generationId: 'g2' });
     });
-
     it('reports activation precondition failures in a consistent order', async () => {
       const store = await createStore();
       await store.stageGeneration(generation('g1', 'src/a.ts'));

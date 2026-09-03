@@ -7,6 +7,7 @@ import type { FileToChunk, LanguagePlugin } from '../../../src/types/index.js';
 import { Chunker } from '../../../src/indexer/chunker.js';
 import { PluginRegistry } from '../../../src/plugins/registry.js';
 import { TypeScriptLanguagePlugin } from '../../../src/plugins/languages/typescript.js';
+import type { StructuredDeclaration } from '../../../src/structured/contracts.js';
 
 const fixturePath = path.join(process.cwd(), 'tests/fixtures/sample-project/src/auth.ts');
 
@@ -120,6 +121,52 @@ describe('Chunker', () => {
 
     expect(chunks).toHaveLength(0);
   });
+
+  it('uses each declaration byte range when rawSource is omitted', async () => {
+    const firstSource = 'export function first() {}\n';
+    const secondSource = 'export function second() {}';
+    const content = `${firstSource}${secondSource}`;
+    const bytes = Buffer.from(content, 'utf8');
+    const firstEndByte = Buffer.byteLength(firstSource, 'utf8');
+    const declarations: StructuredDeclaration[] = [
+      {
+        name: 'first',
+        symbolId: 'symbol-first',
+        qualifiedName: 'first',
+        kind: 'function',
+        signatureDiscriminator: 'first()',
+        position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 27 },
+        startByte: 0,
+        endByte: firstEndByte,
+        sourceHash: 'hash-first',
+        languageId: 'typescript',
+        isExact: true,
+      },
+      {
+        name: 'second',
+        symbolId: 'symbol-second',
+        qualifiedName: 'second',
+        kind: 'function',
+        signatureDiscriminator: 'second()',
+        position: { startLine: 2, startColumn: 0, endLine: 2, endColumn: 28 },
+        startByte: firstEndByte,
+        endByte: bytes.length,
+        sourceHash: 'hash-second',
+        languageId: 'typescript',
+        isExact: true,
+      },
+    ];
+
+    const chunker = new Chunker(new PluginRegistry());
+    const chunks = await chunker.chunkStructuredFile(
+      { filePath: 'src/functions.ts', language: 'typescript', content, bytes },
+      { declarations, imports: [] },
+    );
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual([firstSource, secondSource]);
+    expect(chunks.map((chunk) => chunk.symbolId)).toEqual(['symbol-first', 'symbol-second']);
+  });
+
   it('uses xxhash for chunk hashes', async () => {
     const chunker = new Chunker(new PluginRegistry());
     const chunks = await chunker.chunkFiles([
@@ -190,5 +237,44 @@ describe('Chunker – maxChunkChars', () => {
     );
 
     expect(chunks.every((c) => c.content.length <= 100)).toBe(true);
+  });
+
+  it('keeps raw-source subchunk ranges and IDs aligned with leading Go comments', async () => {
+    const rawSource = [
+      '//go:noinline',
+      '// Open opens a resource.',
+      'func Open() {',
+      '  return',
+      '}',
+    ].join('\n');
+    const bytes = Buffer.from(rawSource, 'utf8');
+    const declaration: StructuredDeclaration = {
+      name: 'Open',
+      symbolId: 'symbol-open',
+      qualifiedName: 'Open',
+      kind: 'function',
+      signatureDiscriminator: 'Open()',
+      position: { startLine: 3, startColumn: 0, endLine: 5, endColumn: 1 },
+      startByte: 0,
+      endByte: bytes.length,
+      sourceHash: 'hash-open',
+      languageId: 'go',
+      isExact: true,
+      rawSource,
+    };
+    const chunker = new Chunker(new PluginRegistry(), { maxChunkChars: 20 });
+
+    const chunks = await chunker.chunkStructuredFile(
+      { filePath: 'src/open.go', language: 'go', content: rawSource, bytes },
+      { declarations: [declaration], imports: [] },
+    );
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks[0]?.startLine).toBe(1);
+    expect(chunks.at(-1)?.endLine).toBe(5);
+    expect(chunks.every((chunk) => chunk.startLine <= chunk.endLine)).toBe(true);
+    expect(chunks.every((chunk, index) =>
+      chunk.id === `src/open.go:${chunk.startLine}-${chunk.endLine}:Open-part${index + 1}`,
+    )).toBe(true);
   });
 });

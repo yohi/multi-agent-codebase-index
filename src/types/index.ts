@@ -91,10 +91,14 @@ export type {
 } from '../storage/interfaces/metadata-store.js';
 export { supportsStructuredCatalog } from '../storage/interfaces/metadata-store.js';
 export type {
-  IVectorStore,
+  ActiveGeneration,
   CompactionConfig,
   CompactionMutex,
   CompactionResult,
+  GenerationChunkBatch,
+  IVectorStore,
+  StructuredRowVisibility,
+  StructuredShadowTable,
   VectorFilter,
   VectorSearchResult,
   VectorStoreStats,

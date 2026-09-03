@@ -2,6 +2,8 @@ import { computeStringHash } from './hash.js';
 
 import type { CodeChunk, FileToChunk, ParsedSourceFile } from '../types/index.js';
 import type { PluginRegistry } from '../plugins/registry.js';
+import type { StructuredParseResult, StructuredDeclaration } from '../structured/contracts.js';
+import { decodeUtf8 } from '../structured/hash.js';
 
 export interface FixedLineChunkOptions {
   windowSize?: number;
@@ -12,6 +14,8 @@ export interface ChunkerOptions {
   /** Maximum number of characters per chunk before splitting. 0 = unlimited. */
   maxChunkChars?: number;
 }
+
+type GeneratedChunkFields = 'id' | 'content' | 'startLine' | 'endLine' | 'hash';
 
 export class Chunker {
   private readonly maxChunkChars: number;
@@ -45,6 +49,73 @@ export class Chunker {
     }
 
     return chunks;
+  }
+
+  async chunkStructuredFile(
+    file: FileToChunk,
+    artifact: Pick<StructuredParseResult, 'declarations' | 'imports'>,
+  ): Promise<CodeChunk[]> {
+    const chunks: CodeChunk[] = [];
+
+    for (const [index, declaration] of artifact.declarations.entries()) {
+      chunks.push(...(await this.extractDeclarationChunks(declaration, file)));
+
+      if ((index + 1) % 50 === 0) {
+        await this.yieldToEventLoop();
+      }
+    }
+
+    return chunks;
+  }
+
+  private async extractDeclarationChunks(
+    declaration: StructuredDeclaration,
+    file: FileToChunk,
+  ): Promise<CodeChunk[]> {
+    const base: Omit<CodeChunk, GeneratedChunkFields> = {
+      filePath: file.filePath,
+      language: file.language,
+      symbolName: declaration.name,
+      symbolKind: declaration.kind,
+      symbolId: declaration.symbolId,
+    };
+
+    const content = declaration.rawSource ?? this.declarationContent(declaration, file);
+    const contentStartLine = declaration.rawSource === undefined
+      ? declaration.position.startLine
+      : Math.max(1, declaration.position.endLine - this.countLines(content) + 1);
+    const subChunks = await this.splitByMaxChars(
+      content,
+      contentStartLine,
+      declaration.name,
+      file.filePath,
+      base,
+    );
+
+    // Align line ranges to the declaration boundaries when rawSource is available.
+    if (declaration.rawSource !== undefined && subChunks.length > 1) {
+      const endLine = declaration.position.endLine;
+      for (const [index, chunk] of subChunks.entries()) {
+        chunk.endLine = Math.max(chunk.startLine, Math.min(chunk.endLine, endLine));
+        chunk.id = this.createChunkId(
+          file.filePath,
+          chunk.startLine,
+          chunk.endLine,
+          `${declaration.name}-part${index + 1}`,
+        );
+      }
+    }
+
+    return subChunks;
+  }
+
+  private declarationContent(declaration: StructuredDeclaration, file: FileToChunk): string {
+    if (file.bytes !== undefined) {
+      return decodeUtf8(file.bytes.subarray(declaration.startByte, declaration.endByte));
+    }
+
+    const lines = file.content.split('\n');
+    return lines.slice(declaration.position.startLine - 1, declaration.position.endLine).join('\n');
   }
 
   async extractChunksWithYield(

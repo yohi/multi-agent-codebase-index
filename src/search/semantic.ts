@@ -3,8 +3,8 @@ import type {
   IVectorStore,
   SearchResult,
   VectorFilter,
+  VectorSearchResult,
 } from '../types/index.js';
-
 export interface SemanticSearchParams {
   query: string;
   topK?: number;
@@ -13,9 +13,16 @@ export interface SemanticSearchParams {
   abortSignal?: AbortSignal;
 }
 
+export interface ActiveGenerationResolver {
+  resolveActiveGenerations(
+    filePaths: readonly string[],
+  ): Promise<ReadonlyMap<string, string>>;
+}
+
 export interface SemanticSearchOptions {
   vectorStore: IVectorStore;
   embeddingProvider: EmbeddingProvider;
+  activeGenerationResolver?: ActiveGenerationResolver;
 }
 
 export interface ISemanticSearch {
@@ -55,7 +62,9 @@ export class SemanticSearch implements ISemanticSearch {
       return [];
     }
 
-    return results
+    const filteredByGeneration = await this.filterByActiveGeneration(results);
+
+    return filteredByGeneration
       .filter((result) => matchesFilePatterns(result.chunk.filePath, params.filePatterns))
       .slice(0, topK)
       .map((result) => ({
@@ -63,6 +72,32 @@ export class SemanticSearch implements ISemanticSearch {
         score: result.score,
         source: 'semantic' as const,
       }));
+  }
+
+  private async filterByActiveGeneration(
+    results: VectorSearchResult[],
+  ): Promise<VectorSearchResult[]> {
+    const resolver = this.options.activeGenerationResolver;
+    if (!resolver) {
+      return results;
+    }
+
+    const structuredResults = results.filter((r) => r.generationId !== undefined);
+    if (structuredResults.length === 0) {
+      return results;
+    }
+
+    const uniqueFilePaths = [...new Set(structuredResults.map((r) => r.chunk.filePath))];
+    const activeGenerations = await resolver.resolveActiveGenerations(uniqueFilePaths);
+
+    return results.filter((result) => {
+      if (result.generationId === undefined) {
+        // Legacy rows are not subject to structured generation filtering.
+        return true;
+      }
+      const activeGeneration = activeGenerations.get(result.chunk.filePath);
+      return activeGeneration !== undefined && activeGeneration === result.generationId;
+    });
   }
 }
 

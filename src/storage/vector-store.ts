@@ -5,11 +5,15 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
+  ActiveGeneration,
   CodeChunk,
   CompactionConfig,
   CompactionMutex,
   CompactionResult,
+  GenerationChunkBatch,
   IVectorStore,
+  StructuredRowVisibility,
+  StructuredShadowTable,
   VectorFilter,
   VectorSearchResult,
   VectorStoreStats,
@@ -36,6 +40,15 @@ interface LanceRow {
   [key: string]: unknown;
 }
 
+interface LanceStructuredRow extends LanceRow {
+  symbolid: string | null;
+  generationid: string;
+  visibility: StructuredRowVisibility;
+}
+
+const STRUCTURED_TABLE_NAME = 'structured_chunks';
+const STRUCTURED_SHADOW_PREFIX = 'structured_chunks_shadow_';
+
 interface SidecarMetadata {
   dimensions?: string;
   staleCount?: string;
@@ -52,6 +65,9 @@ export class LanceVectorStore implements IVectorStore {
   private readonly dimensions: number;
   private db: lancedb.Connection | undefined;
   private table: Table | undefined;
+  private structuredTable: Table | undefined;
+  private structuredShadowTable: Table | undefined;
+  private structuredShadowName: string | undefined;
 
   private inflightOps = 0;
   private closingResolve: (() => void) | undefined;
@@ -77,7 +93,7 @@ export class LanceVectorStore implements IVectorStore {
     this.dbPath = options.dbPath && options.dbPath !== 'memory://'
       ? options.dbPath
       : join(tmpdir(), `nexus-lance-${randomUUID()}`);
-    
+
     // Path security check to prevent injection
     if (this.dbPath.includes('\0')) {
       throw new Error('Invalid dbPath: contains null byte');
@@ -111,6 +127,7 @@ export class LanceVectorStore implements IVectorStore {
 
       let localDb: lancedb.Connection | undefined;
       let localTable: Table | undefined;
+      let localStructuredTable: Table | undefined;
 
       try {
         localDb = await lancedb.connect(this.dbPath);
@@ -119,7 +136,7 @@ export class LanceVectorStore implements IVectorStore {
         }
 
         const tableNames = await localDb.tableNames();
-        
+
         // 1. Attempt to load sidecar metadata for URI consistency and dimensions
         let metadata: SidecarMetadata | undefined;
         if (!isUri) {
@@ -204,10 +221,15 @@ export class LanceVectorStore implements IVectorStore {
           }
         }
 
+        if (tableNames.includes(STRUCTURED_TABLE_NAME)) {
+          localStructuredTable = await localDb.openTable(STRUCTURED_TABLE_NAME);
+        }
+
         // All checks passed and not closed - commit to instance fields
         if (!this.isClosed) {
           this.db = localDb;
           this.table = localTable;
+          this.structuredTable = localStructuredTable;
           // Prevent cleanup in finally block
           localDb = undefined;
           localTable = undefined;
@@ -275,6 +297,9 @@ export class LanceVectorStore implements IVectorStore {
       this.lastCompactedAt = undefined;
       await this.updateMetadata();
     }
+    if (this.structuredTable && this.db) {
+      await this.structuredTable.delete('true');
+    }
   }
 
   private async runInWriteLock<T>(op: () => Promise<T>): Promise<T> {
@@ -321,55 +346,69 @@ export class LanceVectorStore implements IVectorStore {
       this.activeTimeouts.clear();
 
       // 2. Wait for in-flight operations to settle with a timeout
-      if (this.inflightOps > 0) {
-        const effectiveTimeout = timeoutMs ?? LanceVectorStore.CLOSE_TIMEOUT_MS;
-        const inflightDone = new Promise<void>((resolve) => {
-          if (this.inflightOps === 0) {
-            resolve();
-          } else {
-            this.closingResolve = resolve;
-          }
-        });
-        let timerHandle: NodeJS.Timeout | undefined = undefined;
-        const timeout = new Promise<'timeout'>((resolve) => {
-          timerHandle = setTimeout(() => { resolve('timeout'); }, effectiveTimeout);
-        });
-        const result = await Promise.race([inflightDone.then(() => 'done' as const), timeout]);
-        if (timerHandle) {
-          clearTimeout(timerHandle);
-        }
-        if (result === 'timeout') {
-          console.error(
-            `[LanceVectorStore] close() timed out after ${effectiveTimeout}ms ` +
-            `with ${this.inflightOps} in-flight operation(s). Forcing resource release.`
-          );
-        }
-      }
+      await this.waitForInflightOperations(timeoutMs);
 
       // 3. Release LanceDB resources
-      try {
-        if (this.table && 'close' in this.table && typeof (this.table as unknown as Record<string, unknown>).close === 'function') {
-          await (this.table as unknown as Closable).close();
-        }
-      } catch (e) {
-        console.error('[LanceVectorStore] Error closing table resources:', e);
-      } finally {
-        this.table = undefined;
-      }
-
-      try {
-        if (this.db && 'close' in this.db && typeof (this.db as unknown as Record<string, unknown>).close === 'function') {
-          await (this.db as unknown as Closable).close();
-        }
-      } catch (e) {
-        console.error('[LanceVectorStore] Error closing DB connection:', e);
-      } finally {
-        this.db = undefined;
-      }
+      await this.releaseLanceResources();
       this.closingResolve = undefined;
     })();
 
     await this.closePromise;
+  }
+
+  private async waitForInflightOperations(timeoutMs?: number): Promise<void> {
+    if (this.inflightOps === 0) {
+      return;
+    }
+
+    const effectiveTimeout = timeoutMs ?? LanceVectorStore.CLOSE_TIMEOUT_MS;
+    const inflightDone = new Promise<void>((resolve) => {
+      if (this.inflightOps === 0) {
+        resolve();
+      } else {
+        this.closingResolve = resolve;
+      }
+    });
+    let timerHandle: NodeJS.Timeout | undefined;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timerHandle = setTimeout(() => resolve('timeout'), effectiveTimeout);
+    });
+    const result = await Promise.race([inflightDone.then(() => 'done' as const), timeout]);
+    if (timerHandle) {
+      clearTimeout(timerHandle);
+    }
+    if (result === 'timeout') {
+      console.error(
+        `[LanceVectorStore] close() timed out after ${effectiveTimeout}ms ` +
+        `with ${this.inflightOps} in-flight operation(s). Forcing resource release.`,
+      );
+    }
+  }
+
+  private async releaseLanceResources(): Promise<void> {
+    await this.closeResource(this.structuredShadowTable, 'structured shadow table resources');
+    this.structuredShadowTable = undefined;
+    await this.closeResource(this.structuredTable, 'structured table resources');
+    this.structuredTable = undefined;
+    await this.closeResource(this.table, 'table resources');
+    this.table = undefined;
+    await this.closeResource(this.db, 'DB connection');
+    this.db = undefined;
+  }
+
+  private async closeResource(resource: unknown, resourceName: string): Promise<void> {
+    try {
+      if (
+        typeof resource === 'object' &&
+        resource !== null &&
+        'close' in resource &&
+        typeof (resource as Record<string, unknown>).close === 'function'
+      ) {
+        await (resource as Closable).close();
+      }
+    } catch (error) {
+      console.error(`[LanceVectorStore] Error closing ${resourceName}:`, error);
+    }
   }
 
   async upsertChunks(chunks: CodeChunk[], embeddings?: number[][], affectedFilePaths?: string[]): Promise<void> {
@@ -401,13 +440,13 @@ export class LanceVectorStore implements IVectorStore {
       // 1. Calculate stats and delete old records in a single batch
       if (this.table && uniqueFilePaths.length > 0) {
         const escapedPaths = uniqueFilePaths.map(fp => `'${this.escapeFilterValue(fp)}'`).join(', ');
-        
+
         // Count existing rows for these files in a single query to avoid loop overhead
         const existingRows = await this.table.query()
           .where(`filepath IN (${escapedPaths})`)
           .select(['filepath'])
           .toArray() as unknown as { filepath: string }[];
-        
+
         staleAdded = existingRows.length;
         const foundPaths = new Set(existingRows.map(r => r.filepath));
         filesAdded = uniqueFilePaths.length - foundPaths.size;
@@ -479,7 +518,7 @@ export class LanceVectorStore implements IVectorStore {
         throw new Error('VectorStore not initialized');
       }
       if (!this.table) return 0;
-      
+
       const filter = this.filePathFilter(filePath);
       const count = await this.table.countRows(filter);
       if (count > 0) {
@@ -507,7 +546,7 @@ export class LanceVectorStore implements IVectorStore {
           .select(['filepath'])
           .toArray() as unknown as { filepath: string }[];
         const affectedFiles = new Set(rows.map(r => r.filepath)).size;
-        
+
         await this.table.delete(filter);
         this.staleCount += count;
         this.totalFiles -= affectedFiles;
@@ -555,49 +594,259 @@ export class LanceVectorStore implements IVectorStore {
 
     return this.trackOp(async () => {
       await this.writeMutex;
-      if (!this.table) return [];
-      
-      // 明示的にベクトル列とコサイン類似度を指定し、スコア計算 (1 - distance) との整合性を確保する
-      let query = this.table.vectorSearch(queryVector)
-        .column('vector')
-        .distanceType('cosine')
-        .limit(topK);
-      
-      // SQL フィルタの構築
-      const sqlFilters: string[] = [];
-      if (filter?.filePathPrefix !== undefined) {
-        sqlFilters.push(this.filePathPrefixFilter(filter.filePathPrefix));
-      }
-      if (filter?.language !== undefined) {
-        this.validateFilterValue(filter.language, 'language');
-        sqlFilters.push(`language = '${this.escapeFilterValue(filter.language)}'`);
-      }
-      if (filter?.symbolKind !== undefined) {
-        this.validateFilterValue(filter.symbolKind, 'symbolKind');
-        sqlFilters.push(`symbolkind = '${this.escapeFilterValue(filter.symbolKind)}'`);
-      }
 
-      if (sqlFilters.length > 0) {
-        query = query.where(sqlFilters.join(' AND '));
-      }
+      const sqlFilter = this.buildSqlFilter(filter);
+      const legacyResults = await this.searchLegacyResults(queryVector, topK, sqlFilter);
+      const structuredResults = await this.searchStructuredResults(queryVector, topK, sqlFilter);
+      return this.mergeSearchResults(structuredResults, legacyResults, topK);
+    });
+  }
 
-      const resultsRaw = await query.toArray() as unknown as LanceRow[];
-      
-      return resultsRaw.map((row) => ({
-        chunk: {
-          id: row.id,
-          filePath: row.filepath,
-          content: row.content,
-          language: row.language,
-          symbolName: row.symbolname || undefined,
-          symbolKind: row.symbolkind,
-          startLine: row.startline,
-          endLine: row.endline,
-          hash: row.hash,
-        },
-        score: typeof row._distance === 'number' ? 1 - row._distance : 0,
-        generationId: row.generationid,
+  private async searchLegacyResults(
+    queryVector: number[],
+    topK: number,
+    sqlFilter: string | undefined,
+  ): Promise<VectorSearchResult[]> {
+    if (!this.table) {
+      return [];
+    }
+
+    let query = this.table.vectorSearch(queryVector)
+      .column('vector')
+      .distanceType('cosine')
+      .limit(topK);
+    if (sqlFilter) {
+      query = query.where(sqlFilter);
+    }
+
+    const rows = await query.toArray() as unknown as LanceRow[];
+    return rows.map((row) => this.toSearchResult(row));
+  }
+
+  private async searchStructuredResults(
+    queryVector: number[],
+    topK: number,
+    sqlFilter: string | undefined,
+  ): Promise<VectorSearchResult[]> {
+    if (!this.structuredTable) {
+      return [];
+    }
+
+    let query = this.structuredTable.vectorSearch(queryVector)
+      .column('vector')
+      .distanceType('cosine')
+      .limit(topK)
+      .where("visibility = 'active'");
+    if (sqlFilter) {
+      query = query.where(`${sqlFilter} AND visibility = 'active'`);
+    }
+
+    const rows = await query.toArray() as unknown as LanceStructuredRow[];
+    return rows.map((row) => this.toSearchResult(row));
+  }
+
+  private toSearchResult(row: LanceRow): VectorSearchResult {
+    const structuredRow = row as Partial<LanceStructuredRow>;
+    return {
+      chunk: {
+        id: row.id,
+        filePath: row.filepath,
+        content: row.content,
+        language: row.language,
+        symbolName: row.symbolname || undefined,
+        symbolKind: row.symbolkind,
+        startLine: row.startline,
+        endLine: row.endline,
+        hash: row.hash,
+        ...(structuredRow.symbolid === undefined ? {} : { symbolId: structuredRow.symbolid ?? undefined }),
+      },
+      score: typeof row._distance === 'number' ? 1 - row._distance : 0,
+      ...(row.generationid === undefined ? {} : { generationId: row.generationid }),
+    };
+  }
+
+  private mergeSearchResults(
+    structuredResults: VectorSearchResult[],
+    legacyResults: VectorSearchResult[],
+    topK: number,
+  ): VectorSearchResult[] {
+    const seen = new Set<string>();
+    const combined: VectorSearchResult[] = [];
+    // Prefer structured active rows over legacy rows for the same chunk id.
+    const candidates = [...structuredResults, ...legacyResults]
+      .sort((left, right) => right.score - left.score || left.chunk.filePath.localeCompare(right.chunk.filePath));
+    for (const candidate of candidates) {
+      if (seen.has(candidate.chunk.id)) {
+        continue;
+      }
+      seen.add(candidate.chunk.id);
+      combined.push(candidate);
+      if (combined.length >= topK) {
+        break;
+      }
+    }
+    return combined.slice(0, topK);
+  }
+
+  async stageGenerationChunks(batch: GenerationChunkBatch): Promise<void> {
+    if (batch.vectors.length !== batch.chunks.length) {
+      throw new Error(
+        `VectorStore.stageGenerationChunks: vectors length mismatch (expected ${batch.chunks.length}, got ${batch.vectors.length})`
+      );
+    }
+    for (const [i, vector] of batch.vectors.entries()) {
+      if (vector.length !== this.dimensions) {
+        throw new Error(
+          `VectorStore.stageGenerationChunks: vector length mismatch for chunk ${batch.chunks[i]?.id}`
+        );
+      }
+    }
+
+    await this.runInWriteLock(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      const targetTable = this.structuredShadowTable ?? this.structuredTable;
+      const rows: LanceStructuredRow[] = batch.chunks.map((chunk, i) => ({
+        vector: Array.from(batch.vectors[i]!),
+        id: chunk.id,
+        filepath: chunk.filePath,
+        content: chunk.content,
+        language: chunk.language,
+        symbolname: chunk.symbolName ?? '',
+        symbolkind: chunk.symbolKind,
+        startline: chunk.startLine,
+        endline: chunk.endLine,
+        hash: chunk.hash,
+        symbolid: chunk.symbolId ?? null,
+        generationid: batch.generationId,
+        visibility: 'pending',
       }));
+
+      if (targetTable) {
+        await targetTable.add(rows);
+      } else {
+        this.structuredTable = await this.db.createTable(STRUCTURED_TABLE_NAME, rows);
+      }
+    });
+  }
+
+  async activateGenerationRows(filePath: string, generationId: string): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.structuredTable) return;
+      const filter = `filepath = '${this.escapeFilterValue(filePath)}' AND generationid = '${this.escapeFilterValue(generationId)}' AND visibility = 'pending'`;
+      await this.structuredTable.update({
+        where: filter,
+        values: { visibility: 'active' },
+      });
+    });
+  }
+
+  async removeGenerationRows(filePath: string, generationId: string): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.structuredTable) return;
+      const filter = `filepath = '${this.escapeFilterValue(filePath)}' AND generationid = '${this.escapeFilterValue(generationId)}'`;
+      await this.structuredTable.delete(filter);
+    });
+  }
+
+  async beginStructuredShadowTable(): Promise<StructuredShadowTable> {
+    return this.runInWriteLock(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      this.structuredShadowName = `${STRUCTURED_SHADOW_PREFIX}${randomUUID().replaceAll('-', '_')}`;
+      const sample: LanceStructuredRow[] = [{
+        vector: new Array<number>(this.dimensions).fill(0),
+        id: 'placeholder',
+        filepath: 'placeholder',
+        content: '',
+        language: 'typescript',
+        symbolname: '',
+        symbolkind: 'function',
+        startline: 0,
+        endline: 0,
+        hash: 'placeholder',
+        symbolid: 'placeholder',
+        generationid: 'placeholder',
+        visibility: 'pending',
+      }];
+      this.structuredShadowTable = await this.db.createTable(this.structuredShadowName, sample);
+      await this.structuredShadowTable.delete("filepath = 'placeholder'");
+      return { name: this.structuredShadowName };
+    });
+  }
+
+  async swapStructuredShadowTable(shadowTable: StructuredShadowTable): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.db) {
+        throw new Error('VectorStore not initialized');
+      }
+      if (!this.structuredShadowTable || this.structuredShadowName !== shadowTable.name) {
+        throw new Error('VectorStore.swapStructuredShadowTable: unknown shadow table');
+      }
+
+      const newTable = this.structuredShadowTable;
+      const oldTable = this.structuredTable;
+      const oldShadowName = this.structuredShadowName;
+
+      this.structuredTable = newTable;
+      this.structuredShadowTable = undefined;
+      this.structuredShadowName = undefined;
+
+      try {
+        if (oldTable) {
+          const oldName = oldTable.name;
+          await oldTable.delete('true');
+          await this.db.dropTable(oldName).catch(() => {});
+        }
+      } catch (e) {
+        console.error('[LanceVectorStore] Error dropping old structured table during swap:', e);
+      }
+
+      const batchSize = 500;
+      let offset = 0;
+      let liveTable: Table | undefined;
+      while (true) {
+        const rowsRaw = await newTable.query().limit(batchSize).offset(offset).toArray() as unknown as LanceStructuredRow[];
+        if (rowsRaw.length === 0) {
+          break;
+        }
+
+        const rows: LanceStructuredRow[] = rowsRaw.map((row) => ({
+          ...row,
+          vector: Array.from(row.vector),
+          visibility: 'active',
+        }));
+        if (liveTable === undefined) {
+          liveTable = await this.db.createTable(STRUCTURED_TABLE_NAME, rows);
+        } else {
+          await liveTable.add(rows);
+        }
+
+        offset += rows.length;
+        if (rows.length < batchSize) {
+          break;
+        }
+      }
+      await this.db.dropTable(oldShadowName).catch(() => {});
+      this.structuredTable = liveTable;
+    });
+  }
+
+  async reconcileStructuredRows(activeGenerations: readonly ActiveGeneration[]): Promise<void> {
+    return this.runInWriteLock(async () => {
+      if (!this.structuredTable) return;
+      if (activeGenerations.length === 0) {
+        await this.structuredTable.delete('true');
+        return;
+      }
+
+      const conditions = activeGenerations.map(
+        (ag) => `(filepath = '${this.escapeFilterValue(ag.filePath)}' AND generationid = '${this.escapeFilterValue(ag.generationId)}')`,
+      );
+      const keepFilter = conditions.join(' OR ');
+      await this.structuredTable.delete(`NOT (${keepFilter})`);
     });
   }
 
@@ -810,5 +1059,21 @@ export class LanceVectorStore implements IVectorStore {
   protected filePathPrefixFilter(prefix: string): string {
     this.validateFilterValue(prefix, 'prefix');
     return `filepath LIKE '${this.escapeLikeValue(prefix)}%' ESCAPE '\\\\'`;
+  }
+
+  private buildSqlFilter(filter?: VectorFilter): string | undefined {
+    const sqlFilters: string[] = [];
+    if (filter?.filePathPrefix !== undefined) {
+      sqlFilters.push(this.filePathPrefixFilter(filter.filePathPrefix));
+    }
+    if (filter?.language !== undefined) {
+      this.validateFilterValue(filter.language, 'language');
+      sqlFilters.push(`language = '${this.escapeFilterValue(filter.language)}'`);
+    }
+    if (filter?.symbolKind !== undefined) {
+      this.validateFilterValue(filter.symbolKind, 'symbolKind');
+      sqlFilters.push(`symbolkind = '${this.escapeFilterValue(filter.symbolKind)}'`);
+    }
+    return sqlFilters.length > 0 ? sqlFilters.join(' AND ') : undefined;
   }
 }

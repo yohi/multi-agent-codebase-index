@@ -1,6 +1,5 @@
 import type { StructuredParseResult } from './contracts.js';
 import { decodeUtf8 } from './hash.js';
-
 export interface Utf8OffsetTable {
   readonly byteOffsetAtUtf16: (offset: number) => number;
 }
