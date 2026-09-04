@@ -11,7 +11,12 @@ private, evidence-based codebase search and symbol context retrieval.
 
 ## Why: Core Principles
 
-- **Local-first & private**: Source code never leaves the host machine; no external egress.
+- **Local-first & private**: With a local-only embedding provider such as
+  Ollama, source code stays on the host and no source-derived data is sent
+  externally. The `openai-compat` and `bedrock` providers may send
+  source-derived chunks to configured external services.
+  `transportMode="v2-http"` rejects those providers via
+  `assertHttpV2Constraints`.
 - **Evidence-based**: Ground retrievals in verified symbols and deterministic tools over guessing.
 - **Deterministic tooling**: Rely on the linter, type checker, and tests rather than prose rules.
 
@@ -42,4 +47,3 @@ Read a document only when its topic is relevant to the current task:
 - Packaging & release distribution: [docs/distribution.md](docs/distribution.md)
 - Metrics & Grafana dashboard: [docs/observability/README.md](docs/observability/README.md)
 - Product requirements & roadmap: [REQUIREMENTS.md](REQUIREMENTS.md)
-

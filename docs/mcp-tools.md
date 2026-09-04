@@ -226,23 +226,39 @@ semantic search と grep search を統合した ranking search です。
 
 ```json
 {
-  "filePath": "src/auth.ts",
   "status": "ok",
+  "freshness": "fresh",
+  "reindexRequired": false,
+  "file": {
+    "filePath": "src/auth.ts",
+    "language": "typescript",
+    "parserId": "typescript",
+    "parserVersion": "1"
+  },
   "symbols": [
     {
+      "name": "authenticate",
+      "qualifiedName": "authenticate",
       "symbolId": "symbol_v1_abc...",
-      "qualifiedName": "AuthService.authenticate",
-      "kind": "method",
-      "signature": "authenticate(token: string): Promise<User>",
-      "startLine": 12,
-      "endLine": 18,
-      "parentKey": "AuthService"
+      "kind": "function",
+      "signatureDiscriminator": "authenticate(token: string): Promise<User>",
+      "position": {
+        "startLine": 12,
+        "startColumn": 0,
+        "endLine": 18,
+        "endColumn": 1
+      },
+      "isExact": true,
+      "languageId": "typescript",
+      "parentSymbolId": null
     }
-  ]
+  ],
+  "request": { "filePath": "src/auth.ts" }
 }
 ```
 
-非 `ok` ステータスでは `symbols` キーは含まれません。主なステータスと reasonCode:
+非 `ok` ステータスのうち、`degraded` では部分的に取得できた `symbols` キーが含まれます。
+その他のステータスでは `symbols` キーは含まれません。主なステータスと reasonCode:
 
 | status | reasonCode | 意味 |
 | --- | --- | --- |
@@ -297,14 +313,20 @@ import の追加で予算を超過した場合、`budget.exceeded: true` と `om
 
 ```json
 {
-  "symbolId": "symbol_v1_abc...",
   "status": "ok",
   "freshness": "fresh",
   "reindexRequired": false,
   "context": "import { User } from \"./user.js\";\n\nexport async function authenticate(token: string): Promise<User> { ... }",
+  "filePath": "src/auth.ts",
   "imports": [
-    { "moduleSpecifier": "./user.js", "bindingName": "User", "completeness": "complete" }
+    {
+      "id": "import_v1_abc...",
+      "moduleSpecifier": "./user.js",
+      "startByte": 0,
+      "endByte": 36
+    }
   ],
+  "importsCompleteness": "complete",
   "budget": {
     "requested": 2000,
     "actual": 42,
@@ -312,9 +334,15 @@ import の追加で予算を超過した場合、`budget.exceeded: true` と `om
     "omittedForBudget": 0
   },
   "tokenizer": "cl100k_base",
-  "tokenizerVersion": "js-tiktoken@1.0.21"
+  "tokenizerVersion": "js-tiktoken@1.0.21",
+  "request": { "symbolId": "symbol_v1_abc...", "tokenBudget": 2000 }
 }
 ```
+
+各 `import` は `id`、`moduleSpecifier`、`startByte`、`endByte` を返します。
+`moduleSpecifier` は部分解析で確定できない場合に省略されることがあります。
+個別の `completeness` は返さず、import 全体の完全性をトップレベルの
+`importsCompleteness` で返します。
 
 予算を超えてもシンボルソースは常に完全に返されます。超過時は `budget.exceeded: true` となり、
 収まらなかった import が `omittedForBudget` にカウントされます。
