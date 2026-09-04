@@ -60,6 +60,7 @@ interface IndexPipelineOptions {
 
 interface ProcessEventsResult {
   chunksIndexed: number;
+  structuredParseFailures: readonly string[];
 }
 
 interface StructuredFileWork {
@@ -244,7 +245,7 @@ export class IndexPipeline implements IIndexPipeline {
       if (useStructuredFullRebuild) {
         await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
       }
-      return { chunksIndexed: 0 };
+      return { chunksIndexed: 0, structuredParseFailures: [] };
     }
 
     if (!this.isTreeLoaded) {
@@ -317,7 +318,7 @@ export class IndexPipeline implements IIndexPipeline {
           loadContent as ContentLoader,
           trackProgress,
           useStructuredFullRebuild ? structuredRebuildFiles : undefined,
-          useStructuredFullRebuild ? structuredParseFailures : undefined,
+          structuredParseFailures,
         );
         if (trackProgress) {
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
@@ -336,7 +337,10 @@ export class IndexPipeline implements IIndexPipeline {
       }
 
       completedSuccessfully = !this.abortController.signal.aborted;
-      return { chunksIndexed };
+      return {
+        chunksIndexed,
+        structuredParseFailures: [...new Set(structuredParseFailures)],
+      };
     } finally {
       if (trackProgress) {
         this.progress.currentFile = undefined;
@@ -1002,26 +1006,6 @@ export class IndexPipeline implements IIndexPipeline {
     this.eventQueue = eventQueue;
   }
 
-  private async indexFile(filePath: string, content: string, contentHash: string): Promise<number> {
-    this.safeLogProgress(`Indexing: ${filePath}`, filePath);
-    const chunks = await this.options.chunker.chunkFiles([
-      {
-        filePath,
-        language: this.detectLanguage(filePath),
-        content,
-      },
-    ]);
-
-    const embeddings = await this.options.embeddingProvider.embed(chunks.map((chunk) => chunk.content), this.abortController.signal);
-    await this.options.vectorStore.upsertChunks(chunks, embeddings, [filePath]);
-    await this.merkleTree.update(filePath, contentHash);
-    this.skippedFiles.delete(filePath);
-
-    this.safeLogProgress(`Finished indexing: ${filePath} (${chunks.length} chunks)`, filePath);
-
-    return chunks.length;
-  }
-
   private async embeddingHealthy(): Promise<boolean> {
     return this.options.embeddingProvider.healthCheck();
   }
@@ -1031,38 +1015,20 @@ export class IndexPipeline implements IIndexPipeline {
   }
 
   private async reprocess(entry: DeadLetterEntry): Promise<void> {
-    let fileSize: number | undefined;
-    if (this.options.maxFileBytes !== undefined) {
-      try {
-        const fileStat = await fsStat(entry.filePath);
-        fileSize = fileStat.size;
-        if (fileSize > this.options.maxFileBytes) {
-          this.safeLogProgress(
-            `Skipping reprocess (file too large: ${fileSize} bytes > ${this.options.maxFileBytes} limit): ${entry.filePath}`,
-            entry.filePath,
-          );
-          this.skippedFiles.set(entry.filePath, `file too large: ${fileSize} bytes`);
-          await this.options.vectorStore.deleteByFilePath(entry.filePath);
-          await this.merkleTree.update(entry.filePath, entry.contentHash);
-          return;
-        }
-      } catch {
-        // Fallback to checking size after reading.
-      }
+    const result = await this.processEvents(
+      [{
+        type: 'modified',
+        filePath: entry.filePath,
+        contentHash: entry.contentHash,
+        detectedAt: new Date().toISOString(),
+      }],
+      (filePath) => readFile(filePath, 'utf8'),
+      { trackProgress: false },
+    );
+
+    if (result.structuredParseFailures.includes(entry.filePath)) {
+      throw new Error(`Structured parsing failed for ${entry.filePath}`);
     }
-    const content = await readFile(entry.filePath, 'utf8');
-    const bytes = fileSize ?? Buffer.byteLength(content, 'utf8');
-    if (this.options.maxFileBytes !== undefined && bytes > this.options.maxFileBytes) {
-      this.safeLogProgress(
-        `Skipping reprocess (file too large: ${bytes} bytes > ${this.options.maxFileBytes} limit): ${entry.filePath}`,
-        entry.filePath,
-      );
-      this.skippedFiles.set(entry.filePath, `file too large: ${bytes} bytes`);
-      await this.options.vectorStore.deleteByFilePath(entry.filePath);
-      await this.merkleTree.update(entry.filePath, entry.contentHash);
-      return;
-    }
-    await this.indexFile(entry.filePath, content, entry.contentHash);
   }
 
 

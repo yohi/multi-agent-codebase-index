@@ -8,9 +8,9 @@ job fail while keeping high-severity vulnerability findings as a hard failure.
 ## Design
 
 The `Security Audit (Production only)` step in
-`.github/workflows/ci.yml` will execute `npm audit --omit=dev` in a bounded
-three-attempt loop. The step will retry only when npm reports an advisory
-endpoint or known network failure. A vulnerability result will fail
+`.github/workflows/ci.yml` will execute `npm audit --omit=dev --audit-level=high`
+in a bounded three-attempt loop. The step will retry only when npm reports an
+advisory endpoint or known network failure. A vulnerability result will fail
 immediately, and a network failure after the final attempt will preserve the
 non-zero exit status.
 

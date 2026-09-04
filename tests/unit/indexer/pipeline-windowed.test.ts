@@ -195,6 +195,23 @@ describe('IndexPipeline – windowed batching', () => {
       coordinator,
     } = await createStructuredCoordinatorFixture({ bootstrapStructuredSchema: true });
     const embeddingProvider = new TestEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(pluginRegistry),
+      embeddingProvider,
+      pluginRegistry,
+      structuredIndexCoordinator: coordinator,
+    });
+
+    await pipeline.processEvents(
+      [addEvent('src/broken.ts', 'hash-stable')],
+      async () => 'export function stable(): number { return 1; }',
+    );
+    const previousMerkleNode = await metadataStore.getMerkleNode('src/broken.ts');
+    expect(previousMerkleNode).toEqual(
+      expect.objectContaining({ hash: 'hash-stable', isDirectory: false }),
+    );
 
     const plugin = pluginRegistry.getLanguagePlugin('src/broken.ts');
     expect(plugin).toBeDefined();
@@ -208,15 +225,6 @@ describe('IndexPipeline – windowed batching', () => {
       }),
     });
 
-    const pipeline = new IndexPipeline({
-      metadataStore,
-      vectorStore,
-      chunker: new Chunker(pluginRegistry),
-      embeddingProvider,
-      pluginRegistry,
-      structuredIndexCoordinator: coordinator,
-    });
-
     await pipeline.processEvents(
       [addEvent('src/broken.ts', 'hash-broken')],
       async () => 'invalid syntax {{{',
@@ -224,7 +232,7 @@ describe('IndexPipeline – windowed batching', () => {
 
     const dlq = await metadataStore.getDeadLetterEntries();
     expect(dlq.map((e) => e.filePath)).toContain('src/broken.ts');
-    await expect(metadataStore.getMerkleNode('src/broken.ts')).resolves.toBeNull();
+    await expect(metadataStore.getMerkleNode('src/broken.ts')).resolves.toEqual(previousMerkleNode);
   });
 
   it('routes ALL files in a failed embed window to the DLQ (cross-file attribution)', async () => {
