@@ -316,7 +316,25 @@ describe('SymbolRetrievalService', () => {
     });
 
     const result = await excludedService.getSymbolSource({ symbolId: fixture.symbolId });
-    expect(result).toMatchObject({ status: 'stale', reasonCode: 'PATH_EXCLUDED' });
+    expect(result).toEqual({
+      status: 'excluded',
+      freshness: 'unknown',
+      reindexRequired: false,
+      reasonCode: 'PATH_EXCLUDED',
+      request: { symbolId: fixture.symbolId },
+    });
+
+    const contextResult = await excludedService.getSymbolContext({
+      symbolId: fixture.symbolId,
+      tokenBudget: 500,
+    });
+    expect(contextResult).toEqual({
+      status: 'excluded',
+      freshness: 'unknown',
+      reindexRequired: false,
+      reasonCode: 'PATH_EXCLUDED',
+      request: { symbolId: fixture.symbolId, tokenBudget: 500 },
+    });
   });
 
   it('propagates an AbortSignal to the file read', async () => {

@@ -16,7 +16,7 @@ type SourceStatus =
   | { status: 'ok'; freshness: 'fresh'; source: string }
   | { status: 'stale_identity'; freshness: 'unknown'; reindexRequired: false; reasonCode: 'SYMBOL_RETIRED' }
   | { status: 'index_incomplete'; freshness?: string; reindexRequired?: boolean; reasonCode: StructuredRetrievalReasonCode | 'INDEX_PENDING_GENERATION' | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_SYMBOL_HASH_MISMATCH' | 'INDEX_GENERATION_MISSING' | 'SYMBOL_RETIRED' | 'STRUCTURED_INDEX_MISSING' | 'FILE_NOT_FOUND' | 'INDEX_FILE_MISSING' }
-  | { status: 'stale'; freshness?: string; reindexRequired?: boolean; reasonCode: StructuredRetrievalReasonCode | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_FILE_MISSING' | 'PATH_EXCLUDED' }
+  | { status: 'stale'; freshness?: string; reindexRequired?: boolean; reasonCode: StructuredRetrievalReasonCode | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_FILE_MISSING' }
   | { status: 'not_found'; freshness?: string; reindexRequired?: boolean; reasonCode: 'FILE_NOT_FOUND' | 'SYMBOL_NOT_FOUND' | 'SYMBOL_RETIRED' | 'STRUCTURED_INDEX_MISSING' }
   | { status: 'excluded'; freshness?: string; reindexRequired?: boolean; reasonCode: 'PATH_EXCLUDED' }
   | { status: 'unsupported'; freshness?: string; reindexRequired?: boolean; reasonCode: 'unsupported_language' | 'STRUCTURED_SCHEMA_UNSUPPORTED' }
@@ -329,6 +329,21 @@ export class SymbolRetrievalService {
     }
 
     const filePath = resolution.filePath;
+    if (this.options.isExcluded) {
+      const excluded = await this.options.isExcluded(filePath);
+      if (excluded) {
+        return {
+          ok: false,
+          status: {
+            status: 'excluded',
+            freshness: 'unknown',
+            reindexRequired: false,
+            reasonCode: 'PATH_EXCLUDED',
+            request: { symbolId: input.symbolId },
+          },
+        };
+      }
+    }
     const fileResolution = await this.options.catalog.resolveFile(filePath);
     if (fileResolution.kind === 'pending') {
       return { ok: false, status: { status: 'index_incomplete', reasonCode: 'INDEX_PENDING_GENERATION', request: { symbolId: input.symbolId } } };
@@ -394,11 +409,7 @@ export class SymbolRetrievalService {
     filePath: string,
     projectRoot: string,
     signal?: AbortSignal,
-  ): Promise<{ status: 'ok'; bytes: Uint8Array } | { status: 'stale'; reasonCode: 'INDEX_FILE_MISSING' | 'PATH_EXCLUDED' }> {
-    if (this.options.isExcluded) {
-      const excluded = await this.options.isExcluded(filePath);
-      if (excluded) return { status: 'stale', reasonCode: 'PATH_EXCLUDED' };
-    }
+  ): Promise<{ status: 'ok'; bytes: Uint8Array } | { status: 'stale'; reasonCode: 'INDEX_FILE_MISSING' }> {
     try {
       const absolutePath = join(projectRoot, filePath);
       const buffer = await readFile(absolutePath, { signal });
