@@ -61,6 +61,12 @@ interface IndexPipelineOptions {
 interface ProcessEventsResult {
   chunksIndexed: number;
   structuredParseFailures: readonly string[];
+  embeddingFailures: readonly string[];
+}
+
+interface ProcessEventWindowResult {
+  chunksIndexed: number;
+  embeddingFailures: readonly string[];
 }
 
 interface StructuredFileWork {
@@ -245,7 +251,7 @@ export class IndexPipeline implements IIndexPipeline {
       if (useStructuredFullRebuild) {
         await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
       }
-      return { chunksIndexed: 0, structuredParseFailures: [] };
+      return { chunksIndexed: 0, structuredParseFailures: [], embeddingFailures: [] };
     }
 
     if (!this.isTreeLoaded) {
@@ -260,6 +266,7 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     let chunksIndexed = 0;
+    const embeddingFailures: string[] = [];
     let completedSuccessfully = false;
 
     try {
@@ -313,13 +320,15 @@ export class IndexPipeline implements IIndexPipeline {
           break;
         }
         const window = pending.slice(windowStart, windowStart + this.embedBatchWindowSize);
-        chunksIndexed += await this.processEventWindow(
+        const windowResult = await this.processEventWindow(
           window,
           loadContent as ContentLoader,
           trackProgress,
           useStructuredFullRebuild ? structuredRebuildFiles : undefined,
           structuredParseFailures,
         );
+        chunksIndexed += windowResult.chunksIndexed;
+        embeddingFailures.push(...windowResult.embeddingFailures);
         if (trackProgress) {
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
         }
@@ -340,6 +349,7 @@ export class IndexPipeline implements IIndexPipeline {
       return {
         chunksIndexed,
         structuredParseFailures: [...new Set(structuredParseFailures)],
+        embeddingFailures: [...new Set(embeddingFailures)],
       };
     } finally {
       if (trackProgress) {
@@ -505,7 +515,7 @@ export class IndexPipeline implements IIndexPipeline {
     trackProgress: boolean,
     structuredRebuildFiles?: FullRebuildFile[],
     structuredParseFailures?: string[],
-  ): Promise<number> {
+  ): Promise<ProcessEventWindowResult> {
     // Stage 1: bounded-concurrency read + chunk (no Merkle/vector writes here).
     const limit = pLimit(this.chunkConcurrency);
     const works = await Promise.all(
@@ -758,7 +768,7 @@ export class IndexPipeline implements IIndexPipeline {
       }
     }
 
-    return chunksIndexed;
+    return { chunksIndexed, embeddingFailures: [...failedFilePaths] };
   }
 
   private async handleDeleteEvent(filePath: string, deferStructuredRetirement = false): Promise<void> {
@@ -1028,6 +1038,9 @@ export class IndexPipeline implements IIndexPipeline {
 
     if (result.structuredParseFailures.includes(entry.filePath)) {
       throw new Error(`Structured parsing failed for ${entry.filePath}`);
+    }
+    if (result.embeddingFailures.includes(entry.filePath)) {
+      throw new Error(`Embedding failed for ${entry.filePath}`);
     }
   }
 
