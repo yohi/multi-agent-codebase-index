@@ -187,6 +187,54 @@ describe('IndexPipeline – windowed batching', () => {
     }
   });
 
+  it('routes to DLQ and preserves Merkle tree when structured parsing fails during incremental indexing', async () => {
+    const {
+      metadataStore,
+      vectorStore,
+      pluginRegistry,
+      coordinator,
+    } = await createStructuredCoordinatorFixture({ bootstrapStructuredSchema: true });
+    const embeddingProvider = new TestEmbeddingProvider();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(pluginRegistry),
+      embeddingProvider,
+      pluginRegistry,
+      structuredIndexCoordinator: coordinator,
+    });
+
+    await pipeline.processEvents(
+      [addEvent('src/broken.ts', 'hash-stable')],
+      async () => 'export function stable(): number { return 1; }',
+    );
+    const previousMerkleNode = await metadataStore.getMerkleNode('src/broken.ts');
+    expect(previousMerkleNode).toEqual(
+      expect.objectContaining({ hash: 'hash-stable', isDirectory: false }),
+    );
+
+    const plugin = pluginRegistry.getLanguagePlugin('src/broken.ts');
+    expect(plugin).toBeDefined();
+    plugin!.createStructuredParser = vi.fn().mockResolvedValue({
+      parseStructured: async () => ({
+        status: 'failed',
+        retrievability: 'none',
+        failure: { reasonCode: 'parse_error', message: 'syntax error' },
+        declarations: [],
+        imports: [],
+      }),
+    });
+
+    await pipeline.processEvents(
+      [addEvent('src/broken.ts', 'hash-broken')],
+      async () => 'invalid syntax {{{',
+    );
+
+    const dlq = await metadataStore.getDeadLetterEntries();
+    expect(dlq.map((e) => e.filePath)).toContain('src/broken.ts');
+    await expect(metadataStore.getMerkleNode('src/broken.ts')).resolves.toEqual(previousMerkleNode);
+  });
+
   it('routes ALL files in a failed embed window to the DLQ (cross-file attribution)', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     const pipeline = new IndexPipeline({

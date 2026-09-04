@@ -3,6 +3,8 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import type { DeadLetterQueue } from '../../../src/indexer/dead-letter-queue.js';
+import { computeFileHashStreaming } from '../../../src/indexer/hash.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
 import { RetryExhaustedError } from '../../../src/types/index.js';
 import { createPipeline } from '../../shared/test-helpers.js';
@@ -256,6 +258,43 @@ describe('IndexPipeline', () => {
         contentHash: 'hash-added',
         errorMessage: 'embed failed',
         attempts: 3,
+      }),
+    ]);
+  });
+
+  it('retains DLQ entries when embedding retries are exhausted during recovery', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new FailingEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+    const content = await readFile(fixturePath, 'utf8');
+    const contentHash = await computeFileHashStreaming(fixturePath);
+
+    await pipeline.processEvents(
+      [
+        {
+          type: 'added',
+          filePath: fixturePath,
+          contentHash,
+          detectedAt: new Date().toISOString(),
+        },
+      ],
+      async () => content,
+    );
+
+    const deadLetterQueue = (pipeline as unknown as { deadLetterQueue: DeadLetterQueue }).deadLetterQueue;
+    const result = await deadLetterQueue.recoverySweep();
+
+    expect(result).toEqual({ retried: 0, purged: 0, skipped: 1, abandoned: 0 });
+    await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([
+      expect.objectContaining({
+        filePath: fixturePath,
+        contentHash,
+        recoveryAttempts: 1,
       }),
     ]);
   });

@@ -1,8 +1,13 @@
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { Chunker } from '../../../src/indexer/chunker.js';
+import { computeFileHashStreaming } from '../../../src/indexer/hash.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
 import { sha256Hex } from '../../../src/structured/hash.js';
+import type { StructuredParseResult, StructuredSource } from '../../../src/structured/contracts.js';
 import type { IndexEvent } from '../../../src/types/index.js';
 import { createStructuredCoordinatorFixture } from '../../shared/structured-test-helpers.js';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
@@ -124,6 +129,81 @@ describe('IndexPipeline structured lifecycle', () => {
     await expect(metadataStore.resolveFile(filePath)).resolves.toEqual(oldResolution);
     await expect(metadataStore.resolveSymbol(oldDeclaration!.symbolId)).resolves.toEqual(
       expect.objectContaining({ kind: 'active' }),
+    );
+  });
+
+  it('reprocesses a structured parse failure through staging and activation', async () => {
+    const filePath = resolve('tests/fixtures/structured/typescript/malformed.ts');
+    const content = await readFile(filePath, 'utf8');
+    const { metadataStore, pipeline, pluginRegistry } = await createStructuredPipeline();
+    const plugin = pluginRegistry.getLanguagePlugin(filePath);
+    if (plugin?.createStructuredParser === undefined) {
+      throw new Error('TypeScript structured parser is unavailable');
+    }
+
+    const contentHash = sha256Hex(new TextEncoder().encode(content));
+    const eventContentHash = await computeFileHashStreaming(filePath);
+    let parseCalls = 0;
+    plugin.createStructuredParser = async () => ({
+      parseStructured: async (source: StructuredSource): Promise<StructuredParseResult> => {
+        parseCalls += 1;
+        if (parseCalls === 2) {
+          return {
+            status: 'failed',
+            retrievability: 'none',
+            failure: { reasonCode: 'parse_error', message: 'temporary parser failure' },
+            declarations: [],
+            imports: [],
+          };
+        }
+
+        const name = parseCalls === 1 ? 'Initial' : 'Recovered';
+        return {
+          status: 'ok',
+          retrievability: 'exact',
+          declarations: [{
+            symbolId: `${name.toLowerCase()}-symbol`,
+            qualifiedName: name,
+            kind: 'class',
+            signatureDiscriminator: 'class',
+            position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: source.text.length },
+            name,
+            startByte: 0,
+            endByte: source.bytes.length,
+            sourceHash: contentHash,
+            languageId: 'typescript',
+            isExact: true,
+            rawSource: source.text,
+          }],
+          imports: [],
+          generation: {
+            generationId: `${name.toLowerCase()}-generation`,
+            schemaVersion: 1,
+            parserId: 'typescript',
+            parserVersion: 'test',
+            fileHash: contentHash,
+            fileCompleteness: 'complete',
+          },
+        };
+      },
+    });
+
+    await pipeline.processEvents([createEvent('added', filePath, content)], async () => content);
+    await pipeline.processEvents([{
+      type: 'modified',
+      filePath,
+      contentHash: eventContentHash,
+      detectedAt: new Date().toISOString(),
+    }], async () => content);
+
+    await expect(metadataStore.getDeadLetterEntries()).resolves.toHaveLength(1);
+
+    const recoveryResult = await pipeline['deadLetterQueue'].recoverySweep();
+
+    expect(recoveryResult).toEqual({ retried: 1, purged: 0, skipped: 0, abandoned: 0 });
+    await expect(metadataStore.getDeadLetterEntries()).resolves.toEqual([]);
+    await expect(metadataStore.getFileDeclarations(filePath)).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'Recovered' })]),
     );
   });
 
