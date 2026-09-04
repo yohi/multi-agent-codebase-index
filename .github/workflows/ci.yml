@@ -27,7 +27,29 @@ jobs:
       run: npm ci
 
     - name: Security Audit (Production only)
-      run: npm audit --omit=dev --audit-level=high --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=1000 --fetch-retry-maxtimeout=30000
+      run: |
+        for attempt in 1 2 3; do
+          if output=$(npm audit --omit=dev --audit-level=high --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=1000 --fetch-retry-maxtimeout=30000 --fetch-timeout=120000 2>&1); then
+            printf '%s\n' "$output"
+            exit 0
+          else
+            status=$?
+          fi
+          printf '%s\n' "$output"
+
+          case "$output" in
+            *"audit endpoint returned an error"*|*"audit network timeout"*|*"ECONNRESET"*|*"ETIMEDOUT"*|*"EAI_AGAIN"*|*"ENETUNREACH"*|*"ENOTFOUND"*)
+              ;;
+            *)
+              exit "$status"
+              ;;
+          esac
+
+          if [ "$attempt" -lt 3 ]; then
+            sleep "$((attempt * 10))"
+          fi
+        done
+        exit "$status"
 
     - name: Run lint
       run: npm run lint
