@@ -264,7 +264,7 @@ export class IndexPipeline implements IIndexPipeline {
       const consumedEvents = new Set<IndexEvent>();
       let renamedEventCount = 0;
 
-      if (!useStructuredFullRebuild) {
+      if (structuredIndexCoordinator === undefined) {
         for (const candidate of renameCandidates) {
           const affected = await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
           if (affected > 0) {

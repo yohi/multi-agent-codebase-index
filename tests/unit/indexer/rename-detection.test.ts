@@ -91,4 +91,44 @@ describe('IndexPipeline rename detection', () => {
       kind: 'active',
     });
   });
+
+  it('rebuilds structured state for an incremental rename', async () => {
+    const fixture = await createStructuredCoordinatorFixture({ bootstrapStructuredSchema: true });
+    const pipeline = new IndexPipeline({
+      metadataStore: fixture.metadataStore,
+      vectorStore: fixture.vectorStore,
+      chunker: new Chunker(fixture.pluginRegistry),
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: fixture.pluginRegistry,
+      structuredIndexCoordinator: fixture.coordinator,
+    });
+    const content = 'export function incrementallyRenamed() { return 1; }';
+    const hash = 'hash-incremental-structured-rename';
+    const oldPath = 'src/old-incremental.ts';
+    const newPath = 'src/new-incremental.ts';
+    const renameSpy = vi.spyOn(fixture.vectorStore, 'renameFilePath');
+
+    await pipeline.processEvents([
+      { type: 'added', filePath: oldPath, contentHash: hash, detectedAt: '' },
+    ], async () => content);
+
+    const [oldDeclaration] = await fixture.metadataStore.getFileDeclarations(oldPath);
+    expect(oldDeclaration).toBeDefined();
+
+    await pipeline.processEvents([
+      { type: 'deleted', filePath: oldPath, contentHash: hash, detectedAt: '' },
+      { type: 'added', filePath: newPath, contentHash: hash, detectedAt: '' },
+    ], async () => content);
+
+    expect(renameSpy).not.toHaveBeenCalled();
+    await expect(fixture.metadataStore.resolveFile(oldPath)).resolves.toEqual({ kind: 'missing' });
+    await expect(fixture.metadataStore.resolveSymbol(oldDeclaration!.symbolId)).resolves.toMatchObject({
+      kind: 'tombstone',
+    });
+    await expect(fixture.metadataStore.resolveFile(newPath)).resolves.toMatchObject({ kind: 'active' });
+
+    const [newDeclaration] = await fixture.metadataStore.getFileDeclarations(newPath);
+    expect(newDeclaration?.symbolId).toBeDefined();
+    expect(newDeclaration?.symbolId).not.toBe(oldDeclaration?.symbolId);
+  });
 });
