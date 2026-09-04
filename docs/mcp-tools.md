@@ -246,10 +246,15 @@ semantic search と grep search を統合した ranking search です。
 
 | status | reasonCode | 意味 |
 | --- | --- | --- |
-| `ok` | — | 新鮮なアウトラインを返す |
-| `not_indexed` | `STRUCTURED_INDEX_MISSING` / `UNSUPPORTED_LANGUAGE` / `PATH_EXCLUDED` | 構造化インデックス未構築、未対応言語、対象外パス |
+| `ok` | — | 新鮮なアウトラインを返す（`freshness: 'fresh'`, `reindexRequired: false`） |
+| `not_found` | `FILE_NOT_FOUND` / `SYMBOL_NOT_FOUND` | ファイルまたはシンボルが存在しない |
+| `stale_identity` | `SYMBOL_RETIRED` | 過去に存在したシンボルが退役済み |
+| `not_indexed` | `STRUCTURED_INDEX_MISSING` | 構造化インデックス未構築 |
+| `excluded` | `PATH_EXCLUDED` | 対象外パス（除外ルールに合致） |
+| `unsupported` | `unsupported_language` / `STRUCTURED_SCHEMA_UNSUPPORTED` | 未対応言語、または未対応の将来スキーマ |
+| `degraded` | `PARSER_COVERAGE_PARTIAL` / `PARSER_BOUNDARY_UNCERTAIN` | 部分的な exact subset のみ返却 |
 | `stale` | `INDEX_FILE_HASH_MISMATCH` / `INDEX_FILE_MISSING` | ファイルが変更または削除された |
-| `index_incomplete` | `INDEX_PENDING_GENERATION` | ファイルの世代が活性化待ち |
+| `index_incomplete` | `INDEX_PENDING_GENERATION` / `INDEX_SYMBOL_HASH_MISMATCH` / `INDEX_IMPORT_HASH_MISMATCH` / `INDEX_GENERATION_MISSING` | ファイル世代が活性化待ち、またはハッシュ不整合 |
 
 ## `get_symbol_source`
 
@@ -268,6 +273,7 @@ semantic search と grep search を統合した ranking search です。
   "symbolId": "symbol_v1_abc...",
   "status": "ok",
   "freshness": "fresh",
+  "reindexRequired": false,
   "source": "export async function authenticate(token: string): Promise<User> { ... }"
 }
 ```
@@ -294,6 +300,7 @@ import の追加で予算を超過した場合、`budget.exceeded: true` と `om
   "symbolId": "symbol_v1_abc...",
   "status": "ok",
   "freshness": "fresh",
+  "reindexRequired": false,
   "context": "import { User } from \"./user.js\";\n\nexport async function authenticate(token: string): Promise<User> { ... }",
   "imports": [
     { "moduleSpecifier": "./user.js", "bindingName": "User", "completeness": "complete" }
