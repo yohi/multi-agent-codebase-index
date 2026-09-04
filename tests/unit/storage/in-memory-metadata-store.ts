@@ -23,7 +23,7 @@ import type {
   StructuredSymbolResolution,
   StructuredTombstone,
 } from '../../../src/storage/interfaces/structured-catalog.js';
-import type { StructuredDeclaration } from '../../../src/structured/contracts.js';
+import type { StructuredDeclaration, StructuredGeneration } from '../../../src/structured/contracts.js';
 
 export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog {
   private readonly nodes = new Map<string, MerkleNodeRow>();
@@ -177,6 +177,18 @@ export class InMemoryMetadataStore implements IMetadataStore, IStructuredCatalog
       if (a.startByte !== b.startByte) return a.startByte - b.startByte;
       return a.qualifiedName.localeCompare(b.qualifiedName);
     });
+  }
+
+  async getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null> {
+    const active = this.active.get(filePath);
+    if (active !== undefined && active.generation.generationId === generationId) {
+      return active.generation;
+    }
+    const pending = this.pending.get(filePath);
+    if (pending !== undefined && pending.generation.generationId === generationId) {
+      return pending.generation;
+    }
+    return null;
   }
 
   async reconcileStructuredState(): Promise<StructuredReconciliationResult> {

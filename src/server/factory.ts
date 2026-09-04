@@ -32,6 +32,8 @@ import { MetricsCollector } from "../observability/metrics-collector.js";
 import type { Config, GrepMatch, IndexEvent, ReindexOptions } from "../types/index.js";
 import { DEFAULT_OLLAMA_NUM_THREAD } from "../config/index.js";
 import { SymbolRetrievalService } from "../structured/retrieval-service.js";
+import { StructuredIndexCoordinator } from "../indexer/structured-index-coordinator.js";
+import { ProjectWriteCoordinator } from "../indexer/project-write-coordinator.js";
 
 /**
  * Type-safe interface for ripgrep JSON output.
@@ -484,12 +486,26 @@ export class NexusServerFactory {
 
 
 
+    const structuredIndexCoordinator = new StructuredIndexCoordinator({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(pluginRegistry, { maxChunkChars: config.indexing.maxChunkChars }),
+      projectWriteCoordinator: new ProjectWriteCoordinator(),
+      config: { embedding: { dimensions: config.embedding.dimensions } },
+    });
+
+    const loadFileBytes = (filePath: string) =>
+      readFile(resolve(projectRoot, filePath));
+    const loadFileContent = (filePath: string) =>
+      readFile(resolve(projectRoot, filePath), "utf8");
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,
       chunker: new Chunker(pluginRegistry, { maxChunkChars: config.indexing.maxChunkChars }),
       embeddingProvider,
       pluginRegistry,
+      structuredIndexCoordinator,
+      loadFileBytes,
       maxFileBytes: config.indexing.maxFileBytes,
       chunkConcurrency: config.indexing.chunkConcurrency,
       embedBatchWindowSize: config.indexing.embedBatchWindowSize,
@@ -497,8 +513,6 @@ export class NexusServerFactory {
       metricsHooks: metricsCollector,
     });
 
-    const loadFileContent = (path: string) =>
-      readFile(resolve(projectRoot, path), "utf8");
     const ignorePaths = config.watcher.ignorePaths ?? [];
     const eventManager = new EventProcessingManager(
       config,

@@ -119,4 +119,10 @@ describe('v1 adapter parity', () => {
     expect(schema.safeParse(0).success).toBe(false);
     expect(schema.safeParse(1).success).toBe(true);
   });
+
+  it('enforces integer maximum in the v1 adapter', () => {
+    const schema = toZodV3Field({ kind: 'integer', minimum: 1, maximum: 100000 });
+    expect(schema.safeParse(100000).success).toBe(true);
+    expect(schema.safeParse(100001).success).toBe(false);
+  });
 });

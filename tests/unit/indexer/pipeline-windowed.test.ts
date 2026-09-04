@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { Chunker } from '../../../src/indexer/chunker.js';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
 import { DimensionMismatchError, RetryExhaustedError } from '../../../src/types/index.js';
 import type { IndexEvent } from '../../../src/types/index.js';
 import { createPipeline } from '../../shared/test-helpers.js';
+import { createStructuredCoordinatorFixture } from '../../shared/structured-test-helpers.js';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
 
 class CountingEmbeddingProvider extends TestEmbeddingProvider {
@@ -149,6 +151,40 @@ describe('IndexPipeline – windowed batching', () => {
     expect(oneResults.every((r) => r.chunk.filePath === 'src/one.ts')).toBe(true);
     expect(threeResults.every((r) => r.chunk.filePath === 'src/three.ts')).toBe(true);
     expect(threeResults.length).toBeGreaterThan(oneResults.length);
+  });
+
+  it('keeps legacy and structured embeddings aligned across files in one window', async () => {
+    const {
+      metadataStore,
+      vectorStore,
+      pluginRegistry,
+      coordinator,
+    } = await createStructuredCoordinatorFixture({ bootstrapStructuredSchema: true });
+    const embeddingProvider = new TestEmbeddingProvider();
+    const stageFileSpy = vi.spyOn(coordinator, 'stageFile');
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(pluginRegistry),
+      embeddingProvider,
+      pluginRegistry,
+      structuredIndexCoordinator: coordinator,
+      embedBatchWindowSize: 16,
+    });
+    const files: Record<string, string> = {
+      'src/alpha.ts': 'export function alpha() { return 1; }',
+      'src/beta.ts': 'export function beta() { return 2; }',
+    };
+
+    await pipeline.processEvents(
+      Object.keys(files).map((filePath, index) => addEvent(filePath, `hash-${index}`)),
+      async (filePath) => files[filePath] ?? '',
+    );
+
+    expect(stageFileSpy).toHaveBeenCalledTimes(2);
+    for (const [input] of stageFileSpy.mock.calls) {
+      expect(input.embeddings).toEqual(await embeddingProvider.embed(input.chunks?.map((chunk) => chunk.content) ?? []));
+    }
   });
 
   it('routes ALL files in a failed embed window to the DLQ (cross-file attribution)', async () => {
@@ -482,4 +518,3 @@ describe('IndexPipeline – chunk embedding cache', () => {
     expect(embedding.calls).toBe(5);
   });
 });
-

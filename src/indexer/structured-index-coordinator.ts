@@ -1,5 +1,5 @@
 import type { StructuredDeclaration, StructuredImport, StructuredSource } from '../structured/contracts.js';
-import type { IVectorStore } from '../types/index.js';
+import type { CodeChunk, IVectorStore } from '../types/index.js';
 import type { Chunker } from './chunker.js';
 import type { IStructuredCatalog, StructuredGenerationStage, StructuredGenerationActivation, StructuredFileRetirement } from '../storage/interfaces/structured-catalog.js';
 import type { StructuredShadowTable } from '../storage/interfaces/vector-store.js';
@@ -12,6 +12,10 @@ export interface FullRebuildFile {
   fileCompleteness: 'complete' | 'partial';
   declarations: StructuredDeclaration[];
   imports: StructuredImport[];
+  parserId?: string;
+  parserVersion?: string;
+  chunks?: CodeChunk[];
+  embeddings?: number[][];
 }
 
 export interface StructuredIndexCoordinatorOptions {
@@ -34,32 +38,15 @@ export class StructuredIndexCoordinator {
     imports: StructuredImport[];
     parserId?: string;
     parserVersion?: string;
+    chunks?: CodeChunk[];
+    embeddings?: number[][];
   }): Promise<void> {
     return this.options.projectWriteCoordinator.run(async () => {
       const state = await this.options.metadataStore.getStructuredIndexState();
       const expectedActiveGeneration = state.activeGenerations.get(input.source.filePath) ?? null;
       const rebuildEpoch = state.rebuildEpoch;
-      const stage: StructuredGenerationStage = {
-        filePath: input.source.filePath,
-        generation: {
-          generationId: input.generationId,
-          schemaVersion: 1,
-          parserId: input.parserId ?? 'unknown',
-          parserVersion: input.parserVersion ?? '0',
-          fileHash: input.contentHash,
-          fileCompleteness: input.fileCompleteness,
-        },
-        declarations: input.declarations,
-        imports: input.imports,
-        rebuildEpoch,
-        bytes: input.source.bytes,
-        fileHash: input.contentHash,
-        fileCompleteness: input.fileCompleteness,
-      };
 
-      await this.options.metadataStore.stageGeneration(stage);
-
-      const chunks = await this.options.chunker.chunkStructuredFile(
+      const chunks = input.chunks ?? await this.options.chunker.chunkStructuredFile(
         {
           filePath: input.source.filePath,
           language: input.source.language,
@@ -72,10 +59,31 @@ export class StructuredIndexCoordinator {
         },
       );
 
-      // Placeholder embeddings: real pipeline will compute embeddings before staging.
-      const embeddings = chunks.map(() => new Array<number>(this.options.config.embedding.dimensions).fill(0));
+      const embeddings = input.embeddings ?? chunks.map(() => new Array<number>(this.options.config.embedding.dimensions).fill(0));
+      if (embeddings.length !== chunks.length) {
+        throw new Error(`StructuredIndexCoordinator.stageFile: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`);
+      }
+
+      const stage: StructuredGenerationStage = {
+        filePath: input.source.filePath,
+        generation: {
+          generationId: input.generationId,
+          schemaVersion: 1,
+          parserId: input.parserId ?? input.source.language,
+          parserVersion: input.parserVersion ?? '1',
+          fileHash: input.contentHash,
+          fileCompleteness: input.fileCompleteness,
+        },
+        declarations: input.declarations,
+        imports: input.imports,
+        rebuildEpoch,
+        bytes: input.source.bytes,
+        fileHash: input.contentHash,
+        fileCompleteness: input.fileCompleteness,
+      };
 
       try {
+        await this.options.metadataStore.stageGeneration(stage);
         await this.options.vectorStore.stageGenerationChunks({
           filePath: input.source.filePath,
           generationId: input.generationId,
@@ -160,13 +168,27 @@ export class StructuredIndexCoordinator {
 
         // Stage new files into metadata and the vector shadow table.
         for (const file of input.files) {
+          const chunks = file.chunks ?? await this.options.chunker.chunkStructuredFile(
+            {
+              filePath: file.source.filePath,
+              language: file.source.language,
+              content: file.source.text,
+              bytes: file.source.bytes,
+            },
+            { declarations: file.declarations, imports: file.imports },
+          );
+          const embeddings = file.embeddings ?? chunks.map(() => new Array<number>(this.options.config.embedding.dimensions).fill(0));
+          if (embeddings.length !== chunks.length) {
+            throw new Error(`StructuredIndexCoordinator.runFullRebuild: embeddings length mismatch (expected ${chunks.length}, got ${embeddings.length})`);
+          }
+
           const stage: StructuredGenerationStage = {
             filePath: file.source.filePath,
             generation: {
               generationId: file.generationId,
               schemaVersion: 1,
-              parserId: 'full-rebuild',
-              parserVersion: '1',
+              parserId: file.parserId ?? file.source.language,
+              parserVersion: file.parserVersion ?? '1',
               fileHash: file.contentHash,
               fileCompleteness: file.fileCompleteness,
             },
@@ -179,17 +201,6 @@ export class StructuredIndexCoordinator {
           };
           await this.options.metadataStore.stageGeneration(stage);
           stagedFiles.add(file.source.filePath);
-
-          const chunks = await this.options.chunker.chunkStructuredFile(
-            {
-              filePath: file.source.filePath,
-              language: file.source.language,
-              content: file.source.text,
-              bytes: file.source.bytes,
-            },
-            { declarations: file.declarations, imports: file.imports },
-          );
-          const embeddings = chunks.map(() => new Array<number>(this.options.config.embedding.dimensions).fill(0));
           await this.options.vectorStore.stageGenerationChunks({
             filePath: file.source.filePath,
             generationId: file.generationId,

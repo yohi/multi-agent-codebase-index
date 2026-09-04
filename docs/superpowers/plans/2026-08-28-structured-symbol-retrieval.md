@@ -156,7 +156,7 @@ Use `gh stack rebase --upstack --remote origin` after changing a lower layer, re
 - Produces from `identity.ts`: `createGenerationId(input)` and `createSymbolId(input)`.
 - Produces: `CodeChunk.symbolId?: string` and internal `VectorSearchResult.generationId?: string`; no existing public `CodeChunk` property changes type or meaning.
 
-- [ ] **Step 1: Write failing identity and byte-hash tests**
+- [x] **Step 1: Write failing identity and byte-hash tests**
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -213,13 +213,13 @@ describe("structured byte helpers", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails because the structured module is absent**
+- [x] **Step 2: Run the test to verify it fails because the structured module is absent**
 
 Run: `npx vitest run tests/unit/structured/hash.test.ts tests/unit/structured/identity.test.ts`
 
 Expected: FAIL with module-resolution errors for `src/structured/hash.js` and `src/structured/identity.js`.
 
-- [ ] **Step 3: Add the canonical domain contract and deterministic helpers**
+- [x] **Step 3: Add the canonical domain contract and deterministic helpers**
 
 `src/structured/hash.ts`:
 
@@ -286,13 +286,13 @@ Add `symbolId?: string` to `CodeChunk` without changing `id`, `hash`, line field
 
 Define `StructuredSource` so structured parsers always receive the exact byte buffer and its one fatal-decoded text view. Add tests that malformed UTF-8 is rejected before parsing and that hash input remains the unmodified buffer.
 
-- [ ] **Step 4: Run the focused test and the existing chunker test**
+- [x] **Step 4: Run the focused test and the existing chunker test**
 
 Run: `npx vitest run tests/unit/structured/hash.test.ts tests/unit/structured/identity.test.ts tests/unit/indexer/chunker.test.ts`
 
 Expected: PASS; existing chunks without a structured artifact still have no `symbolId`.
 
-- [ ] **Step 5: Commit the foundation contract**
+- [x] **Step 5: Commit the foundation contract**
 
 ```bash
 git add src/structured/contracts.ts src/structured/hash.ts src/structured/identity.ts src/types/index.ts tests/unit/structured/hash.test.ts tests/unit/structured/identity.test.ts
@@ -315,7 +315,7 @@ git commit -m "feat: structured symbol 契約を追加"
 - Consumes: exact source strings and source-order import candidates materialized in memory at retrieval time; persisted catalog rows never carry source text.
 - Produces: `TokenCounter.count(text: string): number`, `buildCanonicalContext(importSources, symbolSource)`, and `packRelatedImports(input): PackedContext`.
 
-- [ ] **Step 1: Write failing tests for canonical text, overflow, and import-unit packing**
+- [x] **Step 1: Write failing tests for canonical text, overflow, and import-unit packing**
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -356,13 +356,13 @@ describe("canonical structured context", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify the tokenizer module is missing**
+- [x] **Step 2: Run the test to verify the tokenizer module is missing**
 
 Run: `npx vitest run tests/unit/structured/tokenizer.test.ts`
 
 Expected: FAIL with a module-resolution error for `src/structured/tokenizer.js`.
 
-- [ ] **Step 3: Install exact runtime dependencies and implement the fixed counter**
+- [x] **Step 3: Install exact runtime dependencies and implement the fixed counter**
 
 Run: `npm install --save-exact tree-sitter@0.25.1 tree-sitter-python@0.25.0 tree-sitter-go@0.25.0 js-tiktoken@1.0.21`
 
@@ -393,13 +393,13 @@ export const buildCanonicalContext = (
 
 For each source-order candidate, recompute tokens for the entire candidate canonical context. If a candidate does not fit, count it as `omittedForBudget` and keep evaluating later candidates. Deduplicate repeated import declarations by their catalog ID. Do not truncate an import declaration or transform any raw source text.
 
-- [ ] **Step 4: Run focused tests and verify lockfile pins**
+- [x] **Step 4: Run focused tests and verify lockfile pins**
 
 Run: `npx vitest run tests/unit/structured/tokenizer.test.ts && npm ls tree-sitter tree-sitter-python tree-sitter-go js-tiktoken`
 
 Expected: PASS; all four packages resolve to the exact versions in the global constraints.
 
-- [ ] **Step 5: Commit the deterministic tokenizer layer**
+- [x] **Step 5: Commit the deterministic tokenizer layer**
 
 ```bash
 git add package.json package-lock.json src/structured/tokenizer.ts tests/unit/structured/tokenizer.test.ts
@@ -424,7 +424,7 @@ git commit -m "feat: structured context のトークン計測を追加"
 - Produces: `IStructuredCatalog` methods `bootstrapStructuredSchema()`, `getStructuredIndexState()`, `stageGeneration(input)`, `activateGeneration(input)`, `clearPendingGeneration(input)`, `retireFile(input)`, `resolveFile(filePath)`, `getActiveGenerationMap(filePaths)`, `resolveSymbol(symbolId)`, `getPendingSymbol(symbolId)`, `getTombstone(symbolId)`, `getStructuredCounts()`, and `reconcileStructuredState()`.
 - Requires: `clearPendingGeneration` to compare `filePath`, expected active generation, expected pending generation, and rebuild epoch atomically, so a stale cleanup cannot remove a newer pending generation.
 
-- [ ] **Step 1: Write one reusable contract suite before adding SQLite SQL**
+- [x] **Step 1: Write one reusable contract suite before adding SQLite SQL**
 
 ```ts
 export const structuredCatalogContract = (
@@ -450,13 +450,13 @@ export const structuredCatalogContract = (
 
 Add cases for activation CAS rejection, retirement tombstones, tombstone removal on reappearance, deleted-file retirement, stale pending cleanup, and a fully rebuilt catalog pruning historical tombstones only after successful activation. Assert that a clear using a stale pending generation or epoch returns `{ cleared: false }` and leaves a newer pending generation unchanged.
 
-- [ ] **Step 2: Run the contract test to verify the new contract is absent**
+- [x] **Step 2: Run the contract test to verify the new contract is absent**
 
 Run: `npx vitest run tests/unit/storage/structured-catalog-contract.test.ts`
 
 Expected: FAIL with a module-resolution error for `src/storage/interfaces/structured-catalog.js`.
 
-- [ ] **Step 3: Define a storage-neutral catalog API and implement it in memory**
+- [x] **Step 3: Define a storage-neutral catalog API and implement it in memory**
 
 ```ts
 export interface StructuredPendingClear {
@@ -493,13 +493,13 @@ export interface IStructuredCatalog {
 
 Compose this contract into `IMetadataStore` rather than creating a second SQLite connection. Extend the in-memory implementation with maps keyed by `filePath`, `[filePath, generation, symbolId]`, and `symbolId`, and preserve the same pending/active/tombstone precedence as the SQLite implementation. `clearPendingGeneration` returns `{ cleared: false }` without changing either pointer when any expected value no longer matches. Contract-test `getActiveGenerationMap` with mixed active, pending, and missing files so search can validate a candidate set in one catalog read.
 
-- [ ] **Step 4: Run the contract against the in-memory store**
+- [x] **Step 4: Run the contract against the in-memory store**
 
 Run: `npx vitest run tests/unit/storage/structured-catalog-contract.test.ts`
 
 Expected: PASS; the test double exercises exactly the public catalog behavior and does not store raw declaration source.
 
-- [ ] **Step 5: Commit the catalog boundary**
+- [x] **Step 5: Commit the catalog boundary**
 
 ```bash
 git add src/storage/interfaces/structured-catalog.ts src/storage/interfaces/metadata-store.ts tests/unit/storage/in-memory-metadata-store.ts tests/shared/structured-catalog-contract.ts tests/unit/storage/structured-catalog-contract.test.ts
@@ -521,7 +521,7 @@ git commit -m "feat: structured symbol catalog 契約を追加"
 - Consumes: the `IStructuredCatalog` contract from Task 3.
 - Produces: SQLite-backed `structured_files`, `symbol_generations`, `symbols`, `imports`, `symbol_imports`, `symbol_tombstones`, structured control columns in `index_stats`, and transactionally correct catalog methods.
 
-- [ ] **Step 1: Add failing SQLite tests for bootstrap and activation atomicity**
+- [x] **Step 1: Add failing SQLite tests for bootstrap and activation atomicity**
 
 ```ts
 it("bootstraps empty structured tables without migrating an existing search index", async () => {
@@ -544,13 +544,13 @@ it("activates a staged generation and records disappeared symbols as tombstones 
 });
 ```
 
-- [ ] **Step 2: Run the SQLite test to verify the tables and methods do not exist**
+- [x] **Step 2: Run the SQLite test to verify the tables and methods do not exist**
 
 Run: `npx vitest run tests/unit/storage/sqlite-structured-catalog.test.ts`
 
 Expected: FAIL because `SqliteMetadataStore` does not implement structured catalog methods.
 
-- [ ] **Step 3: Add idempotent DDL and transaction-backed catalog methods**
+- [x] **Step 3: Add idempotent DDL and transaction-backed catalog methods**
 
 Use `CREATE TABLE IF NOT EXISTS` only for control-schema bootstrap. Store `structured_schema_version`, `structured_rebuild_state`, `structured_rebuild_epoch`, and `structured_last_error_code` in `index_stats` through idempotent column additions. Create catalog tables with these keys and constraints:
 
@@ -575,13 +575,13 @@ CREATE TABLE IF NOT EXISTS symbols (
 
 Add all columns required by the approved design, including parser metadata, line ranges, parent IDs, import completeness, diagnostics JSON, and tombstone timestamps. Use immediate SQLite transactions for stage/activate/retire/clear operations. Activation must compare the expected active generation, expected pending generation, and rebuild epoch before changing pointers. `clearPendingGeneration` must compare the same values and return `{ cleared: false }` without changing pointers on a CAS conflict. Activation must retire disappearing IDs and clear the pending pointer atomically. Do not write source text to any table.
 
-- [ ] **Step 4: Run the contract against SQLite and existing metadata tests**
+- [x] **Step 4: Run the contract against SQLite and existing metadata tests**
 
 Run: `npx vitest run tests/unit/storage/sqlite-structured-catalog.test.ts tests/unit/storage/metadata-store.test.ts`
 
 Expected: PASS; the existing Merkle, DLQ, embedding-cache, and index-stat tests remain unchanged.
 
-- [ ] **Step 5: Commit SQLite catalog storage**
+- [x] **Step 5: Commit SQLite catalog storage**
 
 ```bash
 git add src/storage/metadata-store.ts tests/unit/storage/metadata-store.test.ts tests/unit/storage/sqlite-structured-catalog.test.ts
@@ -606,7 +606,7 @@ git commit -m "feat: SQLite にstructured catalogを保存"
 - Consumes: `StructuredLanguageParser.parseStructured(source: StructuredSource): Promise<StructuredParseResult>`.
 - Produces: TypeScript `StructuredDeclaration` and `StructuredImport` values with exact UTF-8 byte ranges, qualified names, signatures, parent relationships, import binding IDs, and coverage diagnostics.
 
-- [ ] **Step 1: Add failing fixture tests for TypeScript boundaries and identity inputs**
+- [x] **Step 1: Add failing fixture tests for TypeScript boundaries and identity inputs**
 
 ```ts
 it("includes attached JSDoc, decorators, and modifiers but excludes unattached comments", async () => {
@@ -638,13 +638,13 @@ it("uses distinct IDs for overloads and default/anonymous declarations", async (
 
 Include fixtures for namespace/class/member nesting, getter/setter/constructor, property, type alias, enum, single-identifier variable/constant, overload signatures and implementation, CJK/emoji source, shadowed imports, namespace aliases, and a parse error yielding `degraded/partial`.
 
-- [ ] **Step 2: Run the parser tests to verify the structured parser API is absent**
+- [x] **Step 2: Run the parser tests to verify the structured parser API is absent**
 
 Run: `npx vitest run tests/unit/structured/typescript-parser.test.ts tests/unit/plugins/languages/typescript.test.ts`
 
 Expected: FAIL because no language plugin exposes `createStructuredParser`.
 
-- [ ] **Step 3: Add a backward-compatible structured parser path**
+- [x] **Step 3: Add a backward-compatible structured parser path**
 
 ```ts
 export interface StructuredLanguageParser {
@@ -666,13 +666,13 @@ Build a UTF-16-to-UTF-8 offset table once per `StructuredSource`. Parse its fata
 
 Set `exact/complete` only when compiler diagnostics do not intersect a declaration or its qualification ancestor chain. Otherwise keep exact declarations in a `degraded/partial` result and omit IDs for uncertain declarations. Resolve related import bindings lexically and downgrade import completeness to `partial` for any ambiguity or shadowed binding.
 
-- [ ] **Step 4: Run TypeScript parser and identity tests**
+- [x] **Step 4: Run TypeScript parser and identity tests**
 
 Run: `npx vitest run tests/unit/structured/typescript-parser.test.ts tests/unit/plugins/languages/typescript.test.ts tests/unit/structured/identity.test.ts`
 
 Expected: PASS; legacy `parse()` behavior remains available to `Chunker`; parser artifacts may hold source only while indexing, while persistence-facing catalog projections contain no raw source.
 
-- [ ] **Step 5: Commit TypeScript structured parsing**
+- [x] **Step 5: Commit TypeScript structured parsing**
 
 ```bash
 git add src/structured/utf8-offsets.ts src/plugins/languages/typescript.ts src/types/index.ts tests/fixtures/structured/typescript/exactness.ts tests/unit/plugins/languages/typescript.test.ts tests/unit/structured/typescript-parser.test.ts
@@ -696,7 +696,7 @@ git commit -m "feat: TypeScript structured parserを追加"
 - Consumes: Task 5's optional `LanguagePlugin.createStructuredParser()` API and Task 1 contracts.
 - Produces: Tree-sitter Python artifacts for top-level classes/functions/async functions and class methods only.
 
-- [ ] **Step 1: Write failing Tree-sitter Python fixture tests**
+- [x] **Step 1: Write failing Tree-sitter Python fixture tests**
 
 ```ts
 it("includes only same-indent decorators and excludes preceding hash comments", async () => {
@@ -724,13 +724,13 @@ it("does not create exact symbols for nested functions or destructuring assignme
 
 Add malformed syntax, PEP 695 type parameters, docstrings, aliases, shadowing, star/dot imports, Unicode offsets, and import-completeness fixtures.
 
-- [ ] **Step 2: Run the new tests to establish the heuristic parser is insufficient**
+- [x] **Step 2: Run the new tests to establish the heuristic parser is insufficient**
 
 Run: `npx vitest run tests/unit/structured/python-parser.test.ts tests/unit/plugins/languages/python.test.ts tests/unit/plugins/languages/python_bugs.test.ts`
 
 Expected: FAIL on byte offsets, malformed-file coverage, or exact source boundaries.
 
-- [ ] **Step 3: Implement the Tree-sitter Python artifact parser**
+- [x] **Step 3: Implement the Tree-sitter Python artifact parser**
 
 ```ts
 import Parser from "tree-sitter";
@@ -745,13 +745,13 @@ Walk only `class_definition`, `function_definition`, and `async_function_definit
 
 Project exact declarations back to the legacy `ParsedSourceFile` API so existing chunking continues to work. Keep the existing fixed-line fallback path when Tree-sitter is unavailable or parsing fails.
 
-- [ ] **Step 4: Run Python parser tests**
+- [x] **Step 4: Run Python parser tests**
 
 Run: `npx vitest run tests/unit/structured/python-parser.test.ts tests/unit/plugins/languages/python.test.ts tests/unit/plugins/languages/python_bugs.test.ts`
 
 Expected: PASS; the same file can return `degraded/partial` while still exposing independently exact declarations.
 
-- [ ] **Step 5: Commit Tree-sitter Python support**
+- [x] **Step 5: Commit Tree-sitter Python support**
 
 ```bash
 git add src/plugins/languages/python.ts tests/fixtures/structured/python/exactness.py tests/unit/plugins/languages/python.test.ts tests/unit/plugins/languages/python_bugs.test.ts tests/unit/structured/python-parser.test.ts
@@ -775,7 +775,7 @@ git commit -m "feat: Python structured parserをTree-sitter化"
 - Consumes: Task 5's structured parser API and Task 1 identity helper.
 - Produces: Tree-sitter Go artifacts for type declarations, functions, receiver methods, and resolvable interface method specifications.
 
-- [ ] **Step 1: Write failing Go identity and comment-boundary tests**
+- [x] **Step 1: Write failing Go identity and comment-boundary tests**
 
 ```ts
 it("uses owner-qualified interface methods with distinct public IDs", async () => {
@@ -806,13 +806,13 @@ it("includes adjacent Go doc comments and directives but excludes comments after
 
 Include `Reader.Read` and `Writer.Read` with identical signatures, receiver methods whose type is in the same and a different file, grouped types, embedded interfaces, directives, malformed syntax, aliases, and implicit package references.
 
-- [ ] **Step 2: Run the test to show the line-scanning parser cannot meet the contract**
+- [x] **Step 2: Run the test to show the line-scanning parser cannot meet the contract**
 
 Run: `npx vitest run tests/unit/structured/go-parser.test.ts tests/unit/plugins/languages/go.test.ts tests/unit/plugins/languages/go_bugs.test.ts`
 
 Expected: FAIL on owner-qualified interface methods, byte ranges, or exactness classification.
 
-- [ ] **Step 3: Implement Tree-sitter Go extraction and conservative import analysis**
+- [x] **Step 3: Implement Tree-sitter Go extraction and conservative import analysis**
 
 ```ts
 import Parser from "tree-sitter";
@@ -825,13 +825,13 @@ const tree = parser.parse(source.text);
 
 Extract only standalone type declarations, functions, receiver methods, and interface method specifications with a resolvable owning interface in the same file. Prefix source with an immediately adjacent Go doc-comment group and any `//go:` directive in that group. Do not produce exact symbols for grouped type specs, embedded interface elements, or interface methods without an owning interface. Resolve a receiver parent only within the same file; retain the receiver in the qualified name even when the parent ID is null. Treat implicit Go package names and ambiguous import references as unavailable or partial rather than guessed.
 
-- [ ] **Step 4: Run Go parser tests and the shared identity suite**
+- [x] **Step 4: Run Go parser tests and the shared identity suite**
 
 Run: `npx vitest run tests/unit/structured/go-parser.test.ts tests/unit/plugins/languages/go.test.ts tests/unit/plugins/languages/go_bugs.test.ts tests/unit/structured/identity.test.ts`
 
 Expected: PASS; same-signature `Reader.Read` and `Writer.Read` have distinct qualified names and IDs.
 
-- [ ] **Step 5: Commit Tree-sitter Go support**
+- [x] **Step 5: Commit Tree-sitter Go support**
 
 ```bash
 git add src/plugins/languages/go.ts tests/fixtures/structured/go/exactness.go tests/unit/plugins/languages/go.test.ts tests/unit/plugins/languages/go_bugs.test.ts tests/unit/structured/go-parser.test.ts
@@ -861,7 +861,7 @@ git commit -m "feat: Go structured parserをTree-sitter化"
 - Consumes: exact `StructuredParseResult` from Tasks 5-7 and active generation metadata from Task 3.
 - Produces: every structured declaration chunk carries `CodeChunk.symbolId`; fixed-line fallback chunks omit `symbolId`; `IVectorStore` adds generation-stage, generation-visibility, generation-cleanup, shadow-table methods, and internal generation metadata; `SemanticSearch` batch-validates structured rows against catalog-active generations.
 
-- [ ] **Step 1: Write failing chunk and vector visibility tests**
+- [x] **Step 1: Write failing chunk and vector visibility tests**
 
 ```ts
 it("assigns the same ID to every chunk split from one declaration", async () => {
@@ -882,13 +882,13 @@ it("never returns pending rows from search", async () => {
 
 Add a semantic-search test with an active-visibility structured row whose `(filePath, generationId)` is absent from the catalog active-generation map. Assert that the structured row is omitted while otherwise eligible legacy rows retain their relative score order.
 
-- [ ] **Step 2: Run the focused tests to verify no structured-vector API exists**
+- [x] **Step 2: Run the focused tests to verify no structured-vector API exists**
 
 Run: `npx vitest run tests/unit/indexer/chunker.test.ts tests/unit/storage/structured-vector-store.test.ts`
 
 Expected: FAIL because `chunkStructuredFile` and generation staging methods are absent.
 
-- [ ] **Step 3: Add opt-in structured chunking and a new Lance table schema**
+- [x] **Step 3: Add opt-in structured chunking and a new Lance table schema**
 
 Add a `Chunker.chunkStructuredFile(file, artifact)` method that uses the existing split algorithm and preserves existing chunk IDs, content, line range, and hash behavior while copying the declaration's stable `symbolId` to every resulting chunk. Keep `chunkFiles()` and `chunkByFixedLines()` unchanged for unsupported, failed, and uncertain parser output.
 
@@ -906,13 +906,13 @@ export interface IVectorStore {
 }
 ```
 
-- [ ] **Step 4: Run vector contracts and chunker regression tests**
+- [x] **Step 4: Run vector contracts and chunker regression tests**
 
 Run: `npx vitest run tests/unit/storage/structured-vector-store.test.ts tests/integration/vector-store.test.ts tests/unit/storage/in-memory-vector-store.test.ts tests/unit/indexer/chunker.test.ts tests/unit/search/semantic.test.ts tests/unit/server/factory.test.ts`
 
 Expected: PASS; existing vectors retain their search behavior and fallback chunks have no public symbol identity.
 
-- [ ] **Step 5: Commit generation-aware vector staging**
+- [x] **Step 5: Commit generation-aware vector staging**
 
 ```bash
 git add src/indexer/chunker.ts src/storage/interfaces/vector-store.ts src/storage/vector-store.ts src/search/semantic.ts src/server/factory.ts tests/unit/storage/in-memory-vector-store.ts tests/shared/vector-store-contract.ts tests/unit/storage/structured-vector-store.test.ts tests/unit/indexer/chunker.test.ts tests/unit/search/semantic.test.ts tests/unit/server/factory.test.ts
