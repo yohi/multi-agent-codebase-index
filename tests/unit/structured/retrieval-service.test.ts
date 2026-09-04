@@ -162,6 +162,7 @@ describe('SymbolRetrievalService', () => {
     expect(result).toMatchObject({
       status: 'ok',
       freshness: 'fresh',
+      reindexRequired: false,
       source: firstText,
     });
   });
@@ -210,7 +211,11 @@ describe('SymbolRetrievalService', () => {
 
     await writeFile(join(projectRoot, 'src/a.ts'), fixture.text);
     const result = await service.getSymbolContext({ symbolId: fixture.symbolId, tokenBudget: 100 });
-    expect(result).toMatchObject({ status: 'ok' });
+    expect(result).toMatchObject({
+      status: 'ok',
+      freshness: 'fresh',
+      reindexRequired: false,
+    });
     expect((result as { context: string }).context).toContain(fixture.importText);
   });
 

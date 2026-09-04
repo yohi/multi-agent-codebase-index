@@ -178,6 +178,26 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
   `Full reindex incomplete: <count> dead-letter queue item(s) remain`
   です。
 
+### 3.6. 構造化シンボルインデックスパイプライン (Structured Symbol Index Pipeline)
+
+- **デュアルストア設計と正本性**:
+  - SQLite (`metadata.db`): 論理シンボルカタログの正本を保持します。ファイル世代ポインタ (`structured_files`)、パース状態・言語・ファイルハッシュを含む世代メタデータ (`symbol_generations`)、シンボル定義・位置・ハッシュ (`symbols`)、インポート宣言 (`imports`)、シンボルとインポートの依存関係 (`symbol_imports`)、および退役シンボル履歴 (`symbol_tombstones`) をトランザクション管理します。ソース本文は DB に一切保存しません。
+  - LanceDB (`vectors`): 検索用チャンク、埋め込みベクトル、および `visibility` (`pending` / `active`) フラグを保持します。
+  - ワーキングツリー: ソース本文の唯一の正本です。取得要求時に実ファイルを1回だけ `Uint8Array` として読み出し、二段階 SHA-256 ハッシュ検証（ファイルハッシュ照合 + スライスハッシュ照合）を実施して TOCTOU 競合を防止します。
+- **世代管理とアトミックコミット (Atomic Generation Protocol)**:
+  - ファイル更新時（`stageFile`）は、SQLite に `pending` 世代レコードを作成し、LanceDB に `visibility = 'pending'` でチャンク行を格納します。この中間状態は検索パスから不可視（隔離）されます。
+  - 検証成功後、CAS（Compare-And-Swap）による `activateGeneration` を実行して active ポインタをアトミックに切り替え、LanceDB の行を `active` へ昇格し、旧世代行を削除します。中間ステージングで失敗した場合は `clearPendingGeneration` でロールバックし、先行する active 世代を保護します（delete-first 方式の禁止）。
+  - 空リコンサイル時のテーブル保護: 構造化対象ファイルが 0 件になった際も、LanceDB のテーブルハンドルを破棄せず `table.delete('true')` で行のみを削除し、後続のステージングでの再作成競合を防止します。
+- **フルリビルドと排他制御 (Full Rebuild & Project Locking)**:
+  - フルリビルド時はリビルドエポックをインクリメントし、LanceDB のシャドウテーブル（`beginStructuredShadowTable` / `swapStructuredShadowTable`）を利用して、新規世代の準備完了後に原子的スワップとメタデータ一括アクティベーションを実行します。
+  - `ProjectWriteCoordinator` により、インクリメンタル更新とフルリビルド間の排他制御を行い、オプションの `lockTimeoutMs` によるタイムアウト制御をサポートします。
+- **パイプライン埋め込み整列とパース失敗保護**:
+  - Stage 2 におけるチャンク平坦化順序を、ファイル単位（`[...work.chunks, ...(work.structured?.chunks ?? [])]`）で整列し、埋め込みバッチ内のオフセットと `chunkToFilePath` マップを完全に同期させます。
+  - 構造化パースに失敗したファイル（`parse-failed`）は、即座に DLQ へ退避し Merkle ツリーを更新しないことで、インデックス不整合を防ぎ次回以降のリカバリを担保します。
+- **チャンク行範囲とサブチャンク ID の一貫性 (Oversized Chunk Alignment)**:
+  - 宣言が `maxChunkChars` を超えて複数サブチャンクへ分割される場合、分割の開始行は `rawSource` の実際の行スパン（先行する Go コメントや `//go:` ディレクトブを含む）から導出します。最終的な行境界が確定した後、各サブチャンク ID をその同じ境界（`startLine` / `endLine`）から生成し直すことで、行範囲と ID を整合させます（src/indexer/chunker.ts）。
+  - パース失敗保護と合わせ、レガシー検索と構造化検索の結果整合を保ちます。
+
 ## 4. ストレージ層 (Dual-Store)
 
 ### 4.1. Metadata Store (SQLite)
@@ -344,8 +364,21 @@ AI エージェントに公開される MCP ツールとそれぞれの設計役
 - 構造化検索を有効にするには、`reindex({ fullRebuild: true })` で明示的にフルリビルドする必要があります。レガシーインデックスは自動移行されず、構造化ツールは `reindex_required` / `not_indexed` ステータスでゲートされます。
 - `semantic_search` / `hybrid_search` の結果に `chunk.symbolId` が含まれる場合、優先して `get_symbol_source` または `get_symbol_context` を使用します。`get_file_outline` は既知の対応ファイルのシンボルマップを返します。
 - grep ヒット、行指向リクエスト、インデックス対象外・未対応ファイル、パーサーが確定できない宣言については、従来どおり `get_context` を使用します。
-- 構造化ツールはファイルの現在のバイトハッシュをインデックス時のハッシュと比較し、不一致時は source-free な `stale` / `INDEX_FILE_HASH_MISMATCH` で fail-closed します。ファイルが削除されている場合は `INDEX_FILE_MISSING`、未対応言語の場合は `UNSUPPORTED_LANGUAGE`、対象外パスの場合は `PATH_EXCLUDED`、解析に失敗した場合は `PARSER_FAILED` / `PARSER_PARTIAL` / `PARSER_EXCLUDED` を返します。退役した ID に対しては `stale_identity` / `SYMBOL_RETIRED` を返します。同じ名前のシンボルは異なる `symbolId` で区別されます。
-- `get_symbol_context` は `tokenBudget` 内に収まるよう関連 import を追加し、予算超過時でもシンボルソースは完全に返します。超過分は `budget.exceeded: true` と `omittedForBudget` カウントで報告します。
+- **決定論的 ID 体系**:
+  - `symbolId`: `symbol_v1_<base64url-sha256>`。`[1, filePath, qualifiedName, kind, signatureDiscriminator, occurrence]` の正準 JSON 配列から生成されます。コード本体の変更や行移動では維持され、シグネチャ変更やリネームで新 ID となります。
+  - `generationId`: `[schemaVersion, parserId, parserVersion, fileContentHash]` の SHA-256 base64url。
+- **言語パーサーと Exactness 境界**:
+  - TypeScript/JavaScript: TS Compiler API を使用。JSDoc、デコレータ、修飾子を含む AST 境界。単一識別子の宣言のみ exact。
+  - Python: `tree-sitter-python` を使用。トップレベル class / function、class method。デコレータを含む。
+  - Go: `tree-sitter-go` を使用。型宣言、関数、レシーバーメソッド、インターフェースメソッド仕様。直前の空行なしコメントおよび `//go:` コンパイラディレクティブを含む。レシーバーまたは所有インターフェース名で修飾（`Reader.Read`）。
+- **トークン会計とコンテキスト生成**:
+  - `js-tiktoken` の `cl100k_base` を使用して再現可能にトークン数を計測します。
+  - コンテキスト形式: `[importText]\n\n[symbolSource]`。
+  - `get_symbol_context` は `tokenBudget` 内に収まるよう関連 import を追加し、予算超過時でもシンボルソースは完全に返します。超過分は `budget.exceeded: true` と `omittedForBudget` カウントで報告します。
+- **Fail-Closed 鮮度検証とステータス体系**:
+  - 構造化ツールはファイルの現在のバイトハッシュをインデックス時のハッシュと比較し、不一致時は source-free な `stale` / `INDEX_FILE_HASH_MISMATCH` で fail-closed します。
+  - ファイルが削除されている場合は `INDEX_FILE_MISSING`、未対応言語の場合は `unsupported_language`、対象外パスの場合は `PATH_EXCLUDED`、スキーマ不一致時は `STRUCTURED_SCHEMA_UNSUPPORTED`、解析に失敗または不完全な場合は `PARSER_COVERAGE_PARTIAL` / `INDEX_SYMBOL_HASH_MISMATCH` / `INDEX_IMPORT_HASH_MISMATCH` を返します。退役した ID に対しては `stale_identity` / `SYMBOL_RETIRED` を返します。同じ名前のシンボルは異なる `symbolId` で区別されます。
+  - 正常時（`status: 'ok'`）は、常に `freshness: 'fresh'` および `reindexRequired: false` を保証します。
 
 ## 8. 耐障害性とエッジケース (Resilience)
 
@@ -380,6 +413,10 @@ AI エージェントに公開される MCP ツールとそれぞれの設計役
 - **Error Safety**: `embed()` 呼び出しは `try { ... } finally { lock.release() }` で囲まれており、成功・失敗・例外・キャンセルのいずれでも確実にロック解放が試行されます。ロック取得直後にキャンセルが検知された場合も、ロックを解放してからキャンセル理由を伝播します。`AbortSignal` に abort reason が設定されていれば `signal.reason` を、設定されていなければ `AbortError` を使用します。解放失敗は元のエラーを隠蔽しません。
 - **Coarse Lock Scope**: ロック範囲は `embed()` 全体（全バッチ）であり、バッチ単位には分割しません。Ollama は単一ローカルモデルを直列実行するため、バッチごとのロック取得・解放（lock thrashing）より、`embed()` 全体で排他する方が Ollama のローカルモデルキューを効率化できます。ロック粒度をバッチ単位に下げることや、Ollama 専用の共有プロセスキューの導入は非目標（Non-Goals）です。
 
+### 8.4. CI セキュリティ監査の耐障害性 (CI Network Resilience)
+
+- CI ワークフローにおける `npm audit` 実行時、一時的なネットワーク障害（HTTP 502, 503, 504 や fetch エラー）に対して指数バックオフ付きリトライ（最大3回）を実行し、外部レジストリの通信瞬断による CI 偽陽性失敗を防止します。
+
 ## 9. Observability (可視化)
 
 Nexus は、単一プロセスの内部状態だけでなく、複数プロジェクト・複数 Nexus プロセスを横断したアプリケーション層メトリクスを Prometheus / Grafana で監視できるように設計されています。
@@ -408,6 +445,15 @@ Nexus は、単一プロセスの内部状態だけでなく、複数プロジ�
 | `nexus_embedding_requests_total` | Counter | `project`, `pid`, `provider`, `status` | Embedding provider 呼び出し回数 |
 | `nexus_embedding_duration_seconds` | Histogram | `project`, `pid`, `provider` | Embedding provider レイテンシ |
 | `nexus_embedding_batch_size` | Histogram | `project`, `pid`, `provider` | Embedding request の batch size 分布 |
+| `nexus_structured_retrieval_outcomes_total` | Counter | `project`, `pid`, `tool`, `status` | 構造化取得ツール (`get_symbol_source` / `get_symbol_context` / `get_file_outline`) のステータス別結果回数 |
+| `nexus_structured_parser_outcomes_total` | Counter | `project`, `pid`, `language`, `parse_status` | 言語別・パースステータス別の構造化パーサー結果回数 |
+| `nexus_structured_context_tokens` | Histogram | `project`, `pid`, `tool`, `measurement` | 構造化コンテキストのトークン数 (`requested` / `actual`) |
+| `nexus_structured_budget_overflows_total` | Counter | `project`, `pid`, `tool` | 予算超過により省略された import 数の累積 |
+| `nexus_structured_catalog_files` | Gauge | `project`, `pid`, `coverage` | 構造化カタログのファイル数 (`exact` / `degraded` / `pending`) |
+| `nexus_structured_catalog_symbols` | Gauge | `project`, `pid` | 構造化カタログのシンボル総数 |
+| `nexus_structured_catalog_coverage_files` | Gauge | `project`, `pid` | 構造化カタログのカバレンジ（exact ファイル数 / 総ファイル数） |
+
+構造化取得メトリクスの `tool` ラベルはツール名のみを含み、**ファイルパス・symbol ID・qualified name をメトリクスラベルやログへ含めることはありません**（検索対象のメタデータがメトリクス経由で外部に漏れることを防止するため）。
 
 MCP ツールは `withToolMetrics` によりハンドラー外側で成否とレイテンシを計測します。検索結果数や `get_context` の取得行数などの固有メトリクスは、ハンドラー内で結果オブジェクトが確定した後に記録します。Embedding provider は Decorator (`InstrumentedEmbeddingProvider`) でラップされ、既存 provider 実装を変更せずに `embed()` の成功・失敗・処理時間・バッチサイズを記録します。
 

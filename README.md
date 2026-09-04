@@ -24,7 +24,7 @@ v1 からの移行手順と前提条件は [docs/setup.md](docs/setup.md) を参
 - **ハイブリッド検索**: LanceDB によるベクトル検索と ripgrep による高速な文字列検索を統合。
 - **インテリジェント・チャンキング**: AST 解析に基づき、関数のセマンティクスを維持したままコードを分割。
 - **低レイテンシ**: ローカル実行に特化し、ネットワーク遅延のない高速なレスポンスを実現。
-- **構造化 symbol 検索**: `semantic_search` / `hybrid_search` の結果に含まれる `symbolId` を使い、`get_symbol_source` / `get_symbol_context` / `get_file_outline` で正確なソースと関連コンテキストを取得できます。
+- **構造化 symbol 検索**: TypeScript/JavaScript, Python, Go に対応し、`semantic_search` / `hybrid_search` の結果に含まれる `symbolId` を使い、`get_symbol_source` / `get_symbol_context` / `get_file_outline` で正確なソースと関連コンテキストを取得できます（DB へのソース本文複製なし、SHA-256 二段階検証による TOCTOU 防止、BPE トークン会計によるコンテキスト最適化）。
 - **自律的メンテナンス**: ファイル監視 (Watcher) とデッドレターキュー (DLQ) による自動的なインデックス更新とリカバリ。
 - **初回バックグラウンド Full Index**: 未インデックスのプロジェクトを通常サービスとして起動すると、
   サーバーを利用可能なまま Full Index を一度だけ開始します。

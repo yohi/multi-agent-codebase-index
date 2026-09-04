@@ -1,56 +1,49 @@
 # Nexus — Instructions for AI Agents
 
-Nexus is a local-first TypeScript MCP server that gives AI agents fast,
-private, evidence-based codebase search and context retrieval.
+Nexus is a local-first TypeScript MCP server that provides fast,
+private, evidence-based codebase search and symbol context retrieval.
 
-## How to work on this project
+## What: Architecture & Map
 
-- Use Node.js >=24 and `npm`; `package-lock.json` is authoritative.
-- This repository is an npm workspace (`packages/*`); the only package is
-  [`packages/dashboard`](packages/dashboard).
-- Prefer existing patterns and deterministic tools (linter, type checker,
-  tests) over prose-style rules.
-- Keep local-first behavior intact: do not introduce external
-  source-code transmission.
-- Do not commit credentials, tokens, machine-specific paths, or
-  generated local state.
+- **Root**: Core MCP server, retrieval engines (AST/BM25/vector), storage, and CLI.
+- **`packages/dashboard`**: Observability and metrics web dashboard (npm workspace).
+- **`.agents/skills/`**: Canonical repository skills (e.g. [`code-search.md`](.agents/skills/code-search.md)).
 
-## Mandatory constraints
+## Why: Core Principles
 
-- Before setup, ask the user to choose **Source Build** or **Package Usage**,
-  then follow [docs/setup.md](docs/setup.md).
+- **Local-first & private**: With a local-only embedding provider such as
+  Ollama, source code stays on the host and no source-derived data is sent
+  externally. The `openai-compat` and `bedrock` providers may send
+  source-derived chunks to configured external services.
+  `transportMode="v2-http"` rejects those providers via
+  `assertHttpV2Constraints`.
+- **Evidence-based**: Ground retrievals in verified symbols and deterministic tools over guessing.
+- **Deterministic tooling**: Rely on the linter, type checker, and tests rather than prose rules.
+
+## How: Workflow & Commands
+
+- **Environment**: Node.js >=24 and `npm`; `package-lock.json` is authoritative.
+- **Investigation**: Load [`.agents/skills/code-search.md`](.agents/skills/code-search.md) before code search.
+- **Test**: `npx vitest run <file>` (narrow first), `npx vitest run` (before completion).
+- **Typecheck**: `npx tsc --noEmit`
+- **Lint**: `npm run lint`
+- **Build**: `npm run build` (when changing public exports or package outputs).
+
+## Universal Constraints
+
+- Do not commit credentials, tokens, machine-specific paths, or generated local state.
 - Never ask the user to paste secrets or GitHub tokens into chat.
-- Do not create project-level agent configuration files or directories;
-  [`.agents/skills/`](.agents/skills/) is the repository's canonical skills
-  location.
+- Ask the user to choose **Source Build** or **Package Usage** before initial setup ([docs/setup.md](docs/setup.md)).
+- Do not create project-level agent configuration files outside [`.agents/skills/`](.agents/skills/).
 
-## How to investigate and verify
+## Progressive Disclosure
 
-- Load [`.agents/skills/code-search.md`](.agents/skills/code-search.md)
-  before any code investigation; it defines the standard pipeline,
-  One-Call pattern, and tool selection rules.
-- Run the narrowest relevant Vitest test first: `npx vitest run <test-file>`.
-- Run `npm run lint` and `npx tsc --noEmit` for TypeScript changes.
-- Run `npm run build` when public exports, package output, or workspace
-  integration change.
-- Run `npx vitest run` before completion when a change affects multiple
-  subsystems or shared behavior.
+Read a document only when its topic is relevant to the current task:
 
-## Progressive disclosure
-
-Read a document only when its topic is relevant to the current task.
-
-- Architecture and behavioral contracts (before design changes):
-  [SPEC.md](SPEC.md)
-- Setup choices and prerequisites (before installation tasks):
-  [docs/setup.md](docs/setup.md)
-- Runtime configuration keys and env vars:
-  [docs/configuration.md](docs/configuration.md)
-- MCP tool inputs and responses (before tool schema changes):
-  [docs/mcp-tools.md](docs/mcp-tools.md)
-- Distribution workflows (before packaging or release changes):
-  [docs/distribution.md](docs/distribution.md)
-- Metrics and dashboards:
-  [docs/observability/README.md](docs/observability/README.md)
-- Product requirements and phase roadmap (for scope questions):
-  [REQUIREMENTS.md](REQUIREMENTS.md)
+- Architecture & behavioral contracts: [SPEC.md](SPEC.md)
+- MCP tool schemas & response formats: [docs/mcp-tools.md](docs/mcp-tools.md)
+- Runtime configuration & environment variables: [docs/configuration.md](docs/configuration.md)
+- Setup choices & prerequisites: [docs/setup.md](docs/setup.md)
+- Packaging & release distribution: [docs/distribution.md](docs/distribution.md)
+- Metrics & Grafana dashboard: [docs/observability/README.md](docs/observability/README.md)
+- Product requirements & roadmap: [REQUIREMENTS.md](REQUIREMENTS.md)

@@ -226,30 +226,51 @@ semantic search と grep search を統合した ranking search です。
 
 ```json
 {
-  "filePath": "src/auth.ts",
   "status": "ok",
+  "freshness": "fresh",
+  "reindexRequired": false,
+  "file": {
+    "filePath": "src/auth.ts",
+    "language": "typescript",
+    "parserId": "typescript",
+    "parserVersion": "1"
+  },
   "symbols": [
     {
+      "name": "authenticate",
+      "qualifiedName": "authenticate",
       "symbolId": "symbol_v1_abc...",
-      "qualifiedName": "AuthService.authenticate",
-      "kind": "method",
-      "signature": "authenticate(token: string): Promise<User>",
-      "startLine": 12,
-      "endLine": 18,
-      "parentKey": "AuthService"
+      "kind": "function",
+      "signatureDiscriminator": "authenticate(token: string): Promise<User>",
+      "position": {
+        "startLine": 12,
+        "startColumn": 0,
+        "endLine": 18,
+        "endColumn": 1
+      },
+      "isExact": true,
+      "languageId": "typescript",
+      "parentSymbolId": null
     }
-  ]
+  ],
+  "request": { "filePath": "src/auth.ts" }
 }
 ```
 
-非 `ok` ステータスでは `symbols` キーは含まれません。主なステータスと reasonCode:
+非 `ok` ステータスのうち、`degraded` では部分的に取得できた `symbols` キーが含まれます。
+その他のステータスでは `symbols` キーは含まれません。主なステータスと reasonCode:
 
 | status | reasonCode | 意味 |
 | --- | --- | --- |
-| `ok` | — | 新鮮なアウトラインを返す |
-| `not_indexed` | `STRUCTURED_INDEX_MISSING` / `UNSUPPORTED_LANGUAGE` / `PATH_EXCLUDED` | 構造化インデックス未構築、未対応言語、対象外パス |
+| `ok` | — | 新鮮なアウトラインを返す（`freshness: 'fresh'`, `reindexRequired: false`） |
+| `not_found` | `FILE_NOT_FOUND` / `SYMBOL_NOT_FOUND` | ファイルまたはシンボルが存在しない |
+| `stale_identity` | `SYMBOL_RETIRED` | 過去に存在したシンボルが退役済み |
+| `not_indexed` | `STRUCTURED_INDEX_MISSING` | 構造化インデックス未構築 |
+| `excluded` | `PATH_EXCLUDED` | 対象外パス（除外ルールに合致） |
+| `unsupported` | `unsupported_language` / `STRUCTURED_SCHEMA_UNSUPPORTED` | 未対応言語、または未対応の将来スキーマ |
+| `degraded` | `PARSER_COVERAGE_PARTIAL` / `PARSER_BOUNDARY_UNCERTAIN` | 部分的な exact subset のみ返却 |
 | `stale` | `INDEX_FILE_HASH_MISMATCH` / `INDEX_FILE_MISSING` | ファイルが変更または削除された |
-| `index_incomplete` | `INDEX_PENDING_GENERATION` | ファイルの世代が活性化待ち |
+| `index_incomplete` | `INDEX_PENDING_GENERATION` / `INDEX_SYMBOL_HASH_MISMATCH` / `INDEX_IMPORT_HASH_MISMATCH` / `INDEX_GENERATION_MISSING` | ファイル世代が活性化待ち、またはハッシュ不整合 |
 
 ## `get_symbol_source`
 
@@ -268,6 +289,7 @@ semantic search と grep search を統合した ranking search です。
   "symbolId": "symbol_v1_abc...",
   "status": "ok",
   "freshness": "fresh",
+  "reindexRequired": false,
   "source": "export async function authenticate(token: string): Promise<User> { ... }"
 }
 ```
@@ -291,13 +313,20 @@ import の追加で予算を超過した場合、`budget.exceeded: true` と `om
 
 ```json
 {
-  "symbolId": "symbol_v1_abc...",
   "status": "ok",
   "freshness": "fresh",
+  "reindexRequired": false,
   "context": "import { User } from \"./user.js\";\n\nexport async function authenticate(token: string): Promise<User> { ... }",
+  "filePath": "src/auth.ts",
   "imports": [
-    { "moduleSpecifier": "./user.js", "bindingName": "User", "completeness": "complete" }
+    {
+      "id": "import_v1_abc...",
+      "moduleSpecifier": "./user.js",
+      "startByte": 0,
+      "endByte": 36
+    }
   ],
+  "importsCompleteness": "complete",
   "budget": {
     "requested": 2000,
     "actual": 42,
@@ -305,9 +334,15 @@ import の追加で予算を超過した場合、`budget.exceeded: true` と `om
     "omittedForBudget": 0
   },
   "tokenizer": "cl100k_base",
-  "tokenizerVersion": "js-tiktoken@1.0.21"
+  "tokenizerVersion": "js-tiktoken@1.0.21",
+  "request": { "symbolId": "symbol_v1_abc...", "tokenBudget": 2000 }
 }
 ```
+
+各 `import` は `id`、`moduleSpecifier`、`startByte`、`endByte` を返します。
+`moduleSpecifier` は部分解析で確定できない場合に省略されることがあります。
+個別の `completeness` は返さず、import 全体の完全性をトップレベルの
+`importsCompleteness` で返します。
 
 予算を超えてもシンボルソースは常に完全に返されます。超過時は `budget.exceeded: true` となり、
 収まらなかった import が `omittedForBudget` にカウントされます。
@@ -381,6 +416,17 @@ import の追加で予算を超過した場合、`budget.exceeded: true` と `om
 `structuredIndex` は省略可能です。レガシーインデックスでは `schemaVersion: null`、
 `status: "reindex_required"`、`reindexRequired: true` となります。
 構造化インデックスを有効にするには `reindex({ fullRebuild: true })` を実行してください。
+
+`structuredIndex.status` は次の優先順位で決定されます:
+
+1. `schemaVersion` が `null`（未構築）→ `reindex_required`
+2. `schemaVersion` が `targetSchemaVersion` と不一致（将来スキーマ）→ `unsupported`
+3. `rebuildState === "building"` → `building`
+4. `rebuildState === "failed"` → `failed`
+5. 上記以外 → `idle`
+
+部分パース（`degradedFiles > 0`）だけでは `status` を `degraded` にしません。
+`exactFiles` / `degradedFiles` とパーサーメトリクスで可視化し、exact subset の取得は可能なまま維持します。
 
 `indexStats` が `null`、`indexStats.lastIndexedAt` が `null`、または `indexStats.lastError` が non-null の場合、そのプロジェクトには成功済みリインデックスの記録がありません。
 通常サービス起動では、この状態に対してバックグラウンド Full Index が一度だけ開始されます。
