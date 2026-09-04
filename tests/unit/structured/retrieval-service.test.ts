@@ -329,6 +329,50 @@ describe('SymbolRetrievalService', () => {
   });
 
   describe('getFileOutline', () => {
+    it('returns complete metadata when the structured schema is missing globally', async () => {
+      Object.defineProperty(catalog, 'schemaVersion', { value: null, writable: true });
+
+      await expect(service.getFileOutline({ filePath: 'src/a.ts' })).resolves.toEqual({
+        status: 'not_indexed',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'STRUCTURED_INDEX_MISSING',
+        request: { filePath: 'src/a.ts' },
+      });
+    });
+
+    it('returns unsupported metadata for a future structured schema', async () => {
+      Object.defineProperty(catalog, 'schemaVersion', { value: 2, writable: true });
+
+      await expect(service.getFileOutline({ filePath: 'src/a.ts' })).resolves.toEqual({
+        status: 'unsupported',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'STRUCTURED_SCHEMA_UNSUPPORTED',
+        request: { filePath: 'src/a.ts' },
+      });
+    });
+
+    it('returns unsupported_language for an unsupported outline parser', async () => {
+      const text = 'export function a() { return 1; }';
+      const stage = createStructuredStage('src/a.ts', text, 'a');
+      await runStructuredFullRebuild(coordinator, stage);
+      await writeFile(join(projectRoot, 'src/a.ts'), text);
+
+      const restrictedService = new SymbolRetrievalService({
+        catalog,
+        sanitizer,
+        isSupportedLanguage: (language) => language === 'typescript',
+      });
+
+      await expect(restrictedService.getFileOutline({ filePath: 'src/a.ts' })).resolves.toMatchObject({
+        status: 'unsupported',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'unsupported_language',
+      });
+    });
+
     it('returns freshness metadata for an active indexed file', async () => {
       const text = 'export function a() { return 1; }';
       const stage = createStructuredStage('src/a.ts', text, 'a');

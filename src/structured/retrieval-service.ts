@@ -22,6 +22,20 @@ type SourceStatus =
   | { status: 'failed'; reasonCode: 'parse_error' | 'invariant_violation' }
   | { status: 'not_indexed'; reasonCode: 'STRUCTURED_INDEX_MISSING' | 'STRUCTURED_SCHEMA_UNSUPPORTED' };
 
+type GlobalStateStatus =
+  | {
+      readonly status: 'not_indexed';
+      readonly freshness: 'unknown';
+      readonly reindexRequired: true;
+      readonly reasonCode: 'STRUCTURED_INDEX_MISSING';
+    }
+  | {
+      readonly status: 'unsupported';
+      readonly freshness: 'unknown';
+      readonly reindexRequired: false;
+      readonly reasonCode: 'STRUCTURED_SCHEMA_UNSUPPORTED';
+    };
+
 type VerifiedSymbol =
   | { readonly ok: true; readonly bytes: Uint8Array; readonly declaration: StructuredDeclaration; readonly filePath: string }
   | { readonly ok: false; readonly status: SourceStatus & { request?: { symbolId: string } } };
@@ -128,7 +142,7 @@ export class SymbolRetrievalService {
         status: 'unsupported',
         freshness: 'unknown',
         reindexRequired: false,
-        reasonCode: 'LANGUAGE_UNSUPPORTED',
+        reasonCode: 'unsupported_language',
         request: { filePath: input.filePath },
       };
     }
@@ -336,12 +350,22 @@ export class SymbolRetrievalService {
     }
   }
 
-  private checkGlobalState(state: StructuredIndexState): { status: 'not_indexed'; reasonCode: 'STRUCTURED_INDEX_MISSING' | 'STRUCTURED_SCHEMA_UNSUPPORTED' } | undefined {
+  private checkGlobalState(state: StructuredIndexState): GlobalStateStatus | undefined {
     if (state.schemaVersion === null) {
-      return { status: 'not_indexed', reasonCode: 'STRUCTURED_INDEX_MISSING' };
+      return {
+        status: 'not_indexed',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'STRUCTURED_INDEX_MISSING',
+      };
     }
     if (state.schemaVersion !== 1) {
-      return { status: 'not_indexed', reasonCode: 'STRUCTURED_SCHEMA_UNSUPPORTED' };
+      return {
+        status: 'unsupported',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'STRUCTURED_SCHEMA_UNSUPPORTED',
+      };
     }
     return undefined;
   }

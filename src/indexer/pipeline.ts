@@ -443,9 +443,10 @@ export class IndexPipeline implements IIndexPipeline {
 
     // Stage 2: L1 (memory) + L2 (persistent) cache-aware embed.
     const toEmbed = works.filter((work) => !work.skipped && (work.chunks.length > 0 || (work.structured?.chunks.length ?? 0) > 0));
-    const legacyChunks = toEmbed.flatMap((work) => work.chunks);
-    const structuredChunks = toEmbed.flatMap((work) => work.structured?.chunks ?? []);
-    const allChunks = [...legacyChunks, ...structuredChunks];
+    const allChunks = toEmbed.flatMap((work) => [
+      ...work.chunks,
+      ...(work.structured?.chunks ?? []),
+    ]);
 
     // allChunks index → filePath mapping for precise DLQ routing on embed failure.
     const chunkToFilePath = new Map<number, string>();
