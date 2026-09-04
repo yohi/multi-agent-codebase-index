@@ -49,3 +49,10 @@ Import the JSON file at `docs/observability/grafana-dashboard.json` into Grafana
 | `nexus_embedding_requests_total` | Counter | `project`, `pid`, `provider`, `status` | Embedding provider requests count |
 | `nexus_embedding_duration_seconds` | Histogram | `project`, `pid`, `provider` | Embedding request latency |
 | `nexus_embedding_batch_size` | Histogram | `project`, `pid`, `provider` | Embedding request batch size distribution |
+| `nexus_structured_retrieval_outcomes_total` | Counter | `project`, `pid`, `tool`, `status` | Structured retrieval tool outcomes by status |
+| `nexus_structured_parser_outcomes_total` | Counter | `project`, `pid`, `language`, `parse_status` | Structured parser outcomes by language and parse status |
+| `nexus_structured_context_tokens` | Histogram | `project`, `pid`, `tool`, `measurement` | Structured context token counts (`requested` / `actual`) |
+| `nexus_structured_budget_overflows_total` | Counter | `project`, `pid`, `tool` | Structured retrieval budget overflow counts (omitted imports) |
+| `nexus_structured_catalog_files` | Gauge | `project`, `pid`, `coverage` | Structured catalog file counts (`exact` / `degraded` / `pending`) |
+| `nexus_structured_catalog_symbols` | Gauge | `project`, `pid` | Structured catalog symbol count |
+| `nexus_structured_catalog_coverage_files` | Gauge | `project`, `pid` | Structured catalog coverage ratio (exact files / total files) |

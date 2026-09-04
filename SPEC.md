@@ -194,6 +194,9 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
 - **パイプライン埋め込み整列とパース失敗保護**:
   - Stage 2 におけるチャンク平坦化順序を、ファイル単位（`[...work.chunks, ...(work.structured?.chunks ?? [])]`）で整列し、埋め込みバッチ内のオフセットと `chunkToFilePath` マップを完全に同期させます。
   - 構造化パースに失敗したファイル（`parse-failed`）は、即座に DLQ へ退避し Merkle ツリーを更新しないことで、インデックス不整合を防ぎ次回以降のリカバリを担保します。
+- **チャンク行範囲とサブチャンク ID の一貫性 (Oversized Chunk Alignment)**:
+  - 宣言が `maxChunkChars` を超えて複数サブチャンクへ分割される場合、分割の開始行は `rawSource` の実際の行スパン（先行する Go コメントや `//go:` ディレクトブを含む）から導出します。最終的な行境界が確定した後、各サブチャンク ID をその同じ境界（`startLine` / `endLine`）から生成し直すことで、行範囲と ID を整合させます（src/indexer/chunker.ts）。
+  - パース失敗保護と合わせ、レガシー検索と構造化検索の結果整合を保ちます。
 
 ## 4. ストレージ層 (Dual-Store)
 
@@ -442,6 +445,15 @@ Nexus は、単一プロセスの内部状態だけでなく、複数プロジ�
 | `nexus_embedding_requests_total` | Counter | `project`, `pid`, `provider`, `status` | Embedding provider 呼び出し回数 |
 | `nexus_embedding_duration_seconds` | Histogram | `project`, `pid`, `provider` | Embedding provider レイテンシ |
 | `nexus_embedding_batch_size` | Histogram | `project`, `pid`, `provider` | Embedding request の batch size 分布 |
+| `nexus_structured_retrieval_outcomes_total` | Counter | `project`, `pid`, `tool`, `status` | 構造化取得ツール (`get_symbol_source` / `get_symbol_context` / `get_file_outline`) のステータス別結果回数 |
+| `nexus_structured_parser_outcomes_total` | Counter | `project`, `pid`, `language`, `parse_status` | 言語別・パースステータス別の構造化パーサー結果回数 |
+| `nexus_structured_context_tokens` | Histogram | `project`, `pid`, `tool`, `measurement` | 構造化コンテキストのトークン数 (`requested` / `actual`) |
+| `nexus_structured_budget_overflows_total` | Counter | `project`, `pid`, `tool` | 予算超過により省略された import 数の累積 |
+| `nexus_structured_catalog_files` | Gauge | `project`, `pid`, `coverage` | 構造化カタログのファイル数 (`exact` / `degraded` / `pending`) |
+| `nexus_structured_catalog_symbols` | Gauge | `project`, `pid` | 構造化カタログのシンボル総数 |
+| `nexus_structured_catalog_coverage_files` | Gauge | `project`, `pid` | 構造化カタログのカバレンジ（exact ファイル数 / 総ファイル数） |
+
+構造化取得メトリクスの `tool` ラベルはツール名のみを含み、**ファイルパス・symbol ID・qualified name をメトリクスラベルやログへ含めることはありません**（検索対象のメタデータがメトリクス経由で外部に漏れることを防止するため）。
 
 MCP ツールは `withToolMetrics` によりハンドラー外側で成否とレイテンシを計測します。検索結果数や `get_context` の取得行数などの固有メトリクスは、ハンドラー内で結果オブジェクトが確定した後に記録します。Embedding provider は Decorator (`InstrumentedEmbeddingProvider`) でラップされ、既存 provider 実装を変更せずに `embed()` の成功・失敗・処理時間・バッチサイズを記録します。
 

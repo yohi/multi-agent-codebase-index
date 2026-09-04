@@ -389,6 +389,17 @@ import の追加で予算を超過した場合、`budget.exceeded: true` と `om
 `status: "reindex_required"`、`reindexRequired: true` となります。
 構造化インデックスを有効にするには `reindex({ fullRebuild: true })` を実行してください。
 
+`structuredIndex.status` は次の優先順位で決定されます:
+
+1. `schemaVersion` が `null`（未構築）→ `reindex_required`
+2. `schemaVersion` が `targetSchemaVersion` と不一致（将来スキーマ）→ `unsupported`
+3. `rebuildState === "building"` → `building`
+4. `rebuildState === "failed"` → `failed`
+5. 上記以外 → `idle`
+
+部分パース（`degradedFiles > 0`）だけでは `status` を `degraded` にしません。
+`exactFiles` / `degradedFiles` とパーサーメトリクスで可視化し、exact subset の取得は可能なまま維持します。
+
 `indexStats` が `null`、`indexStats.lastIndexedAt` が `null`、または `indexStats.lastError` が non-null の場合、そのプロジェクトには成功済みリインデックスの記録がありません。
 通常サービス起動では、この状態に対してバックグラウンド Full Index が一度だけ開始されます。
 
