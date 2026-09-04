@@ -127,6 +127,79 @@ describe('IndexPipeline structured lifecycle', () => {
     );
   });
 
+  it('fails a structured full rebuild without retiring the active generation when parsing fails', async () => {
+    const { metadataStore, vectorStore, pipeline, coordinator } = await createStructuredPipeline();
+    const filePath = 'src/full-rebuild-parse-failure.ts';
+    const initialContent = 'export function stableSymbol(): number { return 1; }\n';
+    const brokenContent = 'export function stableSymbol(): number { return (1; }\n';
+
+    await indexContent(pipeline, 'added', filePath, initialContent);
+    const [oldDeclaration] = await metadataStore.getFileDeclarations(filePath);
+    const oldResolution = await metadataStore.resolveFile(filePath);
+    expect(oldDeclaration).toBeDefined();
+    expect(oldResolution.kind).toBe('active');
+
+    const runFullRebuildSpy = vi.spyOn(coordinator, 'runFullRebuild');
+    await expect(
+      pipeline.reindex(
+        async () => [createEvent('modified', filePath, brokenContent)],
+        async () => brokenContent,
+        true,
+      ),
+    ).rejects.toThrow(`Structured full rebuild aborted: parsing failed for ${filePath}`);
+
+    expect(runFullRebuildSpy).not.toHaveBeenCalled();
+    await expect(metadataStore.resolveFile(filePath)).resolves.toEqual(oldResolution);
+    await expect(metadataStore.resolveSymbol(oldDeclaration!.symbolId)).resolves.toEqual(
+      expect.objectContaining({ kind: 'active' }),
+    );
+    await expect(metadataStore.getStructuredCounts()).resolves.toMatchObject({
+      activeFiles: 1,
+      activeSymbols: 1,
+    });
+    const results = await vectorStore.search(new Array(64).fill(0), 100, { filePathPrefix: filePath });
+    expect(results.some((result) => result.chunk.symbolId === oldDeclaration!.symbolId)).toBe(true);
+    await expect(metadataStore.getIndexStats()).resolves.toMatchObject({
+      lastError: `Structured full rebuild aborted: parsing failed for ${filePath}`,
+    });
+  });
+
+  it('retires structured state when incremental indexing skips an oversized file', async () => {
+    const { metadataStore, vectorStore, pluginRegistry, coordinator, pipeline } = await createStructuredPipeline();
+    const filePath = 'src/oversized-incremental.ts';
+    const content = 'export function staleSymbol(): number { return 1; }\n';
+
+    await indexContent(pipeline, 'added', filePath, content);
+    const [oldDeclaration] = await metadataStore.getFileDeclarations(filePath);
+    expect(oldDeclaration).toBeDefined();
+
+    const limitedPipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(pluginRegistry),
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry,
+      structuredIndexCoordinator: coordinator,
+      maxFileBytes: 16,
+    });
+    const deleteFileSpy = vi.spyOn(coordinator, 'deleteFile');
+
+    await limitedPipeline.processEvents(
+      [createEvent('modified', filePath, content)],
+      async () => content,
+    );
+
+    expect(deleteFileSpy).toHaveBeenCalledWith({ filePath });
+    await expect(metadataStore.resolveFile(filePath)).resolves.toEqual({ kind: 'missing' });
+    await expect(metadataStore.resolveSymbol(oldDeclaration!.symbolId)).resolves.toEqual(
+      expect.objectContaining({ kind: 'tombstone' }),
+    );
+    await expect(metadataStore.getStructuredCounts()).resolves.toMatchObject({
+      activeFiles: 0,
+      activeSymbols: 0,
+    });
+  });
+
   it('uses one raw-byte load for legacy and structured indexing', async () => {
     const fixture = await createStructuredCoordinatorFixture({ bootstrapStructuredSchema: true });
     const content = 'export function rawSource(): number { return 1; }\n';

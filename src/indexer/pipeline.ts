@@ -84,6 +84,7 @@ interface FileWork {
   chunks: CodeChunk[];
   structured?: StructuredFileWork;
   structuredRetirement: boolean;
+  structuredParseFailed: boolean;
   skipped: boolean;
   skipReason?: string;
 }
@@ -238,6 +239,7 @@ export class IndexPipeline implements IIndexPipeline {
     const structuredIndexCoordinator = this.options.structuredIndexCoordinator;
     const useStructuredFullRebuild = options.fullRebuild === true && structuredIndexCoordinator !== undefined;
     const structuredRebuildFiles: FullRebuildFile[] = [];
+    const structuredParseFailures: string[] = [];
     if (events.length === 0) {
       if (useStructuredFullRebuild) {
         await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
@@ -315,6 +317,7 @@ export class IndexPipeline implements IIndexPipeline {
           loadContent as ContentLoader,
           trackProgress,
           useStructuredFullRebuild ? structuredRebuildFiles : undefined,
+          useStructuredFullRebuild ? structuredParseFailures : undefined,
         );
         if (trackProgress) {
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
@@ -325,6 +328,10 @@ export class IndexPipeline implements IIndexPipeline {
       }
 
       if (useStructuredFullRebuild && !this.abortController.signal.aborted) {
+        if (structuredParseFailures.length > 0) {
+          const filePaths = [...new Set(structuredParseFailures)].join(', ');
+          throw new Error(`Structured full rebuild aborted: parsing failed for ${filePaths}`);
+        }
         await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
       }
 
@@ -364,7 +371,14 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     if (fileSize !== undefined && this.options.maxFileBytes !== undefined && fileSize > this.options.maxFileBytes) {
-      return { event, chunks: [], structuredRetirement: false, skipped: true, skipReason: `file too large: ${fileSize} bytes` };
+      return {
+        event,
+        chunks: [],
+        structuredRetirement: false,
+        structuredParseFailed: false,
+        skipped: true,
+        skipReason: `file too large: ${fileSize} bytes`,
+      };
     }
 
     const sourceBytes = this.options.loadFileBytes === undefined
@@ -375,7 +389,14 @@ export class IndexPipeline implements IIndexPipeline {
       : decodeUtf8(sourceBytes);
     const byteLength = sourceBytes?.byteLength ?? Buffer.byteLength(content, 'utf8');
     if (this.options.maxFileBytes !== undefined && byteLength > this.options.maxFileBytes) {
-      return { event, chunks: [], structuredRetirement: false, skipped: true, skipReason: `file too large: ${byteLength} bytes` };
+      return {
+        event,
+        chunks: [],
+        structuredRetirement: false,
+        structuredParseFailed: false,
+        skipped: true,
+        skipReason: `file too large: ${byteLength} bytes`,
+      };
     }
 
     const language = this.detectLanguage(event.filePath);
@@ -389,6 +410,7 @@ export class IndexPipeline implements IIndexPipeline {
 
     let structured: StructuredFileWork | undefined;
     let structuredRetirement = false;
+    let structuredParseFailed = false;
     if (this.options.structuredIndexCoordinator !== undefined) {
       const structuredResult = await this.readStructuredFile(
         event.filePath,
@@ -398,9 +420,10 @@ export class IndexPipeline implements IIndexPipeline {
       );
       structured = structuredResult?.kind === 'work' ? structuredResult.work : undefined;
       structuredRetirement = structuredResult?.kind === 'retire';
+      structuredParseFailed = structuredResult?.kind === 'parse-failed';
     }
 
-    return { event, chunks, structured, structuredRetirement, skipped: false };
+    return { event, chunks, structured, structuredRetirement, structuredParseFailed, skipped: false };
   }
 
   private async readStructuredFile(
@@ -477,12 +500,21 @@ export class IndexPipeline implements IIndexPipeline {
     loadContent: ContentLoader,
     trackProgress: boolean,
     structuredRebuildFiles?: FullRebuildFile[],
+    structuredParseFailures?: string[],
   ): Promise<number> {
     // Stage 1: bounded-concurrency read + chunk (no Merkle/vector writes here).
     const limit = pLimit(this.chunkConcurrency);
     const works = await Promise.all(
       window.map((event) => limit(async () => this.readAndChunkFile(event, loadContent))),
     );
+
+    if (structuredParseFailures !== undefined) {
+      for (const work of works) {
+        if (work.structuredParseFailed) {
+          structuredParseFailures.push(work.event.filePath);
+        }
+      }
+    }
 
     // Stage 2: L1 (memory) + L2 (persistent) cache-aware embed.
     const toEmbed = works.filter((work) => !work.skipped && (work.chunks.length > 0 || (work.structured?.chunks.length ?? 0) > 0));
@@ -609,7 +641,11 @@ export class IndexPipeline implements IIndexPipeline {
           );
         }
         this.skippedFiles.set(work.event.filePath, work.skipReason ?? 'file skipped');
-        await this.options.vectorStore.deleteByFilePath(work.event.filePath);
+        if (structuredRebuildFiles === undefined && this.options.structuredIndexCoordinator !== undefined) {
+          await this.options.structuredIndexCoordinator.deleteFile({ filePath: work.event.filePath });
+        } else {
+          await this.options.vectorStore.deleteByFilePath(work.event.filePath);
+        }
         await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
         if (trackProgress) {
           this.progress.processedFiles++;
