@@ -30,6 +30,38 @@ describe('StructuredIndexCoordinator', () => {
     expect((await metadataStore.getStructuredIndexState()).rebuildEpoch).toBe(0);
   });
 
+  it('does not leave a pending generation when embedding counts mismatch', async () => {
+    const stage = createStructuredStage('src/mismatch.ts', 'export function mismatch() { return 1; }', 'mismatch');
+
+    await expect(coordinator.stageFile({
+      source: stage.source,
+      generationId: stage.generationId,
+      contentHash: stage.contentHash,
+      fileCompleteness: 'complete',
+      declarations: [stage.symbol],
+      imports: [],
+      chunks: [{
+        id: 'mismatch-chunk',
+        filePath: stage.source.filePath,
+        content: stage.source.text,
+        language: stage.source.language,
+        symbolKind: 'function',
+        startLine: 1,
+        endLine: 1,
+        hash: stage.contentHash,
+        symbolId: stage.symbolId,
+        generationId: stage.generationId,
+      }],
+      embeddings: [],
+    })).rejects.toThrow('embeddings length mismatch');
+
+    await expect(metadataStore.resolveFile(stage.source.filePath)).resolves.toEqual({ kind: 'missing' });
+    expect(await metadataStore.getStructuredCounts()).toMatchObject({
+      pendingFiles: 0,
+      pendingSymbols: 0,
+    });
+  });
+
   it('keeps the active catalog and vectors visible when Lance staging fails mid-batch', async () => {
     const first = createStructuredStage('src/a.ts', 'export function a() { return 1; }', 'a');
     await stageStructuredFile(coordinator, first);

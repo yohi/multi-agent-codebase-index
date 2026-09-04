@@ -71,105 +71,141 @@ export class SymbolRetrievalService {
       }
     }
 
-    const resolution = await this.options.catalog.resolveFile(relativePath);
-    if (resolution.kind === 'pending') {
-      return {
-        status: 'index_incomplete',
-        freshness: 'unknown',
-        reindexRequired: true,
-        reasonCode: 'INDEX_PENDING_GENERATION',
-        request: { filePath: input.filePath },
-      };
-    }
-
     const projectRoot = this.options.sanitizer.getProjectRoot();
-    const readResult = await this.readCurrentBytes(relativePath, projectRoot, input.signal);
-
-    if (resolution.kind === 'missing') {
-      if (readResult.status !== 'ok') {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const resolution = await this.options.catalog.resolveFile(relativePath);
+      if (resolution.kind === 'pending') {
         return {
-          status: 'not_found',
+          status: 'index_incomplete',
           freshness: 'unknown',
-          reindexRequired: false,
-          reasonCode: 'FILE_NOT_FOUND',
+          reindexRequired: true,
+          reasonCode: 'INDEX_PENDING_GENERATION',
           request: { filePath: input.filePath },
         };
       }
-      return {
-        status: 'not_indexed',
-        freshness: 'unknown',
-        reindexRequired: true,
-        reasonCode: 'STRUCTURED_INDEX_MISSING',
-        request: { filePath: input.filePath },
-      };
-    }
 
-    // Active file: verify freshness before returning metadata.
-    if (readResult.status !== 'ok') {
-      return {
-        status: 'stale',
-        freshness: 'stale',
-        reindexRequired: true,
-        reasonCode: readResult.reasonCode,
-        request: { filePath: input.filePath },
-      };
-    }
+      const readResult = await this.readCurrentBytes(relativePath, projectRoot, input.signal);
+      if (resolution.kind === 'missing') {
+        if (readResult.status !== 'ok') {
+          return {
+            status: 'not_found',
+            freshness: 'unknown',
+            reindexRequired: false,
+            reasonCode: 'FILE_NOT_FOUND',
+            request: { filePath: input.filePath },
+          };
+        }
+        return {
+          status: 'not_indexed',
+          freshness: 'unknown',
+          reindexRequired: true,
+          reasonCode: 'STRUCTURED_INDEX_MISSING',
+          request: { filePath: input.filePath },
+        };
+      }
 
-    const generation = await this.options.catalog.getGeneration(relativePath, resolution.generationId);
-    if (generation === null) {
-      return {
-        status: 'index_incomplete',
-        freshness: 'unknown',
-        reindexRequired: true,
-        reasonCode: 'INDEX_GENERATION_MISSING',
-        request: { filePath: input.filePath },
-      };
-    }
+      // Active file: verify freshness before returning metadata.
+      if (readResult.status !== 'ok') {
+        return {
+          status: 'stale',
+          freshness: 'stale',
+          reindexRequired: true,
+          reasonCode: readResult.reasonCode,
+          request: { filePath: input.filePath },
+        };
+      }
 
-    const fileHash = sha256Hex(readResult.bytes);
-    if (fileHash !== generation.fileHash) {
-      return {
-        status: 'stale',
-        freshness: 'stale',
-        reindexRequired: true,
-        reasonCode: 'INDEX_FILE_HASH_MISMATCH',
-        request: { filePath: input.filePath },
-      };
-    }
+      const generation = await this.options.catalog.getGeneration(relativePath, resolution.generationId);
+      if (generation === null) {
+        if (attempt === 0) {
+          continue;
+        }
+        return {
+          status: 'index_incomplete',
+          freshness: 'unknown',
+          reindexRequired: true,
+          reasonCode: 'INDEX_GENERATION_MISSING',
+          request: { filePath: input.filePath },
+        };
+      }
 
-    if (this.options.isSupportedLanguage && !this.options.isSupportedLanguage(generation.parserId)) {
+      const fileHash = sha256Hex(readResult.bytes);
+      if (fileHash !== generation.fileHash) {
+        const currentResolution = await this.options.catalog.resolveFile(relativePath);
+        if (attempt === 0 && currentResolution.kind === 'active' && currentResolution.generationId !== resolution.generationId) {
+          continue;
+        }
+        return {
+          status: 'stale',
+          freshness: 'stale',
+          reindexRequired: true,
+          reasonCode: 'INDEX_FILE_HASH_MISMATCH',
+          request: { filePath: input.filePath },
+        };
+      }
+
+      if (this.options.isSupportedLanguage && !this.options.isSupportedLanguage(generation.parserId)) {
+        const currentResolution = await this.options.catalog.resolveFile(relativePath);
+        if (attempt === 0 && currentResolution.kind === 'active' && currentResolution.generationId !== resolution.generationId) {
+          continue;
+        }
+        return {
+          status: 'unsupported',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'unsupported_language',
+          request: { filePath: input.filePath },
+        };
+      }
+
+      const declarations = await this.options.catalog.getFileDeclarations(relativePath);
+      const currentResolution = await this.options.catalog.resolveFile(relativePath);
+      if (currentResolution.kind !== 'active' || currentResolution.generationId !== resolution.generationId) {
+        if (attempt === 0) {
+          continue;
+        }
+        return {
+          status: 'stale',
+          freshness: 'stale',
+          reindexRequired: true,
+          reasonCode: 'INDEX_FILE_HASH_MISMATCH',
+          request: { filePath: input.filePath },
+        };
+      }
+
+      const symbols = declarations.map((declaration) => ({
+        name: declaration.name,
+        qualifiedName: declaration.qualifiedName,
+        symbolId: declaration.symbolId,
+        kind: declaration.kind,
+        signatureDiscriminator: declaration.signatureDiscriminator,
+        position: declaration.position,
+        isExact: declaration.isExact,
+        languageId: declaration.languageId,
+      }));
+
       return {
-        status: 'unsupported',
-        freshness: 'unknown',
+        ...(generation.fileCompleteness === 'partial'
+          ? { status: 'degraded', retrievability: 'partial', reasonCode: 'PARSER_COVERAGE_PARTIAL' }
+          : { status: 'ok' }),
+        freshness: 'fresh',
         reindexRequired: false,
-        reasonCode: 'unsupported_language',
+        file: {
+          filePath: relativePath,
+          language: generation.parserId,
+          parserId: generation.parserId,
+          parserVersion: generation.parserVersion,
+        },
+        symbols,
         request: { filePath: input.filePath },
       };
     }
-
-    const declarations = await this.options.catalog.getFileDeclarations(relativePath);
-    const symbols = declarations.map((declaration) => ({
-      name: declaration.name,
-      qualifiedName: declaration.qualifiedName,
-      symbolId: declaration.symbolId,
-      kind: declaration.kind,
-      signatureDiscriminator: declaration.signatureDiscriminator,
-      position: declaration.position,
-      isExact: declaration.isExact,
-      languageId: declaration.languageId,
-    }));
 
     return {
-      status: 'ok',
-      freshness: 'fresh',
-      reindexRequired: false,
-      file: {
-        filePath: relativePath,
-        language: generation.parserId,
-        parserId: generation.parserId,
-        parserVersion: generation.parserVersion,
-      },
-      symbols,
+      status: 'index_incomplete',
+      freshness: 'unknown',
+      reindexRequired: true,
+      reasonCode: 'INDEX_GENERATION_MISSING',
       request: { filePath: input.filePath },
     };
   }

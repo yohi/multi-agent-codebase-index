@@ -40,6 +40,34 @@ const indexContent = async (
 };
 
 describe('IndexPipeline structured lifecycle', () => {
+  it('routes a structured full rebuild through the coordinator full-rebuild API', async () => {
+    const { coordinator, pipeline } = await createStructuredPipeline();
+    const content = 'export function rebuilt(): number { return 1; }\n';
+    const filePath = 'src/rebuilt.ts';
+    const runFullRebuildSpy = vi.spyOn(coordinator, 'runFullRebuild');
+    const stageFileSpy = vi.spyOn(coordinator, 'stageFile');
+    const activateFileSpy = vi.spyOn(coordinator, 'activateFile');
+
+    await pipeline.reindex(
+      async () => [createEvent('added', filePath, content)],
+      async () => content,
+      true,
+    );
+
+    expect(runFullRebuildSpy).toHaveBeenCalledOnce();
+    expect(runFullRebuildSpy.mock.calls[0]?.[0].files).toHaveLength(1);
+    expect(runFullRebuildSpy.mock.calls[0]?.[0].files[0]).toMatchObject({
+      source: { filePath, text: content },
+      fileCompleteness: 'complete',
+      parserId: 'typescript',
+      parserVersion: expect.any(String),
+    });
+    expect(runFullRebuildSpy.mock.calls[0]?.[0].files[0]?.chunks).toHaveLength(1);
+    expect(runFullRebuildSpy.mock.calls[0]?.[0].files[0]?.embeddings).toHaveLength(1);
+    expect(stageFileSpy).not.toHaveBeenCalled();
+    expect(activateFileSpy).not.toHaveBeenCalled();
+  });
+
   it('retires structured state when a file produces no legacy or structured chunks', async () => {
     const { metadataStore, pipeline } = await createStructuredPipeline();
     const filePath = 'src/empty.ts';

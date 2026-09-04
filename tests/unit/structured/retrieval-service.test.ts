@@ -285,9 +285,10 @@ describe('SymbolRetrievalService', () => {
     });
 
     const unsupportedDeclaration: StructuredDeclaration = { ...fixture.declaration, languageId: 'binary' };
+    const unsupportedSource = { ...fixture.source, language: 'binary' };
     await coordinator.runFullRebuild({
       files: [{
-        source: fixture.source,
+        source: unsupportedSource,
         generationId: createGenerationId({ schemaVersion: 1, parserId: 'test', parserVersion: '2', contentHash: fixture.contentHash }),
         contentHash: fixture.contentHash,
         fileCompleteness: 'complete',
@@ -356,7 +357,18 @@ describe('SymbolRetrievalService', () => {
     it('returns unsupported_language for an unsupported outline parser', async () => {
       const text = 'export function a() { return 1; }';
       const stage = createStructuredStage('src/a.ts', text, 'a');
-      await runStructuredFullRebuild(coordinator, stage);
+      await coordinator.runFullRebuild({
+        files: [{
+          source: { ...stage.source, language: 'binary' },
+          generationId: stage.generationId,
+          contentHash: stage.contentHash,
+          fileCompleteness: 'complete',
+          declarations: [stage.symbol],
+          imports: [],
+          parserId: 'binary',
+          parserVersion: '1',
+        }],
+      });
       await writeFile(join(projectRoot, 'src/a.ts'), text);
 
       const restrictedService = new SymbolRetrievalService({
@@ -386,12 +398,72 @@ describe('SymbolRetrievalService', () => {
         reindexRequired: false,
         file: {
           filePath: 'src/a.ts',
-          language: 'full-rebuild',
-          parserId: 'full-rebuild',
+          language: 'typescript',
+          parserId: 'typescript',
           parserVersion: '1',
         },
       });
       expect((result as { symbols: unknown[] }).symbols).toHaveLength(1);
+    });
+
+    it('returns degraded metadata for an active partial generation', async () => {
+      const text = 'export function partial(): number { return 1; }';
+      const stage = createStructuredStage('src/partial.ts', text, 'partial');
+      await coordinator.stageFile({
+        source: stage.source,
+        generationId: stage.generationId,
+        contentHash: stage.contentHash,
+        fileCompleteness: 'partial',
+        declarations: [stage.symbol],
+        imports: [],
+        parserId: 'typescript',
+        parserVersion: '1',
+      });
+      await coordinator.activateFile({ filePath: stage.source.filePath, generationId: stage.generationId });
+      await writeFile(join(projectRoot, stage.source.filePath), text);
+
+      const result = await service.getFileOutline({ filePath: stage.source.filePath });
+      expect(result).toMatchObject({
+        status: 'degraded',
+        freshness: 'fresh',
+        reindexRequired: false,
+        retrievability: 'partial',
+        reasonCode: 'PARSER_COVERAGE_PARTIAL',
+        file: {
+          filePath: stage.source.filePath,
+          language: 'typescript',
+          parserId: 'typescript',
+          parserVersion: '1',
+        },
+      });
+      expect((result as { symbols: unknown[] }).symbols).toHaveLength(1);
+    });
+
+    it('rejects a mixed outline when the active generation changes while declarations are read', async () => {
+      const firstText = 'export function first(): number { return 1; }';
+      const first = createStructuredStage('src/race.ts', firstText, 'first');
+      await runStructuredFullRebuild(coordinator, first);
+      await writeFile(join(projectRoot, first.source.filePath), firstText);
+
+      const second = createStructuredStage('src/race.ts', 'export function second(): number { return 2; }', 'second');
+      await stageStructuredFile(coordinator, second);
+
+      const originalGetFileDeclarations = catalog.getFileDeclarations.bind(catalog);
+      let raced = false;
+      catalog.getFileDeclarations = async (filePath) => {
+        if (!raced) {
+          raced = true;
+          await coordinator.activateFile({ filePath, generationId: second.generationId });
+        }
+        return originalGetFileDeclarations(filePath);
+      };
+
+      const result = await service.getFileOutline({ filePath: first.source.filePath });
+      expect(result).toMatchObject({
+        status: 'stale',
+        reasonCode: 'INDEX_FILE_HASH_MISMATCH',
+      });
+      expect(result).not.toHaveProperty('symbols');
     });
 
     it('returns stale when the active file hash mismatches', async () => {

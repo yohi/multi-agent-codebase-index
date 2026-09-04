@@ -26,7 +26,7 @@ import {
   type ReindexOptions,
 } from '../types/index.js';
 import type { StructuredSource, StructuredDeclaration, StructuredImport } from '../structured/contracts.js';
-import type { StructuredIndexCoordinator } from './structured-index-coordinator.js';
+import type { FullRebuildFile, StructuredIndexCoordinator } from './structured-index-coordinator.js';
 import { decodeUtf8, sha256Hex } from '../structured/hash.js';
 
 type ContentLoader = (filePath: string) => Promise<string>;
@@ -233,9 +233,15 @@ export class IndexPipeline implements IIndexPipeline {
   async processEvents(
     events: IndexEvent[],
     loadContent?: ContentLoader,
-    options: { trackProgress?: boolean } = {},
+    options: { trackProgress?: boolean; fullRebuild?: boolean } = {},
   ): Promise<ProcessEventsResult> {
+    const structuredIndexCoordinator = this.options.structuredIndexCoordinator;
+    const useStructuredFullRebuild = options.fullRebuild === true && structuredIndexCoordinator !== undefined;
+    const structuredRebuildFiles: FullRebuildFile[] = [];
     if (events.length === 0) {
+      if (useStructuredFullRebuild) {
+        await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
+      }
       return { chunksIndexed: 0 };
     }
 
@@ -258,13 +264,15 @@ export class IndexPipeline implements IIndexPipeline {
       const consumedEvents = new Set<IndexEvent>();
       let renamedEventCount = 0;
 
-      for (const candidate of renameCandidates) {
-        const affected = await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
-        if (affected > 0) {
-          await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
-          consumedEvents.add(candidate.oldEvent);
-          consumedEvents.add(candidate.newEvent);
-          renamedEventCount += 2;
+      if (!useStructuredFullRebuild) {
+        for (const candidate of renameCandidates) {
+          const affected = await this.options.vectorStore.renameFilePath(candidate.oldPath, candidate.newPath);
+          if (affected > 0) {
+            await this.merkleTree.move(candidate.oldPath, candidate.newPath, candidate.hash);
+            consumedEvents.add(candidate.oldEvent);
+            consumedEvents.add(candidate.newEvent);
+            renamedEventCount += 2;
+          }
         }
       }
 
@@ -282,7 +290,7 @@ export class IndexPipeline implements IIndexPipeline {
           if (trackProgress) {
             this.progress.currentFile = event.filePath;
           }
-          await this.handleDeleteEvent(event.filePath);
+          await this.handleDeleteEvent(event.filePath, useStructuredFullRebuild);
           if (trackProgress) {
             this.progress.processedFiles++;
             this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
@@ -302,13 +310,22 @@ export class IndexPipeline implements IIndexPipeline {
           break;
         }
         const window = pending.slice(windowStart, windowStart + this.embedBatchWindowSize);
-        chunksIndexed += await this.processEventWindow(window, loadContent as ContentLoader, trackProgress);
+        chunksIndexed += await this.processEventWindow(
+          window,
+          loadContent as ContentLoader,
+          trackProgress,
+          useStructuredFullRebuild ? structuredRebuildFiles : undefined,
+        );
         if (trackProgress) {
           this.safeNotifyMetrics((h) => { h.onIndexingProgress(this.progress.processedFiles, this.progress.totalFiles, true); });
         }
         if (trackProgress && this.progress.totalFiles > 1) {
           this.safeLogProgress(`Progress: ${this.progress.processedFiles} / ${this.progress.totalFiles} files`);
         }
+      }
+
+      if (useStructuredFullRebuild && !this.abortController.signal.aborted) {
+        await structuredIndexCoordinator.runFullRebuild({ files: structuredRebuildFiles });
       }
 
       completedSuccessfully = !this.abortController.signal.aborted;
@@ -459,6 +476,7 @@ export class IndexPipeline implements IIndexPipeline {
     window: IndexEvent[],
     loadContent: ContentLoader,
     trackProgress: boolean,
+    structuredRebuildFiles?: FullRebuildFile[],
   ): Promise<number> {
     // Stage 1: bounded-concurrency read + chunk (no Merkle/vector writes here).
     const limit = pLimit(this.chunkConcurrency);
@@ -614,7 +632,11 @@ export class IndexPipeline implements IIndexPipeline {
         continue;
       }
 
-      if (work.structuredRetirement && this.options.structuredIndexCoordinator !== undefined) {
+      if (
+        work.structuredRetirement &&
+        this.options.structuredIndexCoordinator !== undefined &&
+        structuredRebuildFiles === undefined
+      ) {
         await this.options.structuredIndexCoordinator.deleteFile({ filePath: work.event.filePath });
       }
 
@@ -623,22 +645,37 @@ export class IndexPipeline implements IIndexPipeline {
       }
 
       if (work.structured !== undefined && this.options.structuredIndexCoordinator !== undefined) {
-        await this.options.structuredIndexCoordinator.stageFile({
-          source: work.structured.source,
-          generationId: work.structured.generationId,
-          contentHash: work.structured.contentHash,
-          fileCompleteness: work.structured.fileCompleteness,
-          declarations: work.structured.declarations,
-          imports: work.structured.imports,
-          parserId: work.structured.parserId,
-          parserVersion: work.structured.parserVersion,
-          chunks: work.structured.chunks,
-          embeddings: structuredEmbeddings,
-        });
-        await this.options.structuredIndexCoordinator.activateFile({
-          filePath: work.event.filePath,
-          generationId: work.structured.generationId,
-        });
+        if (structuredRebuildFiles !== undefined) {
+          structuredRebuildFiles.push({
+            source: work.structured.source,
+            generationId: work.structured.generationId,
+            contentHash: work.structured.contentHash,
+            fileCompleteness: work.structured.fileCompleteness,
+            declarations: work.structured.declarations,
+            imports: work.structured.imports,
+            parserId: work.structured.parserId,
+            parserVersion: work.structured.parserVersion,
+            chunks: work.structured.chunks,
+            embeddings: structuredEmbeddings,
+          });
+        } else {
+          await this.options.structuredIndexCoordinator.stageFile({
+            source: work.structured.source,
+            generationId: work.structured.generationId,
+            contentHash: work.structured.contentHash,
+            fileCompleteness: work.structured.fileCompleteness,
+            declarations: work.structured.declarations,
+            imports: work.structured.imports,
+            parserId: work.structured.parserId,
+            parserVersion: work.structured.parserVersion,
+            chunks: work.structured.chunks,
+            embeddings: structuredEmbeddings,
+          });
+          await this.options.structuredIndexCoordinator.activateFile({
+            filePath: work.event.filePath,
+            generationId: work.structured.generationId,
+          });
+        }
       }
 
       if (legacyCount === 0 && structuredCount === 0) {
@@ -665,7 +702,7 @@ export class IndexPipeline implements IIndexPipeline {
     return chunksIndexed;
   }
 
-  private async handleDeleteEvent(filePath: string): Promise<void> {
+  private async handleDeleteEvent(filePath: string, deferStructuredRetirement = false): Promise<void> {
     const existingNode = await this.options.metadataStore.getMerkleNode(filePath);
     if (existingNode?.isDirectory) {
       const prefix = filePath.endsWith('/') ? filePath : filePath + '/';
@@ -684,7 +721,9 @@ export class IndexPipeline implements IIndexPipeline {
       }
     } else {
       await this.options.vectorStore.deleteByFilePath(filePath);
-      await this.options.structuredIndexCoordinator?.deleteFile({ filePath });
+      if (!deferStructuredRetirement) {
+        await this.options.structuredIndexCoordinator?.deleteFile({ filePath });
+      }
       await this.merkleTree.remove(filePath);
       this.skippedFiles.delete(filePath);
       await this.deadLetterQueue.removeByFilePath(filePath);
@@ -717,7 +756,10 @@ export class IndexPipeline implements IIndexPipeline {
             `Starting reindex of ${events.length} files (fullRebuild: ${!!fullRebuild}, reason: ${reason})`,
           );
 
-          const { chunksIndexed } = await this.processEvents(events, loadContent, { trackProgress: true });
+          const { chunksIndexed } = await this.processEvents(events, loadContent, {
+            trackProgress: true,
+            fullRebuild,
+          });
 
           const finishedAt = new Date().toISOString();
           const durationMs = Date.now() - startTime;
