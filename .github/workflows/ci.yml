@@ -27,6 +27,7 @@ jobs:
       run: npm ci
 
     - name: Security Audit (Production only)
+      shell: bash
       run: |
         for attempt in 1 2 3; do
           if output=$(npm audit --omit=dev --audit-level=high --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=1000 --fetch-retry-maxtimeout=30000 --fetch-timeout=120000 2>&1); then
