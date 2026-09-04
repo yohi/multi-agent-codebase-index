@@ -149,9 +149,12 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       ['language_id', "TEXT NOT NULL DEFAULT ''"],
       ['is_exact', 'INTEGER NOT NULL DEFAULT 1'],
     ]);
+    this.addMissingColumns('symbol_generations', [[
+      'file_completeness', "TEXT NOT NULL DEFAULT 'complete' CHECK (file_completeness IN ('complete', 'partial'))",
+    ]]);
     this.addMissingColumns('symbol_tombstones', [['retired_at', 'INTEGER NOT NULL DEFAULT 0']]);
     if (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='structured_generations'").get()) {
-      this.db.exec('INSERT OR IGNORE INTO symbol_generations SELECT file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch FROM structured_generations');
+      this.db.exec('INSERT OR IGNORE INTO symbol_generations (file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch) SELECT file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch FROM structured_generations');
     }
   }
 
@@ -262,6 +265,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
         parser_version TEXT NOT NULL,
         content_hash TEXT NOT NULL,
         rebuild_epoch INTEGER NOT NULL,
+        file_completeness TEXT NOT NULL DEFAULT 'complete' CHECK (file_completeness IN ('complete', 'partial')),
         PRIMARY KEY (file_path, generation)
       );
       CREATE TABLE IF NOT EXISTS symbols (
@@ -311,7 +315,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
   async stageGeneration(input: StructuredGenerationStage): Promise<void> {
     await this.asyncBoundary();
     const transaction = () => {
-      this.db.prepare('INSERT INTO symbol_generations (file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch) VALUES (?,?,?,?,?,?,?) ON CONFLICT(file_path,generation) DO UPDATE SET schema_version=excluded.schema_version, parser_id=excluded.parser_id, parser_version=excluded.parser_version, content_hash=excluded.content_hash, rebuild_epoch=excluded.rebuild_epoch').run(input.filePath, input.generation.generationId, input.generation.schemaVersion, input.generation.parserId, input.generation.parserVersion, input.generation.fileHash, input.rebuildEpoch);
+      this.db.prepare('INSERT INTO symbol_generations (file_path,generation,schema_version,parser_id,parser_version,content_hash,rebuild_epoch,file_completeness) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(file_path,generation) DO UPDATE SET schema_version=excluded.schema_version, parser_id=excluded.parser_id, parser_version=excluded.parser_version, content_hash=excluded.content_hash, rebuild_epoch=excluded.rebuild_epoch, file_completeness=excluded.file_completeness').run(input.filePath, input.generation.generationId, input.generation.schemaVersion, input.generation.parserId, input.generation.parserVersion, input.generation.fileHash, input.rebuildEpoch, input.fileCompleteness);
       this.db.prepare('DELETE FROM symbols WHERE file_path = ? AND generation = ?').run(input.filePath, input.generation.generationId);
       this.db.prepare('DELETE FROM symbol_imports WHERE file_path = ? AND generation = ?').run(input.filePath, input.generation.generationId);
       this.db.prepare('DELETE FROM imports WHERE file_path = ? AND generation = ?').run(input.filePath, input.generation.generationId);
@@ -478,10 +482,10 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
   async getGeneration(filePath: string, generationId: string): Promise<StructuredGeneration | null> {
     await this.asyncBoundary();
     const row = this.db.prepare(`
-      SELECT file_path, generation, schema_version, parser_id, parser_version, content_hash
+      SELECT file_path, generation, schema_version, parser_id, parser_version, content_hash, file_completeness
       FROM symbol_generations
       WHERE file_path = ? AND generation = ?
-    `).get(filePath, generationId) as { file_path: string; generation: string; schema_version: number; parser_id: string; parser_version: string; content_hash: string } | undefined;
+    `).get(filePath, generationId) as { file_path: string; generation: string; schema_version: number; parser_id: string; parser_version: string; content_hash: string; file_completeness: string } | undefined;
     if (row === undefined) return null;
     return {
       generationId: row.generation,
@@ -489,7 +493,7 @@ export class SqliteMetadataStore implements IMetadataStore, IStructuredCatalog {
       parserId: row.parser_id,
       parserVersion: row.parser_version,
       fileHash: row.content_hash,
-      fileCompleteness: 'complete' as const,
+      fileCompleteness: row.file_completeness === 'partial' ? 'partial' : 'complete',
     };
   }
 

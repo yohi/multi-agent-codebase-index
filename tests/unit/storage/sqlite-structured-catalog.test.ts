@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
 import type { StructuredGenerationStage } from '../../../src/storage/interfaces/structured-catalog.js';
 
-const generation = (id: string) => ({ generationId: id, schemaVersion: 1 as const, parserId: 'test', parserVersion: '1', fileHash: `hash-${id}`, fileCompleteness: 'complete' as const });
+const generation = (id: string, fileCompleteness: 'complete' | 'partial' = 'complete') => ({ generationId: id, schemaVersion: 1 as const, parserId: 'test', parserVersion: '1', fileHash: `hash-${id}`, fileCompleteness });
 const stage = (filePath: string, id: string, symbolId: string): StructuredGenerationStage => ({
   filePath, generation: generation(id), rebuildEpoch: 1, bytes: new TextEncoder().encode('not persisted'), fileHash: `hash-${id}`, fileCompleteness: 'complete',
   declarations: [{ name: symbolId, symbolId, qualifiedName: symbolId, kind: 'function', signatureDiscriminator: 'sig', position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 }, startByte: 0, endByte: 3, sourceHash: '', languageId: 'typescript', isExact: true }],
@@ -77,6 +77,19 @@ describe('SQLite structured catalog', () => {
 
     const rows = readRows<{ parser_id: string; parser_version: string; content_hash: string; rebuild_epoch: number }>(path.join(dir, 'metadata.db'), "SELECT parser_id, parser_version, content_hash, rebuild_epoch FROM symbol_generations WHERE file_path='src/a.ts' AND generation='g1'");
     expect(rows).toEqual([{ parser_id: 'parser-b', parser_version: '2', content_hash: 'hash-b', rebuild_epoch: 2 }]);
+  });
+
+  it('round-trips partial file completeness for a generation', async () => {
+    await store.initialize();
+    const input = {
+      ...stage('src/a.ts', 'g1', 'one'),
+      generation: generation('g1', 'partial'),
+      fileCompleteness: 'partial' as const,
+    };
+
+    await store.stageGeneration(input);
+
+    await expect(store.getGeneration('src/a.ts', 'g1')).resolves.toMatchObject({ fileCompleteness: 'partial' });
   });
 
   it('does not retire an active file when the rebuild epoch is stale', async () => {

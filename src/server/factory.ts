@@ -494,6 +494,10 @@ export class NexusServerFactory {
       config: { embedding: { dimensions: config.embedding.dimensions } },
     });
 
+    const loadFileBytes = (filePath: string) =>
+      readFile(resolve(projectRoot, filePath));
+    const loadFileContent = (filePath: string) =>
+      readFile(resolve(projectRoot, filePath), "utf8");
     const pipeline = new IndexPipeline({
       metadataStore,
       vectorStore,
@@ -501,6 +505,7 @@ export class NexusServerFactory {
       embeddingProvider,
       pluginRegistry,
       structuredIndexCoordinator,
+      loadFileBytes,
       maxFileBytes: config.indexing.maxFileBytes,
       chunkConcurrency: config.indexing.chunkConcurrency,
       embedBatchWindowSize: config.indexing.embedBatchWindowSize,
@@ -508,8 +513,6 @@ export class NexusServerFactory {
       metricsHooks: metricsCollector,
     });
 
-    const loadFileContent = (path: string) =>
-      readFile(resolve(projectRoot, path), "utf8");
     const ignorePaths = config.watcher.ignorePaths ?? [];
     const eventManager = new EventProcessingManager(
       config,

@@ -27,7 +27,11 @@ import {
 } from '../types/index.js';
 import type { StructuredSource, StructuredDeclaration, StructuredImport } from '../structured/contracts.js';
 import type { StructuredIndexCoordinator } from './structured-index-coordinator.js';
-import { sha256Hex } from '../structured/hash.js';
+import { decodeUtf8, sha256Hex } from '../structured/hash.js';
+
+type ContentLoader = (filePath: string) => Promise<string>;
+type FileBytesLoader = (filePath: string) => Promise<Uint8Array>;
+
 interface IndexPipelineOptions {
   metadataStore: IMetadataStore;
   vectorStore: IVectorStore;
@@ -35,6 +39,7 @@ interface IndexPipelineOptions {
   embeddingProvider: EmbeddingProvider;
   pluginRegistry: PluginRegistry;
   structuredIndexCoordinator?: StructuredIndexCoordinator;
+  loadFileBytes?: FileBytesLoader;
   eventQueue?: EventQueue;
   maxFileBytes?: number;
   chunkConcurrency?: number;
@@ -69,15 +74,19 @@ interface StructuredFileWork {
   chunks: CodeChunk[];
 }
 
+type StructuredReadResult =
+  | { kind: 'work'; work: StructuredFileWork }
+  | { kind: 'retire' }
+  | { kind: 'parse-failed' };
+
 interface FileWork {
   event: IndexEvent;
   chunks: CodeChunk[];
   structured?: StructuredFileWork;
+  structuredRetirement: boolean;
   skipped: boolean;
   skipReason?: string;
 }
-
-type ContentLoader = (filePath: string) => Promise<string>;
 
 export class IndexPipeline implements IIndexPipeline {
   private readonly merkleTree: MerkleTree;
@@ -338,13 +347,18 @@ export class IndexPipeline implements IIndexPipeline {
     }
 
     if (fileSize !== undefined && this.options.maxFileBytes !== undefined && fileSize > this.options.maxFileBytes) {
-      return { event, chunks: [], skipped: true, skipReason: `file too large: ${fileSize} bytes` };
+      return { event, chunks: [], structuredRetirement: false, skipped: true, skipReason: `file too large: ${fileSize} bytes` };
     }
 
-    const content = await loadContent(event.filePath);
-    const byteLength = fileSize ?? Buffer.byteLength(content, 'utf8');
+    const sourceBytes = this.options.loadFileBytes === undefined
+      ? undefined
+      : await this.options.loadFileBytes(event.filePath);
+    const content = sourceBytes === undefined
+      ? await loadContent(event.filePath)
+      : decodeUtf8(sourceBytes);
+    const byteLength = sourceBytes?.byteLength ?? Buffer.byteLength(content, 'utf8');
     if (this.options.maxFileBytes !== undefined && byteLength > this.options.maxFileBytes) {
-      return { event, chunks: [], skipped: true, skipReason: `file too large: ${byteLength} bytes` };
+      return { event, chunks: [], structuredRetirement: false, skipped: true, skipReason: `file too large: ${byteLength} bytes` };
     }
 
     const language = this.detectLanguage(event.filePath);
@@ -357,36 +371,44 @@ export class IndexPipeline implements IIndexPipeline {
     ]);
 
     let structured: StructuredFileWork | undefined;
+    let structuredRetirement = false;
     if (this.options.structuredIndexCoordinator !== undefined) {
-      structured = await this.readStructuredFile(event.filePath, language, content);
+      const structuredResult = await this.readStructuredFile(
+        event.filePath,
+        language,
+        content,
+        sourceBytes ?? new Uint8Array(Buffer.from(content, 'utf8')),
+      );
+      structured = structuredResult?.kind === 'work' ? structuredResult.work : undefined;
+      structuredRetirement = structuredResult?.kind === 'retire';
     }
 
-    return { event, chunks, structured, skipped: false };
+    return { event, chunks, structured, structuredRetirement, skipped: false };
   }
 
   private async readStructuredFile(
     filePath: string,
     language: string,
     content: string,
-  ): Promise<StructuredFileWork | undefined> {
+    bytes: Uint8Array,
+  ): Promise<StructuredReadResult | undefined> {
     const plugin = this.options.pluginRegistry.getLanguagePlugin(filePath);
     if (plugin === undefined || plugin.createStructuredParser === undefined) {
       return undefined;
-    }
-
-    let bytes: Uint8Array;
-    try {
-      bytes = new Uint8Array(await readFile(filePath));
-    } catch {
-      bytes = new Uint8Array(Buffer.from(content, 'utf8'));
     }
 
     try {
       const parser = await plugin.createStructuredParser();
       const source: StructuredSource = { filePath, language, bytes, text: content };
       const result = await parser.parseStructured(source);
-      if (result.declarations.length === 0) {
-        return undefined;
+      if (result.status !== 'ok' && result.status !== 'degraded') {
+        return { kind: 'parse-failed' };
+      }
+      if (result.status === 'degraded' && result.declarations.length === 0) {
+        return { kind: 'parse-failed' };
+      }
+      if (result.status === 'ok' && result.declarations.length === 0) {
+        return { kind: 'retire' };
       }
 
       const fileCompleteness = result.retrievability === 'exact' ? 'complete' : 'partial';
@@ -405,22 +427,25 @@ export class IndexPipeline implements IIndexPipeline {
       );
 
       return {
-        source,
-        generationId: generation.generationId,
-        contentHash: generation.fileHash,
-        fileCompleteness: generation.fileCompleteness,
-        declarations: [...result.declarations],
-        imports: [...result.imports],
-        parserId: generation.parserId,
-        parserVersion: generation.parserVersion,
-        chunks: structuredChunks,
+        kind: 'work',
+        work: {
+          source,
+          generationId: generation.generationId,
+          contentHash: generation.fileHash,
+          fileCompleteness: generation.fileCompleteness,
+          declarations: [...result.declarations],
+          imports: [...result.imports],
+          parserId: generation.parserId,
+          parserVersion: generation.parserVersion,
+          chunks: structuredChunks,
+        },
       };
     } catch (error) {
       this.safeLogProgress(
         `Structured parsing failed for ${filePath}: ${error instanceof Error ? error.message : 'unknown'}`,
         filePath,
       );
-      return undefined;
+      return { kind: 'parse-failed' };
     }
   }
 
@@ -574,17 +599,6 @@ export class IndexPipeline implements IIndexPipeline {
         continue;
       }
 
-      if (legacyCount === 0 && structuredCount === 0) {
-        // Valid file that produced no chunks (e.g. empty file): drop stale vectors, keep Merkle current.
-        await this.options.vectorStore.deleteByFilePath(work.event.filePath);
-        await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
-        this.skippedFiles.delete(work.event.filePath);
-        if (trackProgress) {
-          this.progress.processedFiles++;
-        }
-        continue;
-      }
-
       if (failedFilePaths.has(work.event.filePath)) {
         // The window's shared embed batch failed for this file; route to the DLQ.
         this.skippedFiles.set(work.event.filePath, embedError!.message);
@@ -598,6 +612,10 @@ export class IndexPipeline implements IIndexPipeline {
           this.progress.processedFiles++;
         }
         continue;
+      }
+
+      if (work.structuredRetirement && this.options.structuredIndexCoordinator !== undefined) {
+        await this.options.structuredIndexCoordinator.deleteFile({ filePath: work.event.filePath });
       }
 
       if (legacyCount > 0) {
@@ -621,6 +639,19 @@ export class IndexPipeline implements IIndexPipeline {
           filePath: work.event.filePath,
           generationId: work.structured.generationId,
         });
+      }
+
+      if (legacyCount === 0 && structuredCount === 0) {
+        // Valid file that produced no chunks (e.g. empty file): drop stale vectors, keep Merkle current.
+        if (!work.structuredRetirement) {
+          await this.options.vectorStore.deleteByFilePath(work.event.filePath);
+        }
+        await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
+        this.skippedFiles.delete(work.event.filePath);
+        if (trackProgress) {
+          this.progress.processedFiles++;
+        }
+        continue;
       }
 
       await this.merkleTree.update(work.event.filePath, work.event.contentHash ?? '');
