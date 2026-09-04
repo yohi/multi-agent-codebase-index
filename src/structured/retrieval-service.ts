@@ -14,13 +14,14 @@ import { packRelatedImports, tokenCounter } from './tokenizer.js';
 
 type SourceStatus =
   | { status: 'ok'; freshness: 'fresh'; source: string }
-  | { status: 'index_incomplete'; reasonCode: StructuredRetrievalReasonCode | 'INDEX_PENDING_GENERATION' | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_SYMBOL_HASH_MISMATCH' | 'INDEX_GENERATION_MISSING' | 'SYMBOL_RETIRED' | 'STRUCTURED_INDEX_MISSING' | 'FILE_NOT_FOUND' | 'INDEX_FILE_MISSING' }
-  | { status: 'stale'; reasonCode: StructuredRetrievalReasonCode | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_FILE_MISSING' | 'PATH_EXCLUDED' }
-  | { status: 'not_found'; reasonCode: 'FILE_NOT_FOUND' | 'SYMBOL_RETIRED' | 'STRUCTURED_INDEX_MISSING' }
-  | { status: 'excluded'; reasonCode: 'PATH_EXCLUDED' }
-  | { status: 'unsupported'; reasonCode: 'unsupported_language' | 'STRUCTURED_SCHEMA_UNSUPPORTED' }
+  | { status: 'stale_identity'; freshness: 'unknown'; reindexRequired: false; reasonCode: 'SYMBOL_RETIRED' }
+  | { status: 'index_incomplete'; freshness?: string; reindexRequired?: boolean; reasonCode: StructuredRetrievalReasonCode | 'INDEX_PENDING_GENERATION' | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_SYMBOL_HASH_MISMATCH' | 'INDEX_GENERATION_MISSING' | 'SYMBOL_RETIRED' | 'STRUCTURED_INDEX_MISSING' | 'FILE_NOT_FOUND' | 'INDEX_FILE_MISSING' }
+  | { status: 'stale'; freshness?: string; reindexRequired?: boolean; reasonCode: StructuredRetrievalReasonCode | 'INDEX_FILE_HASH_MISMATCH' | 'INDEX_IMPORT_HASH_MISMATCH' | 'INDEX_FILE_MISSING' | 'PATH_EXCLUDED' }
+  | { status: 'not_found'; freshness?: string; reindexRequired?: boolean; reasonCode: 'FILE_NOT_FOUND' | 'SYMBOL_NOT_FOUND' | 'SYMBOL_RETIRED' | 'STRUCTURED_INDEX_MISSING' }
+  | { status: 'excluded'; freshness?: string; reindexRequired?: boolean; reasonCode: 'PATH_EXCLUDED' }
+  | { status: 'unsupported'; freshness?: string; reindexRequired?: boolean; reasonCode: 'unsupported_language' | 'STRUCTURED_SCHEMA_UNSUPPORTED' }
   | { status: 'failed'; reasonCode: 'parse_error' | 'invariant_violation' }
-  | { status: 'not_indexed'; reasonCode: 'STRUCTURED_INDEX_MISSING' | 'STRUCTURED_SCHEMA_UNSUPPORTED' };
+  | { status: 'not_indexed'; freshness?: string; reindexRequired?: boolean; reasonCode: 'STRUCTURED_INDEX_MISSING' | 'STRUCTURED_SCHEMA_UNSUPPORTED' };
 
 type GlobalStateStatus =
   | {
@@ -34,6 +35,12 @@ type GlobalStateStatus =
       readonly freshness: 'unknown';
       readonly reindexRequired: false;
       readonly reasonCode: 'STRUCTURED_SCHEMA_UNSUPPORTED';
+    }
+  | {
+      readonly status: 'index_incomplete';
+      readonly freshness: 'unknown';
+      readonly reindexRequired: true;
+      readonly reasonCode: 'INDEX_PENDING_GENERATION';
     };
 
 type VerifiedSymbol =
@@ -182,6 +189,7 @@ export class SymbolRetrievalService {
         position: declaration.position,
         isExact: declaration.isExact,
         languageId: declaration.languageId,
+        parentSymbolId: declaration.parentSymbolId ?? null,
       }));
 
       return {
@@ -293,10 +301,28 @@ export class SymbolRetrievalService {
 
     const resolution = await this.resolveSymbol(input.symbolId);
     if (resolution.kind === 'tombstone') {
-      return { ok: false, status: { status: 'not_found', reasonCode: 'SYMBOL_RETIRED', request: { symbolId: input.symbolId } } };
+      return {
+        ok: false,
+        status: {
+          status: 'stale_identity',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'SYMBOL_RETIRED',
+          request: { symbolId: input.symbolId },
+        },
+      };
     }
     if (resolution.kind === 'missing') {
-      return { ok: false, status: { status: 'not_found', reasonCode: 'FILE_NOT_FOUND', request: { symbolId: input.symbolId } } };
+      return {
+        ok: false,
+        status: {
+          status: 'not_found',
+          freshness: 'unknown',
+          reindexRequired: false,
+          reasonCode: 'SYMBOL_NOT_FOUND',
+          request: { symbolId: input.symbolId },
+        },
+      };
     }
     if (resolution.kind === 'pending') {
       return { ok: false, status: { status: 'index_incomplete', reasonCode: 'INDEX_PENDING_GENERATION', request: { symbolId: input.symbolId } } };
@@ -387,20 +413,28 @@ export class SymbolRetrievalService {
   }
 
   private checkGlobalState(state: StructuredIndexState): GlobalStateStatus | undefined {
-    if (state.schemaVersion === null) {
-      return {
-        status: 'not_indexed',
-        freshness: 'unknown',
-        reindexRequired: true,
-        reasonCode: 'STRUCTURED_INDEX_MISSING',
-      };
-    }
-    if (state.schemaVersion !== 1) {
+    if (state.schemaVersion !== null && state.schemaVersion !== 1) {
       return {
         status: 'unsupported',
         freshness: 'unknown',
         reindexRequired: false,
         reasonCode: 'STRUCTURED_SCHEMA_UNSUPPORTED',
+      };
+    }
+    if (state.rebuildState === 'building') {
+      return {
+        status: 'index_incomplete',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'INDEX_PENDING_GENERATION',
+      };
+    }
+    if (state.schemaVersion === null || state.rebuildState === 'failed') {
+      return {
+        status: 'not_indexed',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'STRUCTURED_INDEX_MISSING',
       };
     }
     return undefined;

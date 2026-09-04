@@ -669,6 +669,25 @@ export class IndexPipeline implements IIndexPipeline {
       }
 
       if (
+        work.structuredParseFailed &&
+        this.options.structuredIndexCoordinator !== undefined &&
+        structuredRebuildFiles === undefined
+      ) {
+        const errorMsg = 'Structured parsing failed';
+        this.skippedFiles.set(work.event.filePath, errorMsg);
+        await this.deadLetterQueue.enqueue({
+          filePath: work.event.filePath,
+          contentHash: work.event.contentHash ?? '',
+          errorMessage: errorMsg,
+          attempts: 1,
+        });
+        if (trackProgress) {
+          this.progress.processedFiles++;
+        }
+        continue;
+      }
+
+      if (
         work.structuredRetirement &&
         this.options.structuredIndexCoordinator !== undefined &&
         structuredRebuildFiles === undefined

@@ -187,6 +187,46 @@ describe('IndexPipeline – windowed batching', () => {
     }
   });
 
+  it('routes to DLQ and preserves Merkle tree when structured parsing fails during incremental indexing', async () => {
+    const {
+      metadataStore,
+      vectorStore,
+      pluginRegistry,
+      coordinator,
+    } = await createStructuredCoordinatorFixture({ bootstrapStructuredSchema: true });
+    const embeddingProvider = new TestEmbeddingProvider();
+
+    const plugin = pluginRegistry.getLanguagePlugin('src/broken.ts');
+    expect(plugin).toBeDefined();
+    plugin!.createStructuredParser = vi.fn().mockResolvedValue({
+      parseStructured: async () => ({
+        status: 'failed',
+        retrievability: 'none',
+        failure: { reasonCode: 'parse_error', message: 'syntax error' },
+        declarations: [],
+        imports: [],
+      }),
+    });
+
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker: new Chunker(pluginRegistry),
+      embeddingProvider,
+      pluginRegistry,
+      structuredIndexCoordinator: coordinator,
+    });
+
+    await pipeline.processEvents(
+      [addEvent('src/broken.ts', 'hash-broken')],
+      async () => 'invalid syntax {{{',
+    );
+
+    const dlq = await metadataStore.getDeadLetterEntries();
+    expect(dlq.map((e) => e.filePath)).toContain('src/broken.ts');
+    await expect(metadataStore.getMerkleNode('src/broken.ts')).resolves.toBeNull();
+  });
+
   it('routes ALL files in a failed embed window to the DLQ (cross-file attribution)', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     const pipeline = new IndexPipeline({

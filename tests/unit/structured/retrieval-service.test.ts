@@ -532,5 +532,124 @@ describe('SymbolRetrievalService', () => {
         reasonCode: 'PATH_EXCLUDED',
       });
     });
+
+    it('returns index_incomplete when a full rebuild is actively building', async () => {
+      await catalog.setStructuredRebuildState({ rebuildState: 'building' });
+
+      await expect(service.getFileOutline({ filePath: 'src/a.ts' })).resolves.toEqual({
+        status: 'index_incomplete',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'INDEX_PENDING_GENERATION',
+        request: { filePath: 'src/a.ts' },
+      });
+    });
+
+    it('returns not_indexed when a full rebuild has failed', async () => {
+      await catalog.setStructuredRebuildState({ rebuildState: 'failed' });
+
+      await expect(service.getFileOutline({ filePath: 'src/a.ts' })).resolves.toEqual({
+        status: 'not_indexed',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'STRUCTURED_INDEX_MISSING',
+        request: { filePath: 'src/a.ts' },
+      });
+    });
+
+    it('includes parentSymbolId in file outline symbol metadata', async () => {
+      const text = 'export class Parent { child() { return 1; } }';
+      const stage = createStructuredStage('src/parent.ts', text, 'Parent');
+      const childDeclaration: StructuredDeclaration = {
+        name: 'child',
+        symbolId: 'symbol_v1_child_00000000000000000000000000000000000',
+        qualifiedName: 'Parent.child',
+        kind: 'method',
+        signatureDiscriminator: 'method',
+        position: { startLine: 1, startColumn: 22, endLine: 1, endColumn: 44 },
+        startByte: 22,
+        endByte: 44,
+        sourceHash: sha256Hex(Buffer.from('child() { return 1; }', 'utf8')),
+        languageId: 'typescript',
+        isExact: true,
+        parentSymbolId: stage.symbol.symbolId,
+      };
+      await coordinator.runFullRebuild({
+        files: [{
+          source: stage.source,
+          generationId: stage.generationId,
+          contentHash: stage.contentHash,
+          fileCompleteness: 'complete',
+          declarations: [stage.symbol, childDeclaration],
+          imports: [],
+          parserId: 'typescript',
+          parserVersion: '1',
+        }],
+      });
+      await writeFile(join(projectRoot, 'src/parent.ts'), text);
+
+      const result = await service.getFileOutline({ filePath: 'src/parent.ts' });
+      expect(result).toMatchObject({ status: 'ok' });
+      const symbols = (result as { symbols: Array<{ symbolId: string; parentSymbolId?: string | null }> }).symbols;
+      expect(symbols).toHaveLength(2);
+      expect(symbols[0]?.parentSymbolId).toBeNull();
+      expect(symbols[1]?.parentSymbolId).toBe(stage.symbol.symbolId);
+    });
+  });
+
+  describe('symbol resolution states', () => {
+    it('returns not_found with SYMBOL_NOT_FOUND when symbol is missing', async () => {
+      const result = await service.getSymbolSource({ symbolId: 'symbol_v1_missing_0000000000000000000000000000000000' });
+      expect(result).toEqual({
+        status: 'not_found',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'SYMBOL_NOT_FOUND',
+        request: { symbolId: 'symbol_v1_missing_0000000000000000000000000000000000' },
+      });
+    });
+
+    it('returns stale_identity with SYMBOL_RETIRED for a tombstoned symbol', async () => {
+      const text1 = 'export function oldFn() { return 1; }';
+      const stage1 = createStructuredStage('src/a.ts', text1, 'oldFn');
+      await coordinator.runFullRebuild({
+        files: [{
+          source: stage1.source,
+          generationId: stage1.generationId,
+          contentHash: stage1.contentHash,
+          fileCompleteness: 'complete',
+          declarations: [stage1.symbol],
+          imports: [],
+        }],
+      });
+
+      // Now stage and activate a new generation without oldFn to create a tombstone
+      const text2 = 'export function newFn() { return 2; }';
+      const stage2 = createStructuredStage('src/a.ts', text2, 'newFn');
+      await stageStructuredFile(coordinator, stage2);
+      await coordinator.activateFile({ filePath: 'src/a.ts', generationId: stage2.generationId });
+
+      const result = await service.getSymbolSource({ symbolId: stage1.symbol.symbolId });
+      expect(result).toEqual({
+        status: 'stale_identity',
+        freshness: 'unknown',
+        reindexRequired: false,
+        reasonCode: 'SYMBOL_RETIRED',
+        request: { symbolId: stage1.symbol.symbolId },
+      });
+    });
+
+    it('returns index_incomplete when building during symbol source request', async () => {
+      await catalog.setStructuredRebuildState({ rebuildState: 'building' });
+
+      const result = await service.getSymbolSource({ symbolId: 'symbol_v1_any_000000000000000000000000000000000000' });
+      expect(result).toEqual({
+        status: 'index_incomplete',
+        freshness: 'unknown',
+        reindexRequired: true,
+        reasonCode: 'INDEX_PENDING_GENERATION',
+        request: { symbolId: 'symbol_v1_any_000000000000000000000000000000000000' },
+      });
+    });
   });
 });
