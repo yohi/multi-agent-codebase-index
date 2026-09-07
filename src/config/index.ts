@@ -15,6 +15,7 @@ export interface LoadConfigOptions {
 
 export const DEFAULT_OLLAMA_NUM_THREAD = 2;
 export const MAX_OLLAMA_NUM_THREAD = 16;
+export const DEFAULT_OLLAMA_LOCK_TIMEOUT_MS = 300_000;
 
 const DEFAULT_EMBEDDING: EmbeddingConfig = {
   provider: 'ollama',
@@ -27,6 +28,7 @@ const DEFAULT_EMBEDDING: EmbeddingConfig = {
   retryBaseDelayMs: 250,
   timeoutMs: 120_000,
   ollamaNumThread: DEFAULT_OLLAMA_NUM_THREAD,
+  ollamaLockTimeoutMs: DEFAULT_OLLAMA_LOCK_TIMEOUT_MS,
 };
 
 const DEFAULT_INDEXING: IndexingConfig = {
@@ -147,6 +149,10 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
         asPositiveInt(env.NEXUS_EMBEDDING_TIMEOUT_MS) ??
         validatePositiveInt(fileConfig.embedding?.timeoutMs) ??
         defaults.embedding.timeoutMs,
+      ollamaLockTimeoutMs:
+        asPositiveInt(env.NEXUS_OLLAMA_LOCK_TIMEOUT_MS) ??
+        validatePositiveInt(fileConfig.embedding?.ollamaLockTimeoutMs) ??
+        defaults.embedding.ollamaLockTimeoutMs,
       ollamaNumThread:
         asBoundedPositiveInt(env.NEXUS_OLLAMA_NUM_THREAD, MAX_OLLAMA_NUM_THREAD) ??
         validateBoundedPositiveInt(fileConfig.embedding?.ollamaNumThread, MAX_OLLAMA_NUM_THREAD) ??

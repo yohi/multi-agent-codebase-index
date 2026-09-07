@@ -1,6 +1,6 @@
 import pLimit from 'p-limit';
 
-import { resolveLoopbackHost } from '../../config/index.js';
+import { DEFAULT_OLLAMA_LOCK_TIMEOUT_MS, resolveLoopbackHost } from '../../config/index.js';
 import type { OllamaEmbeddingConfig } from '../../types/index.js';
 import { RetryExhaustedError, DimensionMismatchError, NonRetryableEmbeddingError } from '../../types/index.js';
 import { BaseEmbeddingProvider } from './base.js';
@@ -44,7 +44,7 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
   constructor(
     private readonly config: Pick<
       OllamaEmbeddingConfig,
-      'baseUrl' | 'model' | 'dimensions' | 'maxConcurrency' | 'batchSize' | 'retryCount' | 'retryBaseDelayMs' | 'timeoutMs' | 'ollamaNumThread'
+      'baseUrl' | 'model' | 'dimensions' | 'maxConcurrency' | 'batchSize' | 'retryCount' | 'retryBaseDelayMs' | 'timeoutMs' | 'ollamaNumThread' | 'ollamaLockTimeoutMs'
     >,
     private readonly dependencies: OllamaDependencies = defaultDependencies,
   ) {
@@ -58,6 +58,7 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
     const lock = await acquireGlobalLock('ollama', {
       retryMode: 'unlimited',
       maxTimeoutMs: 5_000,
+      timeoutMs: this.config.ollamaLockTimeoutMs ?? DEFAULT_OLLAMA_LOCK_TIMEOUT_MS,
       signal,
       onRetry: (retryCount, timeoutMs) => {
         if (retryCount === 1 || retryCount % 6 === 0) {

@@ -340,6 +340,7 @@ DLQ 自動リカバリの成功だけでは完了日時は更新されないた�
 | `NEXUS_EMBEDDING_PROVIDER` / `embedding.provider` | `ollama` | 使用する Embedding プロバイダー (`ollama`, `openai-compat`, `bedrock`)。`bedrock` は AWS Bedrock を直接呼び出します |
 | `NEXUS_EMBEDDING_MODEL` / `embedding.model` | `nomic-embed-text` | Embedding モデル名 |
 | `NEXUS_EMBEDDING_BASE_URL` / `embedding.baseUrl` | `http://127.0.0.1:11434` | HTTP ベース provider の URL。`openai-compat` では `https://api.openai.com/v1/embeddings` や `https://gateway.truefoundry.ai/embeddings` のように完全なエンドポイント URL パスを指定します |
+| `NEXUS_OLLAMA_LOCK_TIMEOUT_MS` / `embedding.ollamaLockTimeoutMs` | `300000` | Ollama の共有ロックを待機する最大時間（ミリ秒）。超過時はインデックスを失敗として記録します。 |
 | `NEXUS_OLLAMA_NUM_THREAD` / `embedding.ollamaNumThread` | `2` | Ollama 埋め込みリクエストのスレッド数 (`1`〜`16`)。無効な値は `2` にフォールバック。 |
 | `NEXUS_PACKAGE_MODE` / `packageMode` | `false` | `true` の場合、`embedding.provider` を `bedrock` にハードロック（fail-fast）。詳細は [docs/configuration.md](docs/configuration.md#package-mode) と [SPEC.md](SPEC.md) を参照 |
 

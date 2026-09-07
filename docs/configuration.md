@@ -91,6 +91,7 @@ Dashboard CLI では `--aggregator-port` が `aggregatorPort` と `NEXUS_AGGREGA
 | `embedding.retryCount`       | non-negative integer                         | `3`                                 | `NEXUS_EMBEDDING_RETRY_COUNT`         | 一時的失敗に対する retry 回数                                                                                       |
 | `embedding.retryBaseDelayMs` | positive integer                             | `250`                               | `NEXUS_EMBEDDING_RETRY_BASE_DELAY_MS` | retry backoff の基準待機時間（ミリ秒）                                                                              |
 | `embedding.timeoutMs`        | positive integer                             | `120000`                            | `NEXUS_EMBEDDING_TIMEOUT_MS`          | embedding HTTP リクエスト 1 回あたりのタイムアウト（ミリ秒）                                                        |
+| `embedding.ollamaLockTimeoutMs` | positive integer                          | `300000`                            | `NEXUS_OLLAMA_LOCK_TIMEOUT_MS`        | Ollama の共有グローバルロックを待機する最大時間（ミリ秒）。超過時は Full Index を失敗として記録します。                 |
 | `embedding.ollamaNumThread`  | integer `1`〜`16`                            | `2`                                 | `NEXUS_OLLAMA_NUM_THREAD`             | Ollama `/api/embed` リクエストに渡す `options.num_thread`。無効な値は `2` にフォールバックします。                  |
 
 ## OpenAI 互換プロバイダー (`openai-compat`) の設定
@@ -129,6 +130,7 @@ Dashboard CLI では `--aggregator-port` が `aggregatorPort` と `NEXUS_AGGREGA
 - 空文字列は無視されます。
 - 数値の環境変数は 10 進整数である必要があります。
 - `retryCount` は `0` を許容しますが、その他の数値項目は `0` より大きい必要があります。
+- `embedding.ollamaLockTimeoutMs` は、他の Nexus プロセスが Ollama を使用中の場合の待機上限です。既定値は `300000`（5 分）です。
 - `embedding.ollamaNumThread` は `1` から `16` までの整数のみを受け付け、`0`、負数、小数、文字列、`16` を超える値はデフォルト `2` にフォールバックします。
 - 未対応の `embedding.provider` は無視され、設定ファイルまたはデフォルト値へフォールバックします。
 - `NEXUS_PACKAGE_MODE` は `1`/`true`/`0`/`false`（大文字小文字を区別しない）のみを受け付け、その他の値は無視されて `.nexus.json` の設定またはデフォルト `false` にフォールバックします。

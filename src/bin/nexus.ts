@@ -19,6 +19,7 @@ import { createRestApiHandler } from "../server/rest-api.js";
 import { acquireProcessLock, releaseProcessLock, LOCK_FILENAME } from "../server/process-lock.js";
 import type { ManagedHttpServer } from "../server/managed-http-server.js";
 import type { Config } from "../types/index.js";
+import { readIndexProgress } from "./index-progress.js";
 
 interface CliCommand {
   readonly name: string;
@@ -136,10 +137,16 @@ async function main(args: string[]): Promise<void> {
   const lockResult = await acquireProcessLock(config.storage.rootDir);
   if (!lockResult.acquired) {
     const pidStr = lockResult.existingPid ?? "unknown";
+    const progress = await readIndexProgress(config.storage.rootDir);
+    const progressStatus = progress?.active ? "running" : "idle";
+    const progressLine = progress === undefined
+      ? ""
+      : `\n   Progress: ${progress.processedFiles} / ${progress.totalFiles} files (${progressStatus})`;
     console.error(
       `\u26a0\ufe0f  Another Nexus process (PID ${pidStr}) is already running for this project.\n` +
         `   Storage: ${config.storage.rootDir}\n` +
-        `   To force start, remove: ${path.join(config.storage.rootDir, LOCK_FILENAME)}`,
+        `   To force start, remove: ${path.join(config.storage.rootDir, LOCK_FILENAME)}` +
+        progressLine,
     );
     process.exit(1);
   }

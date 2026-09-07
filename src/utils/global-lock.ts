@@ -31,6 +31,17 @@ export class GlobalLockHeldError extends Error {
   }
 }
 
+export class GlobalLockTimeoutError extends Error {
+  override readonly name = 'GlobalLockTimeoutError';
+
+  constructor(
+    public readonly lockName: string,
+    public readonly timeoutMs: number,
+  ) {
+    super(`Timed out waiting for Nexus global resource "${lockName}" after ${timeoutMs}ms.`);
+  }
+}
+
 export interface GlobalLockHandle {
   release: () => Promise<void>;
 }
@@ -42,6 +53,7 @@ export interface AcquireGlobalLockOptions {
   retryMode?: 'finite' | 'unlimited';
   signal?: AbortSignal;
   onRetry?: (retryCount: number, timeoutMs: number) => void;
+  timeoutMs?: number;
 }
 
 const abortError = (signal: AbortSignal): Error => {
@@ -85,6 +97,9 @@ export const acquireGlobalLock = async (
   if (!Number.isSafeInteger(retries) || retries < 0) {
     throw new RangeError('Global lock retries must be a finite, non-negative integer');
   }
+  if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0)) {
+    throw new RangeError('Global lock timeout must be a positive, safe integer');
+  }
 
   const lockfilePath = join(tmpdir(), `nexus-global-${name}.lock`);
   // proper-lockfile requires the target file to exist
@@ -93,8 +108,12 @@ export const acquireGlobalLock = async (
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
   });
   let retryCount = 0;
+  const startedAt = Date.now();
 
   while (true) {
+    if (options.timeoutMs !== undefined && Date.now() - startedAt >= options.timeoutMs) {
+      throw new GlobalLockTimeoutError(name, options.timeoutMs);
+    }
     if (options.signal?.aborted) {
       throw abortError(options.signal);
     }
@@ -118,8 +137,16 @@ export const acquireGlobalLock = async (
       }
       retryCount += 1;
       const timeout = Math.min(maxTimeout, Math.max(minTimeout, minTimeout * 2 ** Math.min(retryCount - 1, 10)));
-      options.onRetry?.(retryCount, timeout);
-      await waitForRetry(timeout, options.signal);
+      let retryTimeout = timeout;
+      if (options.timeoutMs !== undefined) {
+        const remainingMs = options.timeoutMs - (Date.now() - startedAt);
+        if (remainingMs <= 0) {
+          throw new GlobalLockTimeoutError(name, options.timeoutMs);
+        }
+        retryTimeout = Math.min(timeout, remainingMs);
+      }
+      options.onRetry?.(retryCount, retryTimeout);
+      await waitForRetry(retryTimeout, options.signal);
     }
   }
 };
