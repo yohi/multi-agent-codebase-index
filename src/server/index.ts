@@ -274,6 +274,12 @@ export const buildNexusRuntime = (
       shutdownErrors.push(error);
     }
 
+    try {
+      await options.pipeline.stop();
+    } catch (error) {
+      shutdownErrors.push(error);
+    }
+
     if (autoReindexPromise) {
       try {
         await autoReindexPromise;
@@ -288,12 +294,6 @@ export const buildNexusRuntime = (
       } catch (error) {
         shutdownErrors.push(error);
       }
-    }
-
-    try {
-      await options.pipeline.stop();
-    } catch (error) {
-      shutdownErrors.push(error);
     }
 
 

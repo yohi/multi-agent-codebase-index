@@ -215,7 +215,7 @@ describe('NexusRuntime automatic initial full index', () => {
     await runtime.close();
   });
 
-  it('waits for the background reindex before stopping the pipeline', async () => {
+  it('stops the pipeline before waiting for the background reindex', async () => {
     let releaseReindex: (() => void) | undefined;
     const reindexDone = new Promise<void>((resolve) => {
       releaseReindex = resolve;
@@ -234,7 +234,7 @@ describe('NexusRuntime automatic initial full index', () => {
     });
     await tick();
     expect(closed).toBe(false);
-    expect(options.pipeline.stop).not.toHaveBeenCalled();
+    expect(options.pipeline.stop).toHaveBeenCalledOnce();
 
     releaseReindex?.();
     await closePromise;
