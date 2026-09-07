@@ -220,24 +220,32 @@ describe('NexusRuntime automatic initial full index', () => {
     const reindexDone = new Promise<void>((resolve) => {
       releaseReindex = resolve;
     });
+    const shutdownOrder: string[] = [];
     const options = makeOptions();
     const reindex = vi.fn(async () => {
+      shutdownOrder.push('reindex-started');
       await reindexDone;
+      shutdownOrder.push('reindex-finished');
       return reindexResult;
     });
     options.pipeline.reindex = reindex;
+    options.pipeline.stop = vi.fn(async () => {
+      shutdownOrder.push('pipeline-stopped');
+    });
     const runtime = await initializeNexusRuntime(options);
 
-    let closed = false;
-    const closePromise = runtime.close().then(() => {
-      closed = true;
-    });
+    const closePromise = runtime.close();
     await tick();
-    expect(closed).toBe(false);
+    expect(shutdownOrder).toEqual(['reindex-started']);
     expect(options.pipeline.stop).not.toHaveBeenCalled();
 
     releaseReindex?.();
     await closePromise;
+    expect(shutdownOrder).toEqual([
+      'reindex-started',
+      'reindex-finished',
+      'pipeline-stopped',
+    ]);
     expect(options.pipeline.stop).toHaveBeenCalledOnce();
   });
 

@@ -282,18 +282,18 @@ export const buildNexusRuntime = (
       }
     }
 
+    try {
+      await options.pipeline.stop();
+    } catch (error) {
+      shutdownErrors.push(error);
+    }
+
     if (options.onClose) {
       try {
         await options.onClose();
       } catch (error) {
         shutdownErrors.push(error);
       }
-    }
-
-    try {
-      await options.pipeline.stop();
-    } catch (error) {
-      shutdownErrors.push(error);
     }
 
 
