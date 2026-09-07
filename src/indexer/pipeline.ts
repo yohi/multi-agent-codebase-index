@@ -224,6 +224,7 @@ export class IndexPipeline implements IIndexPipeline {
       this.dlqStopper = undefined;
     }
 
+    await this.waitForActiveReindex();
     await this.options.vectorStore.close();
     this.progress.status = 'idle';
   }

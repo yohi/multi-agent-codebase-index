@@ -462,6 +462,44 @@ describe('IndexPipeline', () => {
     expect(closeSpy).toHaveBeenCalledOnce();
   });
 
+  it('stop() はアクティブな reindex 完了後に vectorStore.close() を呼ぶ', async () => {
+    const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
+    const closeSpy = vi.spyOn(vectorStore, 'close').mockResolvedValue(undefined);
+    let releaseScan: (() => void) | undefined;
+    let signalScanStarted: (() => void) | undefined;
+    const scanStarted = new Promise<void>((resolve) => {
+      signalScanStarted = resolve;
+    });
+    const scanFinished = new Promise<void>((resolve) => {
+      releaseScan = resolve;
+    });
+    const pipeline = new IndexPipeline({
+      metadataStore,
+      vectorStore,
+      chunker,
+      embeddingProvider: new TestEmbeddingProvider(),
+      pluginRegistry: registry,
+    });
+
+    const reindexPromise = pipeline.reindex(
+      async () => {
+        signalScanStarted?.();
+        await scanFinished;
+        return [];
+      },
+      async () => '',
+    );
+    await scanStarted;
+
+    const stopPromise = pipeline.stop();
+    expect(closeSpy).not.toHaveBeenCalled();
+
+    releaseScan?.();
+    await reindexPromise;
+    await stopPromise;
+    expect(closeSpy).toHaveBeenCalledOnce();
+  });
+
   it('start() で idle compaction タイマーが登録され unref() が適用される (既存のタイマーをクリアして再スケジュール)', async () => {
     const { metadataStore, vectorStore, chunker, registry } = await createPipeline();
     const timerRef = { unref: vi.fn() };
