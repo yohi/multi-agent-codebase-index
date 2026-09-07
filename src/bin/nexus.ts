@@ -148,7 +148,7 @@ async function main(args: string[]): Promise<void> {
         `   To force start, remove: ${path.join(config.storage.rootDir, LOCK_FILENAME)}` +
         progressLine,
     );
-    return process.exit(1);
+    process.exit(1);
   }
 
   // Register best-effort exit cleanup immediately after acquiring the lock so
