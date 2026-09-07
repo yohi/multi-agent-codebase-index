@@ -274,18 +274,18 @@ export const buildNexusRuntime = (
       shutdownErrors.push(error);
     }
 
-    try {
-      await options.pipeline.stop();
-    } catch (error) {
-      shutdownErrors.push(error);
-    }
-
     if (autoReindexPromise) {
       try {
         await autoReindexPromise;
       } catch (error) {
         shutdownErrors.push(error);
       }
+    }
+
+    try {
+      await options.pipeline.stop();
+    } catch (error) {
+      shutdownErrors.push(error);
     }
 
     if (options.onClose) {
