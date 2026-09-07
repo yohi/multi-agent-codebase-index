@@ -39,9 +39,16 @@ describe('OllamaEmbeddingProvider', () => {
 
   it('waits for the global lock and passes the cancellation signal', async () => {
     let releaseLock: (() => void) | undefined;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     acquireGlobalLockMock.mockImplementationOnce(
-      (_name: string, options: { signal?: AbortSignal }) =>
+      (_name: string, options: {
+        signal?: AbortSignal;
+        onRetry?: (retryCount: number, timeoutMs: number) => void;
+      }) =>
         new Promise((resolve, reject) => {
+          options.onRetry?.(1, 5_000);
+          options.onRetry?.(2, 5_000);
+          options.onRetry?.(6, 5_000);
           releaseLock = () => resolve({ release: vi.fn().mockResolvedValue(undefined) });
           options.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
         }),
@@ -72,10 +79,24 @@ describe('OllamaEmbeddingProvider', () => {
       maxTimeoutMs: 5_000,
       signal: controller.signal,
     });
+    expect(acquireGlobalLockMock.mock.calls[0]?.[1]).toHaveProperty('onRetry', expect.any(Function));
 
-    releaseLock?.();
-    await pending;
-    expect(fetchMock).toHaveBeenCalledOnce();
+    try {
+      releaseLock?.();
+      await pending;
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenNthCalledWith(
+        1,
+        '[Nexus] Waiting for Ollama global lock (retry 1; next retry in 5000ms)',
+      );
+      expect(warnSpy).toHaveBeenNthCalledWith(
+        2,
+        '[Nexus] Waiting for Ollama global lock (retry 6; next retry in 5000ms)',
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('releases the lock before propagating cancellation detected after acquisition', async () => {

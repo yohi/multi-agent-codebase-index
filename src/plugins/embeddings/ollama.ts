@@ -59,6 +59,13 @@ export class OllamaEmbeddingProvider extends BaseEmbeddingProvider {
       retryMode: 'unlimited',
       maxTimeoutMs: 5_000,
       signal,
+      onRetry: (retryCount, timeoutMs) => {
+        if (retryCount === 1 || retryCount % 6 === 0) {
+          console.warn(
+            `[Nexus] Waiting for Ollama global lock (retry ${retryCount}; next retry in ${timeoutMs}ms)`,
+          );
+        }
+      },
     });
 
     try {

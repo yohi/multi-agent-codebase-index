@@ -41,6 +41,7 @@ export interface AcquireGlobalLockOptions {
   maxTimeoutMs?: number;
   retryMode?: 'finite' | 'unlimited';
   signal?: AbortSignal;
+  onRetry?: (retryCount: number, timeoutMs: number) => void;
 }
 
 const abortError = (signal: AbortSignal): Error => {
@@ -117,6 +118,7 @@ export const acquireGlobalLock = async (
       }
       retryCount += 1;
       const timeout = Math.min(maxTimeout, Math.max(minTimeout, minTimeout * 2 ** Math.min(retryCount - 1, 10)));
+      options.onRetry?.(retryCount, timeout);
       await waitForRetry(timeout, options.signal);
     }
   }
