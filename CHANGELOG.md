@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.1](https://github.com/yohi/nexus/compare/v2.2.0...v2.2.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* CLIの到達不能なreturnを削除 ([1a8e04a](https://github.com/yohi/nexus/commit/1a8e04afe4b67abcadfe91ee4d1111808c3e27da))
+* Ollamaロック待機に上限と進捗表示を追加 ([8888576](https://github.com/yohi/nexus/commit/888857653755d1b9c2961c7972e69d6d952fa09e))
+* Ollamaロック待機に上限と進捗表示を追加 ([afcb821](https://github.com/yohi/nexus/commit/afcb8215b238b0882255a1b994494c15d001d319))
+* Ollamaロック待機の進捗ログを追加 ([1212a68](https://github.com/yohi/nexus/commit/1212a68cf56c1de686ba486e495c21866b7b72cd))
+* Ollamaロック待機の進捗ログを追加 ([e017e79](https://github.com/yohi/nexus/commit/e017e7925f4f9d5006ed208e10ab54082acf99db))
+* グローバルロックのタイムアウト判定を修正 ([24d216f](https://github.com/yohi/nexus/commit/24d216f18173e9069d962c02a67bdae9e39e5a17))
+* 進捗表示とCLI終了処理を修正 ([f8c1731](https://github.com/yohi/nexus/commit/f8c1731b284905be3d88157b419d012fe45596ce))
+
 ## [2.2.0](https://github.com/yohi/nexus/compare/v2.1.0...v2.2.0) (2026-09-04)
 
 
