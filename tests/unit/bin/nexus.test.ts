@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   dashboardMain: vi.fn(),
   loadConfig: vi.fn(),
   releaseProcessLock: vi.fn(),
+  readIndexProgress: vi.fn(),
   startManagedHttpServer: vi.fn(),
 }));
 
@@ -36,6 +37,10 @@ vi.mock("../../../src/server/process-lock.js", () => ({
   acquireProcessLock: mocks.acquireProcessLock,
   releaseProcessLock: mocks.releaseProcessLock,
   LOCK_FILENAME: "nexus.pid",
+}));
+
+vi.mock("../../../src/bin/index-progress.js", () => ({
+  readIndexProgress: mocks.readIndexProgress,
 }));
 
 vi.mock("../../../src/server/managed-http-server.js", () => ({
@@ -84,6 +89,7 @@ describe("nexus CLI shutdown", () => {
     });
     mocks.acquireProcessLock.mockResolvedValue({ acquired: true });
     mocks.releaseProcessLock.mockResolvedValue(undefined);
+    mocks.readIndexProgress.mockResolvedValue(undefined);
     mocks.loadConfig.mockResolvedValue(config);
     mocks.createRestApiHandler.mockReturnValue(vi.fn(async () => {}));
   });
@@ -142,6 +148,22 @@ describe("nexus CLI shutdown", () => {
     await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
     expect(mcpHandler.dispose).toHaveBeenCalledOnce();
     expect(shutdownOrder).toEqual(["http", "handler", "runtime"]);
+  });
+
+  it("reports existing indexing progress when the project is already locked", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.acquireProcessLock.mockResolvedValue({ acquired: false, existingPid: 12345 });
+    mocks.readIndexProgress.mockResolvedValue({
+      active: true,
+      processedFiles: 12,
+      totalFiles: 100,
+    });
+    process.argv = [originalArgv[0] ?? "node", originalArgv[1] ?? "nexus", "--reindex", "--full"];
+
+    await import("../../../src/bin/nexus.js");
+
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+    expect(error.mock.calls.flat().join("\n")).toContain("Progress: 12 / 100 files (running)");
   });
 
   it("delegates managed shutdown only to the managed server", async () => {

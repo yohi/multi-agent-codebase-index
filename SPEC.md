@@ -141,6 +141,7 @@ Bridge および managed HTTP サーバーは、標準出力を MCP の JSON-RPC
 - **Concurrency Control**: パイプラインの並行度とは独立して、プロバイダーレベルのセマフォ (`p-limit`) で同時リクエスト数を制限し、GPU VRAM の枯渇やタイムアウトを防ぎます。
 
 - **CPU 負荷抑制 (Ollama Thread Limit)**: Ollama プロバイダーは `/api/embed` リクエストに `options.num_thread` を含めます。デフォルト値は `2` であり、環境変数 `NEXUS_OLLAMA_NUM_THREAD` または `.nexus.json` の `embedding.ollamaNumThread` で変更できます。受付可能な範囲は整数 `1` から `16` までで、無効な値（`0`、負数、小数、`16` 超過など）は安全なデフォルト `2` にフォールバックします。OpenAI-compatible プロバイダーにはこの Ollama 専用オプションは送信されません。
+- **共有ロック待機上限**: Ollama の共有グローバルロックは、デフォルトで `300000` ミリ秒（5 分）まで待機します。環境変数 `NEXUS_OLLAMA_LOCK_TIMEOUT_MS` または `.nexus.json` の `embedding.ollamaLockTimeoutMs` で変更でき、超過時は無期限待機せず Full Index を失敗として記録します。
 - **Cache-Aware Embedding Path**: 同一チャンクの再計算を避けるため、L1（インメモリ `Map`）キャッシュと L2（SQLite `embedding_cache` テーブル）キャッシュの二層構造を持ちます。
   - L1 ヒット: `processEventWindow()` 内で `getL1Cache()` 経由にて即座に解決され、`embeddingProvider.embed()` は呼ばれません。キャッシュヒット時は LRU semantics を保つため `delete` & `set` によって Map の insertion order を更新します。
   - L1 ミス & L2 ヒット: `metadataStore.getEmbeddings()` で永続キャッシュを照合し、ヒットしたベクトルを `setL1Cache()` で L1 に hydration します。

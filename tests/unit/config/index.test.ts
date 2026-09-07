@@ -24,7 +24,26 @@ describe('loadConfig', () => {
     expect(config.projectRoot).toBe(tempDir);
     expect(config.storage.rootDir).toBe(path.join(tempDir, '.nexus'));
     expect(config.embedding.provider).toBe('ollama');
+    expect(config.embedding.ollamaLockTimeoutMs).toBe(300_000);
     expect(config.watcher.debounceMs).toBe(100);
+  });
+
+  it('loads the Ollama lock timeout from environment and file configuration', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({ embedding: { ollamaLockTimeoutMs: 90_000 } }),
+      'utf8',
+    );
+
+    const fromFile = await loadConfig({ projectRoot: tempDir, env: {} });
+    expect(fromFile.embedding.ollamaLockTimeoutMs).toBe(90_000);
+
+    const fromEnvironment = await loadConfig({
+      projectRoot: tempDir,
+      env: { NEXUS_OLLAMA_LOCK_TIMEOUT_MS: '120000' },
+    });
+    expect(fromEnvironment.embedding.ollamaLockTimeoutMs).toBe(120_000);
   });
 
   it('prefers environment variables over .nexus.json values', async () => {

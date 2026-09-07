@@ -77,6 +77,7 @@ describe('OllamaEmbeddingProvider', () => {
     expect(acquireGlobalLockMock.mock.calls[0]?.[1]).toMatchObject({
       retryMode: 'unlimited',
       maxTimeoutMs: 5_000,
+      timeoutMs: 300_000,
       signal: controller.signal,
     });
     expect(acquireGlobalLockMock.mock.calls[0]?.[1]).toHaveProperty('onRetry', expect.any(Function));

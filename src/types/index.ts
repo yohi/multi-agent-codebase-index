@@ -144,6 +144,7 @@ export interface EmbeddingConfig {
   retryBaseDelayMs: number;
   timeoutMs?: number;
   ollamaNumThread?: number;
+  ollamaLockTimeoutMs?: number;
 }
 
 /** Ollama provider requires the thread-count option. */

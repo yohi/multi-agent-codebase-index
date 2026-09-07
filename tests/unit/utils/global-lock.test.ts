@@ -7,6 +7,7 @@ import lockfile from 'proper-lockfile';
 import {
   acquireGlobalLock,
   GlobalLockHeldError,
+  GlobalLockTimeoutError,
   GLOBAL_LOCK_RETRIES,
   GLOBAL_LOCK_RETRY_MAX_TIMEOUT_MS,
   GLOBAL_LOCK_RETRY_MIN_TIMEOUT_MS,
@@ -59,6 +60,28 @@ describe('global-lock', () => {
     const acquiredLock = await waitingLock;
     await acquiredLock.release();
     expect(retryNotifications[0]).toEqual({ retryCount: 1, timeoutMs: 10 });
+  });
+
+  it('fails unlimited acquisition after the configured timeout', async () => {
+    const name = `test-${randomUUID()}`;
+    const heldLock = await acquireGlobalLock(name);
+
+    try {
+      await expect(
+        acquireGlobalLock(name, {
+          retryMode: 'unlimited',
+          timeoutMs: 25,
+          minTimeoutMs: 10,
+          maxTimeoutMs: 10,
+        }),
+      ).rejects.toMatchObject({
+        name: 'GlobalLockTimeoutError',
+        lockName: name,
+        timeoutMs: 25,
+      } satisfies Partial<GlobalLockTimeoutError>);
+    } finally {
+      await heldLock.release();
+    }
   });
 
   it('recovers a stale global lock', async () => {
