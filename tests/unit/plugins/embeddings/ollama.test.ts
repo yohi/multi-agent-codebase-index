@@ -47,6 +47,8 @@ describe('OllamaEmbeddingProvider', () => {
       }) =>
         new Promise((resolve, reject) => {
           options.onRetry?.(1, 5_000);
+          options.onRetry?.(2, 5_000);
+          options.onRetry?.(6, 5_000);
           releaseLock = () => resolve({ release: vi.fn().mockResolvedValue(undefined) });
           options.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
         }),
@@ -83,8 +85,14 @@ describe('OllamaEmbeddingProvider', () => {
       releaseLock?.();
       await pending;
       expect(fetchMock).toHaveBeenCalledOnce();
-      expect(warnSpy).toHaveBeenCalledWith(
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenNthCalledWith(
+        1,
         '[Nexus] Waiting for Ollama global lock (retry 1; next retry in 5000ms)',
+      );
+      expect(warnSpy).toHaveBeenNthCalledWith(
+        2,
+        '[Nexus] Waiting for Ollama global lock (retry 6; next retry in 5000ms)',
       );
     } finally {
       warnSpy.mockRestore();

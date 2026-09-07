@@ -37,14 +37,23 @@ describe('global-lock', () => {
     const name = `test-${randomUUID()}`;
     const heldLock = await acquireGlobalLock(name);
     const retryNotifications: Array<{ retryCount: number; timeoutMs: number }> = [];
+    let resolveFirstRetry: (() => void) | undefined;
+    const firstRetryNotification = new Promise<void>((resolve) => {
+      resolveFirstRetry = resolve;
+    });
 
     const waitingLock = acquireGlobalLock(name, {
       retries: 10,
       minTimeoutMs: 10,
       maxTimeoutMs: 10,
-      onRetry: (retryCount, timeoutMs) => retryNotifications.push({ retryCount, timeoutMs }),
+      onRetry: (retryCount, timeoutMs) => {
+        retryNotifications.push({ retryCount, timeoutMs });
+        if (retryCount === 1) {
+          resolveFirstRetry?.();
+        }
+      },
     });
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await firstRetryNotification;
     await heldLock.release();
 
     const acquiredLock = await waitingLock;
