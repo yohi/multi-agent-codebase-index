@@ -36,17 +36,20 @@ describe('global-lock', () => {
   it('retries ELOCKED acquisition until the held lock is released', async () => {
     const name = `test-${randomUUID()}`;
     const heldLock = await acquireGlobalLock(name);
+    const retryNotifications: Array<{ retryCount: number; timeoutMs: number }> = [];
 
     const waitingLock = acquireGlobalLock(name, {
       retries: 10,
       minTimeoutMs: 10,
       maxTimeoutMs: 10,
+      onRetry: (retryCount, timeoutMs) => retryNotifications.push({ retryCount, timeoutMs }),
     });
     await new Promise((resolve) => setTimeout(resolve, 25));
     await heldLock.release();
 
     const acquiredLock = await waitingLock;
     await acquiredLock.release();
+    expect(retryNotifications[0]).toEqual({ retryCount: 1, timeoutMs: 10 });
   });
 
   it('recovers a stale global lock', async () => {
