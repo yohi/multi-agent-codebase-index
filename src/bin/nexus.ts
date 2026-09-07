@@ -138,17 +138,17 @@ async function main(args: string[]): Promise<void> {
   if (!lockResult.acquired) {
     const pidStr = lockResult.existingPid ?? "unknown";
     const progress = await readIndexProgress(config.storage.rootDir);
+    const progressStatus = progress?.active ? "running" : "idle";
     const progressLine = progress === undefined
       ? ""
-      : `\n   Progress: ${progress.processedFiles} / ${progress.totalFiles} files (${progress.active ? "running" : "idle"})`;
+      : `\n   Progress: ${progress.processedFiles} / ${progress.totalFiles} files (${progressStatus})`;
     console.error(
       `\u26a0\ufe0f  Another Nexus process (PID ${pidStr}) is already running for this project.\n` +
         `   Storage: ${config.storage.rootDir}\n` +
         `   To force start, remove: ${path.join(config.storage.rootDir, LOCK_FILENAME)}` +
         progressLine,
     );
-    process.exit(1);
-    return;
+    return process.exit(1);
   }
 
   // Register best-effort exit cleanup immediately after acquiring the lock so

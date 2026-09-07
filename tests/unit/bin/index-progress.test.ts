@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -45,6 +45,13 @@ describe('readIndexProgress', () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-progress-'));
     await writeFile(path.join(tempDir, 'metrics.port'), '43210\n', 'utf8');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    await expect(readIndexProgress(tempDir)).resolves.toBeUndefined();
+  });
+
+  it('returns undefined when the metrics port file cannot be read', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-progress-'));
+    await mkdir(path.join(tempDir, 'metrics.port'));
 
     await expect(readIndexProgress(tempDir)).resolves.toBeUndefined();
   });

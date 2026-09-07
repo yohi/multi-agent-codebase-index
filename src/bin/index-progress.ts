@@ -32,7 +32,13 @@ const readMetricValue = (payload: unknown, name: string): number | undefined => 
 };
 
 export const readIndexProgress = async (storageDir: string): Promise<IndexProgress | undefined> => {
-  const port = await readMetricsPort(storageDir);
+  let port: number | undefined;
+  try {
+    port = await readMetricsPort(storageDir);
+  } catch {
+    return undefined;
+  }
+
   if (port === undefined) {
     return undefined;
   }
