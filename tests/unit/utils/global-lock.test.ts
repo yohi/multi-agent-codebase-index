@@ -84,6 +84,23 @@ describe('global-lock', () => {
     }
   });
 
+  it('does not report a timeout when no overall timeout is configured', async () => {
+    const name = `test-${randomUUID()}`;
+    const heldLock = await acquireGlobalLock(name);
+
+    try {
+      await expect(
+        acquireGlobalLock(name, {
+          retries: 1,
+          minTimeoutMs: 0,
+          maxTimeoutMs: 0,
+        }),
+      ).rejects.toBeInstanceOf(GlobalLockHeldError);
+    } finally {
+      await heldLock.release();
+    }
+  });
+
   it('recovers a stale global lock', async () => {
     const name = `test-${randomUUID()}`;
     const lockfilePath = join(tmpdir(), `nexus-global-${name}.lock`);

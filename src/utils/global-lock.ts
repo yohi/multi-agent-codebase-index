@@ -137,12 +137,14 @@ export const acquireGlobalLock = async (
       }
       retryCount += 1;
       const timeout = Math.min(maxTimeout, Math.max(minTimeout, minTimeout * 2 ** Math.min(retryCount - 1, 10)));
-      const elapsedMs = Date.now() - startedAt;
-      const remainingMs = options.timeoutMs === undefined ? timeout : options.timeoutMs - elapsedMs;
-      if (remainingMs <= 0) {
-        throw new GlobalLockTimeoutError(name, options.timeoutMs ?? elapsedMs);
+      let retryTimeout = timeout;
+      if (options.timeoutMs !== undefined) {
+        const remainingMs = options.timeoutMs - (Date.now() - startedAt);
+        if (remainingMs <= 0) {
+          throw new GlobalLockTimeoutError(name, options.timeoutMs);
+        }
+        retryTimeout = Math.min(timeout, remainingMs);
       }
-      const retryTimeout = Math.min(timeout, remainingMs);
       options.onRetry?.(retryCount, retryTimeout);
       await waitForRetry(retryTimeout, options.signal);
     }
