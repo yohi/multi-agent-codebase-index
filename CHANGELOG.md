@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.2.2](https://github.com/yohi/nexus/compare/v2.2.1...v2.2.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* 再インデックス完了前のストア解放を防止 ([ab90880](https://github.com/yohi/nexus/commit/ab90880433cd743219e98323d506bb5b286f98b5))
+* 自動リインデックス完了後にパイプラインを停止 ([703a3e8](https://github.com/yohi/nexus/commit/703a3e833b1dce0d7a33bcd1ae562dc9230d81d9))
+* 自動リインデックス終了時の停止順を修正 ([9f46c4d](https://github.com/yohi/nexus/commit/9f46c4d57c973e8acfe87371b19a222c944dfb54))
+* 自動リインデックス終了時の停止順を修正 ([2489435](https://github.com/yohi/nexus/commit/2489435f65f139d076b2c0a685f091a5b54dc5ea))
+
 ## [2.2.1](https://github.com/yohi/nexus/compare/v2.2.0...v2.2.1) (2026-09-07)
 
 
