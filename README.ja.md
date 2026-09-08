@@ -7,76 +7,76 @@
 
 **高速で根拠のあるコード検索と正確なシンボル取得を提供する、ローカルファーストの MCP コードインデックスです。**
 
-Nexus は、大規模なコードベースを AI エージェントが毎回ファイル全体を読み込まずに調査できるようにします。Semantic search、ripgrep、AST ベースのインデックス、正確なシンボル取得、範囲を絞ったコンテキスト取得を、1つのローカル MCP サーバーとして提供します。
+Nexus は、大規模なコードベースを AI エージェントが毎回ファイル全体を読み込まずに調査できるようにします。semantic search、ripgrep、AST ベースのインデックス、正確なシンボル取得、範囲を絞ったコンテキスト取得を 1 つのローカル MCP サーバーとして提供します。
 
 > [!IMPORTANT]
 > **v2 には破壊的変更があります。** MCP ツール契約、CLI オプション、設定キーが v1 から変更されています。移行時は現在の [MCP ツールリファレンス](docs/mcp-tools.md) と [設定リファレンス](docs/configuration.md) を参照してください。
 
 ## Quick Start
 
-### 必要環境
+### 必要条件
 
 - Node.js 24 以上
 - npm
-- Embedding provider。デフォルトのローカル provider は Ollama です。
+- embedding provider。デフォルトのローカル provider は Ollama です。
 
 ### インストールと起動
 
-```bash
-npx @yohi/nexus
-```
-
-ソースチェックアウトから実行する場合:
+リポジトリから試す最短経路:
 
 ```bash
+git clone https://github.com/yohi/nexus.git
+cd nexus
 npm ci
 npm run build
 npx nexus
 ```
 
+公開パッケージ `@yohi/nexus` は GitHub Packages を使用するため、registry と認証の設定が必要です。Package Usage は [Setup](docs/setup.md) を参照してください。
+
 デフォルトでは、プロジェクトローカルのインデックスデータを `<projectRoot>/.nexus` に保存します。
 
-### インデックスを確認する
+### インデックスを確認
 
 MCP クライアントを `nexus` コマンドへ接続し、`index_status` を呼び出します。
 
-利用可能なインデックスでは `indexStats.lastIndexedAt` が non-null で、`pipelineProgress.lastError` がありません。初回インデックスはバックグラウンドで進み、処理中も検索できますが結果は不完全な場合があります。
+利用可能なインデックスでは `indexStats.lastIndexedAt` が non-null で、`pipelineProgress.lastError` がありません。初回インデックスはバックグラウンドで進み、処理中でも検索できますが結果が不完全な場合があります。
 
-クライアント別の設定と Source Build / Package Usage の選択については [Setup](docs/setup.md) を参照してください。
+クライアント別設定と Source Build / Package Usage の選択は [Setup](docs/setup.md) を参照してください。
 
 ## Features
 
 - **Hybrid search** — semantic vector search と ripgrep を Reciprocal Rank Fusion で統合
 - **Exact search** — ripgrep による高速な文字列・正規表現検索
-- **Structured symbol retrieval** — TypeScript/JavaScript、Python、Go の stable `symbolId`、正確なソース、bounded context、file outline
+- **Structured symbol retrieval** — TypeScript/JavaScript、Python、Go の stable `symbolId`、正確な source、bounded context、file outline
 - **Incremental indexing** — file watcher、差分検出、recovery queue による継続更新
 - **Local-first operation** — Ollama 利用時は source-derived embedding data をホスト内に保持可能。外部 embedding provider を設定した場合は source-derived text がそのサービスへ送信される場合があります。
 - **Observability** — Prometheus metrics と multi-process dashboard/aggregator
-- **HTTP bridge / server modes** — stdio client から project-scoped local HTTP server に接続可能
+- **HTTP bridge / server modes** — stdio client から project-scoped local HTTP server へ接続可能
 
 ## Agent Setup
 
-リポジトリ全体の AI agent 向けルールの正本は [AGENTS.md](AGENTS.md) です。コード検索ワークフローの正本は [.agents/skills/code-search.md](.agents/skills/code-search.md) です。
+リポジトリ全体の AI agent ルールの正本は [AGENTS.md](AGENTS.md)、コード検索ワークフローの正本は [.agents/skills/code-search.md](.agents/skills/code-search.md) です。
 
-典型的な検索では:
+典型的な検索フロー:
 
-1. `index_status` を確認する。
-2. 概念探索には `hybrid_search`、正確な文字列には `grep_search` を使う。
-3. 結果に利用可能な `symbolId` がある場合は `get_symbol_source` または `get_symbol_context` を優先する。
-4. 行指向の hit、structured retrieval が unsupported/degraded の場合、その他 non-symbol の場合は `get_context` を使う。
+1. `index_status` を確認
+2. 概念探索は `hybrid_search`、正確な文字列は `grep_search`
+3. 結果に利用可能な `symbolId` があれば `get_symbol_source` または `get_symbol_context` を優先
+4. 行指向の hit、structured retrieval が unsupported/degraded の場合、その他 non-symbol の場合は `get_context`
 
-公開 MCP ツールの詳細は [MCP Tools](docs/mcp-tools.md) を参照してください。
+公開 MCP ツールの完全な参照は [MCP Tools](docs/mcp-tools.md) を参照してください。
 
 ## Usage
 
-### インデックスを再構築する
+### インデックスを再構築
 
 ```bash
 nexus --reindex
 nexus --reindex --full
 ```
 
-`--full` は clean full rebuild を行います。
+`--full` は clean full rebuild を実行します。
 
 ### ローカル HTTP MCP サーバー
 
@@ -93,7 +93,7 @@ Local HTTP v2 は loopback-only です。現在の transport / safety invariant 
 nexus http-bridge
 ```
 
-bridge は project-scoped local HTTP server を検出または起動し、stdio JSON-RPC を Streamable HTTP endpoint へ転送します。
+project-scoped local HTTP server を検出または起動し、stdio JSON-RPC を Streamable HTTP endpoint へ転送します。
 
 ### Dashboard
 
@@ -119,20 +119,20 @@ graph TD
     Structured --> Exact[Exact Symbol Retrieval]
 ```
 
-検索 chunk と logical symbol は別の retrieval unit です。semantic search の結果から symbol を特定し、structured retrieval では current working tree から logical declaration 全体を読み出して検証します。
+検索 chunk と logical symbol は別の retrieval unit です。semantic search の結果から symbol を特定し、structured retrieval で current working tree から complete logical declaration を検証して取得できます。
 
 現在の architecture invariant と behavioral contract は [SPEC.md](SPEC.md) を参照してください。
 
 ## Configuration
 
-Nexus は `.nexus.json` を読み込み、対応する設定では環境変数による override を利用できます。代表例:
+Nexus は `.nexus.json` を読み込み、対応する設定は環境変数で override できます。代表例:
 
 | Setting | Purpose |
 | --- | --- |
 | `NEXUS_STORAGE_ROOT_DIR` / `storage.rootDir` | インデックス保存先 |
 | `NEXUS_EMBEDDING_PROVIDER` / `embedding.provider` | `ollama`, `openai-compat`, `bedrock` |
 | `NEXUS_WATCHER_IGNORE_PATHS` / `watcher.ignorePaths` | watcher/index の追加除外 |
-| `NEXUS_PACKAGE_MODE` / `packageMode` | package distribution 用制約 |
+| `NEXUS_PACKAGE_MODE` / `packageMode` | package distribution 制約 |
 
 完全な設定契約は [Configuration](docs/configuration.md) を参照してください。
 
@@ -143,7 +143,7 @@ Nexus は `.nexus.json` を読み込み、対応する設定では環境変数�
 | 現行 architecture、invariant、compatibility、transport behavior | [SPEC.md](SPEC.md) |
 | AI agent の repository instructions | [AGENTS.md](AGENTS.md) |
 | Code-search agent workflow | [.agents/skills/code-search.md](.agents/skills/code-search.md) |
-| MCP tools、inputs、outputs、status | [docs/mcp-tools.md](docs/mcp-tools.md) |
+| MCP tools / inputs / outputs / statuses | [docs/mcp-tools.md](docs/mcp-tools.md) |
 | Installation / client setup | [docs/setup.md](docs/setup.md) |
 | Runtime configuration | [docs/configuration.md](docs/configuration.md) |
 | Distribution / operator workflow | [docs/distribution.md](docs/distribution.md) |
