@@ -2,7 +2,10 @@
 
 ## Status
 
-Design — pending implementation plan.
+Design is complete and an implementation plan exists at
+`docs/superpowers/plans/2026-09-08-expand-structured-index-languages.md`.
+Implementation has not started; the plan is awaiting review and must be
+updated before any source code is changed.
 
 ## Context
 
@@ -36,6 +39,8 @@ variants (`.mjs`, `.cjs`, `.mts`, `.cts`).
   (they still receive fixed-line chunks).
 - Introducing a new routing abstraction, configuration flag, or generic
   routing policy framework to separate vector and structured routing.
+- Extracting CommonJS `require()` calls, `module.exports`, or `exports.foo`
+  assignment-style exports as structured declarations or imports in Phase 1.
 
 ## Phase 1: Extend TypeScript-Family File Extensions
 
@@ -85,6 +90,7 @@ support change in Phase 1.
 1. `src/plugins/languages/typescript.ts`
    - Update `fileExtensions` from `['.ts', '.tsx', '.js', '.jsx']` to
      `['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']`.
+   - This is the only production change in Phase 1.
 
 #### Documentation update
 
@@ -92,6 +98,9 @@ support change in Phase 1.
    - Create a "Supported languages and extensions" table.
    - Describe the structured/vector distinction for unsupported extensions.
    - Document CommonJS limitations for Phase 1.
+   - Make clear that a supported extension only means the file is routed to the
+     structured parser; actual structured records are produced only when the
+     parser extracts declarations and imports from the file.
 
 #### Plugin routing test
 
@@ -111,12 +120,17 @@ support change in Phase 1.
    - New fixture: valid ESM TypeScript declaration with an ES `import`.
 
 4. `tests/fixtures/structured/typescript/valid.cjs`
-   - New fixture: valid CommonJS JavaScript declaration.
+   - New fixture: CommonJS JavaScript declaration.
    - Does not assert `require()` based structured import extraction.
+   - Does not assert extraction of assignment-style exports such as
+     `exports.rebuilt = helper`.
+   - The extractable declaration is the plain function `helper`.
 
 5. `tests/fixtures/structured/typescript/valid.cts`
    - New fixture: valid CommonJS TypeScript declaration.
    - Does not assert `require()` based structured import extraction.
+   - Does not assert extraction of `export = { rebuilt: helper }`.
+   - The extractable declaration is the plain function `helper`.
 
 #### Full-reindex integration regression
 
@@ -145,6 +159,10 @@ support change in Phase 1.
      active generation's `imports` array; it is not part of any production
      interface.
 
+2. `tests/unit/storage/metadata-store.test.ts`
+   - Add a focused test for the helper, exercising `InMemoryMetadataStore`
+     directly.
+
 ### Test Strategy
 
 Testing is split into four layers covering the main structured indexing paths,
@@ -162,6 +180,10 @@ Add cases for each new extension and for existing extensions:
 - unsupported extensions (e.g. `.rs`, `.py`, `.go`) →
   `plugin.supports(filePath) === false`
 
+This test must be added **before** the production `fileExtensions` change is
+applied, and must be run against the old `fileExtensions` to confirm it fails
+for the four new extensions.
+
 #### B. Structured parser test
 
 Target file: `tests/unit/structured/typescript-parser.test.ts`
@@ -170,25 +192,35 @@ Add module-variant fixtures under `tests/fixtures/structured/typescript/`:
 
 - `valid.mjs` — valid ESM declaration plus `import` statement.
   - Expected `status: 'ok'`, `retrievability: 'exact'`.
-  - Expected at least one declaration and at least one structured import.
+  - Expected declaration whose `qualifiedName` is `rebuilt`.
+  - Expected at least one structured import with
+    `moduleSpecifier: './dependency.js'` and `bindingName: 'dependency'`.
 - `valid.mts` — valid ESM TypeScript declaration plus `import` statement.
   - Expected `status: 'ok'`, `retrievability: 'exact'`.
-  - Expected at least one declaration and at least one structured import.
+  - Expected declaration whose `qualifiedName` is `rebuilt`.
+  - Expected at least one structured import with
+    `moduleSpecifier: './dependency.js'` and `bindingName: 'dependency'`.
 - `valid.cjs` — valid CommonJS declaration.
   - Expected `status: 'ok'`, `retrievability: 'exact'`.
-  - Expected at least one declaration.
+  - Expected declaration whose `qualifiedName` is `helper`.
   - `require()` based imports are **not** extracted as structured imports in
-    Phase 1; the fixture must not assert structured import extraction for
-    `require()`.
+    Phase 1.
+  - Assignment-style exports such as `exports.rebuilt = helper` are **not**
+    extracted as structured declarations in Phase 1.
 - `valid.cts` — valid CommonJS TypeScript declaration.
   - Expected `status: 'ok'`, `retrievability: 'exact'`.
-  - Expected at least one declaration.
-  - Same `require()` limitation as `.cjs`.
+  - Expected declaration whose `qualifiedName` is `helper`.
+  - Same `require()` and assignment-style export limitation as `.cjs`.
 
 If any fixture unexpectedly produces syntactic diagnostics, do not broaden the
-expectation to `ok | degraded`. Instead, document the extension, the minimal
-fixture, the diagnostic reason, and the expected status in this design before
-implementation.
+expectation to `ok | degraded`. Instead, follow this order:
+
+1. Stop implementation.
+2. Update this design with the exact fixture, the diagnostic reason, and the
+   proposed new expected `status` / `retrievability`.
+3. Update the implementation plan's Task 2 to match the new expectation.
+4. Re-check design → plan and plan → design traceability.
+5. Only then resume implementation.
 
 #### C. Full-reindex integration regression
 
@@ -241,6 +273,10 @@ Implementation notes for the helper:
     produce other fields such as `startByte`, but this integration test does not
     assert them.)
 
+This test must be added **before** the production `fileExtensions` change is
+applied, and must be run against the old `fileExtensions` to confirm it fails
+because `.mjs` is not routed to the TypeScript structured parser.
+
 This test directly validates Issue #287's acceptance condition: after
 `--reindex --full`, `.mjs` declarations and imports are present in the
 structured index.
@@ -266,6 +302,11 @@ Add a `.mjs` regression case with a valid function declaration:
 5. Assert the returned chunks contain a declaration-based chunk whose
    `symbolName` is `rebuilt` and whose `symbolKind` is `function`.
 
+This test must be added **before** the production `fileExtensions` change is
+applied, and must be run against the old `fileExtensions` to confirm it fails
+because the chunker cannot find a language plugin for `.mjs` and falls back to
+fixed-line chunking, which produces no declaration-based chunks.
+
 This test is scoped strictly to verifying that `.mjs` files continue to be
 indexed on the vector path after `TypeScriptLanguagePlugin.fileExtensions` is
 extended. It does not add fallback regression coverage because the existing
@@ -281,8 +322,8 @@ is sufficient evidence that the TypeScript plugin routed and parsed the file.
 | `.cjs` / `.cts` use | Document in `docs/structured-index.md` and in |
 | `require` / `module.exports`, | test fixtures that `require()` based imports |
 | which are outside TypeScript's | and assignment-style CommonJS exports |
-| import syntax. | (`module.exports`, `exports.foo`) are not |
-| | extracted as structured declarations or |
+| import syntax. | (`module.exports`, `exports.foo`, `export =`) |
+| | are not extracted as structured declarations or |
 | | imports in Phase 1. |
 | `.mjs` / `.mts` may produce | Valid fixtures must expect `status: 'ok'` / |
 | syntactic parse diagnostics | `retrievability: 'exact'`. If a syntactic |
@@ -324,9 +365,12 @@ Create `docs/structured-index.md` containing:
 - The distinction between "structured index" and "vector index" for
   unsupported extensions.
 - A short note that `require()` based CommonJS imports and assignment-style
-  CommonJS exports (`module.exports`, `exports.foo`) are not extracted as
-  structured declarations or imports in Phase 1.
+  CommonJS exports (`module.exports`, `exports.foo`, `export =`) are
+  **not extracted** as structured declarations or imports in Phase 1.
 - A short note on how to request additional languages.
+- A note that a supported extension means the file is routed to the structured
+  parser and still receives vector chunks; actual structured declarations and
+  imports are produced only when the parser extracts them from the file.
 
 ## Acceptance Criteria
 
@@ -348,11 +392,14 @@ Create `docs/structured-index.md` containing:
       `.cjs`, `.mts`, `.cts`, `.py`, and `.go`.
 - [ ] No new language plugins, parser frameworks, or dependencies are added
       beyond the TypeScript-family extension routing and documentation.
+- [ ] CommonJS `require()` calls and assignment-style exports
+      (`module.exports`, `exports.foo`, `export =`) are not extracted as
+      structured declarations or imports in Phase 1.
 
 ## Future Work (Out of Scope)
 
 - Python extension additions (`.pyi`, `.pyw`).
 - Additional structured-index languages require separate requirements and
   design work.
-- Improved CommonJS `require()` / `module.exports` / `exports.foo` semantic
-  extraction.
+- Improved CommonJS `require()` / `module.exports` / `exports.foo` / `export =`
+  semantic extraction.

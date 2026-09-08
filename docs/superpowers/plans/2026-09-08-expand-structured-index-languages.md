@@ -26,225 +26,57 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/plugins/languages/typescript.ts` | Production change: extend `fileExtensions` with the four module variants. |
-| `docs/structured-index.md` | New documentation: supported languages/extensions, structured vs vector distinction, CommonJS limitation note, request-language instructions. |
-| `tests/unit/plugins/languages/typescript.test.ts` | Regression: plugin `supports()` returns true for all TS/JS extensions and false for unrelated extensions. |
+| `tests/unit/storage/in-memory-metadata-store.ts` | Test-only helper `getActiveImportsForFile` for inspection of active generation imports. |
+| `tests/unit/storage/metadata-store.test.ts` | Regression test for the test-only helper. |
 | `tests/unit/structured/typescript-parser.test.ts` | Regression: module-variant fixtures parse without diagnostics and produce expected declarations/imports. |
 | `tests/fixtures/structured/typescript/valid.mjs` | Fixture: ESM JavaScript declaration + ES `import`. |
 | `tests/fixtures/structured/typescript/valid.mts` | Fixture: ESM TypeScript declaration + ES `import`. |
-| `tests/fixtures/structured/typescript/valid.cjs` | Fixture: CommonJS JavaScript declaration; no `require()` import assertion. |
-| `tests/fixtures/structured/typescript/valid.cts` | Fixture: CommonJS TypeScript declaration; no `require()` import assertion. |
+| `tests/fixtures/structured/typescript/valid.cjs` | Fixture: CommonJS JavaScript declaration; assignment-style export is not extracted. |
+| `tests/fixtures/structured/typescript/valid.cts` | Fixture: CommonJS TypeScript declaration; `export =` is not extracted. |
+| `src/plugins/languages/typescript.ts` | Production change: extend `fileExtensions` with the four module variants. |
+| `tests/unit/plugins/languages/typescript.test.ts` | Regression: plugin `supports()` returns true for all TS/JS extensions and false for unrelated extensions. |
 | `tests/unit/indexer/pipeline-structured-lifecycle.test.ts` | Regression: full rebuild persists `.mjs` declaration and ES import into active structured generation. |
-| `tests/unit/storage/in-memory-metadata-store.ts` | Test-only helper `getActiveImportsForFile` for inspection of active generation imports. |
 | `tests/unit/indexer/chunker.test.ts` | Regression: `.mjs` file produces declaration-based vector chunks via the TypeScript plugin. |
+| `docs/structured-index.md` | New documentation: supported languages/extensions, structured vs vector distinction, CommonJS limitation note, request-language instructions. |
 
 ---
 
-### Task 1: Extend TypeScript-Family Plugin Extensions
-
-**Files:**
-- Modify: `src/plugins/languages/typescript.ts`
-- Test: `tests/unit/plugins/languages/typescript.test.ts`
-
-**Interfaces:**
-- Consumes: existing `LanguagePlugin` contract (`fileExtensions`, `supports(filePath)`).
-- Produces: `TypeScriptLanguagePlugin.fileExtensions` includes `.mjs`, `.cjs`, `.mts`, `.cts`.
-
-- [ ] **Step 1: Write the failing test**
-
-Add a new test at the end of `tests/unit/plugins/languages/typescript.test.ts`:
-
-```typescript
-it('supports TypeScript and JavaScript module variants', () => {
-  const plugin = new TypeScriptLanguagePlugin();
-
-  for (const extension of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']) {
-    expect(plugin.supports(`src/example${extension}`)).toBe(true);
-  }
-
-  for (const extension of ['.rs', '.py', '.go', '.txt', '.md']) {
-    expect(plugin.supports(`src/example${extension}`)).toBe(false);
-  }
-});
-```
-
-- [ ] **Step 2: Run the failing test**
-
-Run: `npx vitest run tests/unit/plugins/languages/typescript.test.ts -t "supports TypeScript and JavaScript module variants"`
-
-Expected: FAIL because `.mjs`, `.cjs`, `.mts`, `.cts` are not in `fileExtensions`.
-
-- [ ] **Step 3: Make the minimal production change**
-
-In `src/plugins/languages/typescript.ts`, change:
-
-```typescript
-readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx'];
-```
-
-to:
-
-```typescript
-readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
-```
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `npx vitest run tests/unit/plugins/languages/typescript.test.ts`
-
-Expected: PASS (all existing tests plus the new extension routing test).
-
-- [ ] **Step 5: Run typecheck and lint**
-
-Run:
-
-```bash
-npx tsc --noEmit
-npm run lint
-```
-
-Expected: both pass with no errors.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/plugins/languages/typescript.ts tests/unit/plugins/languages/typescript.test.ts
-git commit -m "feat(structured-index): TypeScript プラグインで .mjs/.cjs/.mts/.cts をサポート"
-```
-
----
-
-### Task 2: Add Structured Parser Fixtures for Module Variants
-
-**Files:**
-- Create: `tests/fixtures/structured/typescript/valid.mjs`
-- Create: `tests/fixtures/structured/typescript/valid.mts`
-- Create: `tests/fixtures/structured/typescript/valid.cjs`
-- Create: `tests/fixtures/structured/typescript/valid.cts`
-- Test: `tests/unit/structured/typescript-parser.test.ts`
-
-**Interfaces:**
-- Consumes: `TypeScriptLanguagePlugin.createStructuredParser()`, `parseStructured({ filePath, language, bytes, text })` returning `StructuredParseResult`.
-- Produces: fixtures exist with valid module declarations and, for ESM variants, one ES `import`.
-
-- [ ] **Step 1: Write the four fixtures**
-
-`tests/fixtures/structured/typescript/valid.mjs`:
-
-```javascript
-import { dependency } from './dependency.js';
-
-export function rebuilt() {
-  return dependency;
-}
-```
-
-`tests/fixtures/structured/typescript/valid.mts`:
-
-```typescript
-import { dependency } from './dependency.js';
-
-export function rebuilt(): number {
-  return dependency;
-}
-```
-
-`tests/fixtures/structured/typescript/valid.cjs`:
-
-```javascript
-function helper() {
-  return 1;
-}
-
-exports.rebuilt = helper;
-```
-
-`tests/fixtures/structured/typescript/valid.cts`:
-
-```typescript
-function helper(): number {
-  return 1;
-}
-
-export = { rebuilt: helper };
-```
-
-- [ ] **Step 2: Write the failing test**
-
-Append to `tests/unit/structured/typescript-parser.test.ts`:
-
-```typescript
-it.each([
-  ['valid.mjs', true],
-  ['valid.mts', true],
-  ['valid.cjs', false],
-  ['valid.cts', false],
-] as const)('parses %s with status ok and retrievability exact', async (name, expectsImport) => {
-  const { result } = await parseFixture(name);
-
-  expect(result.status).toBe('ok');
-  expect(result.retrievability).toBe('exact');
-  expect(result.declarations.some((item) => item.qualifiedName === 'rebuilt')).toBe(true);
-
-  if (expectsImport) {
-    expect(result.imports).toContainEqual(
-      expect.objectContaining({ moduleSpecifier: './dependency.js', bindingName: 'dependency' }),
-    );
-  }
-});
-```
-
-- [ ] **Step 3: Run the failing test**
-
-Run: `npx vitest run tests/unit/structured/typescript-parser.test.ts -t "parses valid.mjs"`
-
-Expected: FAIL because fixtures do not exist yet.
-
-- [ ] **Step 4: Create the fixtures (Step 1 contents) and verify the test passes**
-
-Run: `npx vitest run tests/unit/structured/typescript-parser.test.ts`
-
-Expected: PASS, unless TypeScript reports syntactic diagnostics for `.cjs`/`.cts` fixtures. If `valid.cts` produces `export =` diagnostics that degrade the status, document the fixture and expected status here before implementation and adjust the test for that case only. **Do not** broaden the ESM expectations.
-
-- [ ] **Step 5: Run typecheck and lint**
-
-```bash
-npx tsc --noEmit
-npm run lint
-```
-
-Expected: both pass.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add tests/fixtures/structured/typescript/valid.* tests/unit/structured/typescript-parser.test.ts
-git commit -m "test(structured-index): TypeScript モジュール変種の構造化解析フィクスチャを追加"
-```
-
----
-
-### Task 3: Add Test-Only Active-Import Helper
+### Task 1: Add Test-Only Active-Import Helper
 
 **Files:**
 - Modify: `tests/unit/storage/in-memory-metadata-store.ts`
-- Test: `tests/unit/storage/in-memory-metadata-store.test.ts` (use an existing test or add a minimal inline assertion in `pipeline-structured-lifecycle.test.ts` in Task 4).
+- Test: `tests/unit/storage/metadata-store.test.ts`
 
 **Interfaces:**
 - Consumes: private `active` map of `StructuredGenerationStage` keyed by `filePath`.
 - Produces: `getActiveImportsForFile(filePath: string): readonly StructuredImport[]` method on `InMemoryMetadataStore`.
 
-- [ ] **Step 1: Write the failing test in the store test file**
+- [ ] **Step 1: Write the failing test**
 
-Open `tests/unit/storage/metadata-store.test.ts` (or create a focused inline assertion). Add:
+Open `tests/unit/storage/metadata-store.test.ts` and append the following test.
+The test imports `InMemoryMetadataStore` from the local helper file, not from
+`src/storage/metadata-store.js`:
 
 ```typescript
+import { InMemoryMetadataStore } from './in-memory-metadata-store.js';
+import type { StructuredImport } from '../../../src/structured/contracts.js';
+
 it('exposes active generation imports through the test-only helper', async () => {
   const store = new InMemoryMetadataStore();
   await store.initialize();
   await store.bootstrapStructuredSchema();
   await store.incrementRebuildEpoch();
   const generationId = 'test-generation';
+  const importRecord: StructuredImport = {
+    id: 'import-1',
+    moduleSpecifier: './dependency.js',
+    bindingName: 'dependency',
+    startByte: 0,
+    endByte: 1,
+    sourceHash: 'hash',
+    completeness: 'complete',
+    position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 },
+  };
   await store.stageGeneration({
     filePath: 'src/example.mjs',
     generation: {
@@ -256,7 +88,7 @@ it('exposes active generation imports through the test-only helper', async () =>
       fileCompleteness: 'complete',
     },
     declarations: [],
-    imports: [{ id: 'import-1', moduleSpecifier: './dependency.js', bindingName: 'dependency', startByte: 0, endByte: 1, sourceHash: 'hash', completeness: 'complete', position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 } }],
+    imports: [importRecord],
     rebuildEpoch: 1,
     bytes: new Uint8Array([0]),
     fileHash: 'hash',
@@ -283,7 +115,14 @@ Expected: FAIL with `getActiveImportsForFile is not a function`.
 
 - [ ] **Step 3: Add the helper method**
 
-In `tests/unit/storage/in-memory-metadata-store.ts`, add after `getFileDeclarations`:
+In `tests/unit/storage/in-memory-metadata-store.ts`, add the following import if
+it is not already present:
+
+```typescript
+import type { StructuredImport } from '../../../src/structured/contracts.js';
+```
+
+Then add the method after `getFileDeclarations`:
 
 ```typescript
 getActiveImportsForFile(filePath: string): readonly StructuredImport[] {
@@ -292,8 +131,6 @@ getActiveImportsForFile(filePath: string): readonly StructuredImport[] {
   return active.imports;
 }
 ```
-
-Ensure `StructuredImport` is imported from `../../../src/structured/contracts.js`.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -313,28 +150,206 @@ Expected: both pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add tests/unit/storage/in-memory-metadata-store.ts tests/unit/storage/metadata-store.test.ts
-git commit -m "test(structured-index): active generation の imports を覗き見るテスト用ヘルパーを追加"
+GIT_MASTER=1 git add tests/unit/storage/in-memory-metadata-store.ts tests/unit/storage/metadata-store.test.ts
+GIT_MASTER=1 git commit -m "test(structured-index): active generation の imports を覗き見るテスト用ヘルパーを追加"
 ```
 
 ---
 
-### Task 4: Add `.mjs` Full-Reindex Integration Regression
+### Task 2: Add Structured Parser Fixtures for Module Variants
 
 **Files:**
-- Modify: `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
+- Create: `tests/fixtures/structured/typescript/valid.mjs`
+- Create: `tests/fixtures/structured/typescript/valid.mts`
+- Create: `tests/fixtures/structured/typescript/valid.cjs`
+- Create: `tests/fixtures/structured/typescript/valid.cts`
+- Test: `tests/unit/structured/typescript-parser.test.ts`
 
 **Interfaces:**
-- Consumes: `IndexPipeline.reindex(events, loadContent, true)`, `metadataStore.resolveFile`, `metadataStore.getFileDeclarations`, test-only `metadataStore.getActiveImportsForFile`.
-- Produces: a test proving `.mjs` declaration and ES import persist in the active structured generation after full rebuild.
+- Consumes: `TypeScriptLanguagePlugin.createStructuredParser()`, `parseStructured({ filePath, language, bytes, text })` returning `StructuredParseResult`.
+- Produces: fixtures exist with valid module declarations and, for ESM variants, one ES `import`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing parser tests**
+
+Append to `tests/unit/structured/typescript-parser.test.ts`:
+
+```typescript
+it.each([
+  ['valid.mjs', 'rebuilt', true],
+  ['valid.mts', 'rebuilt', true],
+  ['valid.cjs', 'helper', false],
+  ['valid.cts', 'helper', false],
+] as const)(
+  'parses %s with status ok and retrievability exact',
+  async (name, expectedDeclaration, expectsImport) => {
+    const { result } = await parseFixture(name);
+
+    expect(result.status).toBe('ok');
+    expect(result.retrievability).toBe('exact');
+    expect(
+      result.declarations.some((item) => item.qualifiedName === expectedDeclaration),
+    ).toBe(true);
+
+    if (expectsImport) {
+      expect(result.imports).toContainEqual(
+        expect.objectContaining({ moduleSpecifier: './dependency.js', bindingName: 'dependency' }),
+      );
+    }
+  },
+);
+```
+
+- [ ] **Step 2: Run the failing test and confirm fixture absence RED**
+
+Run: `npx vitest run tests/unit/structured/typescript-parser.test.ts -t "parses valid.mjs"`
+
+Expected: FAIL because the fixture files do not exist yet.
+
+- [ ] **Step 3: Create the fixtures**
+
+Create `tests/fixtures/structured/typescript/valid.mjs`:
+
+```javascript
+import { dependency } from './dependency.js';
+
+export function rebuilt() {
+  return dependency;
+}
+```
+
+Create `tests/fixtures/structured/typescript/valid.mts`:
+
+```typescript
+import { dependency } from './dependency.js';
+
+export function rebuilt(): number {
+  return dependency;
+}
+```
+
+Create `tests/fixtures/structured/typescript/valid.cjs`:
+
+```javascript
+function helper() {
+  return 1;
+}
+
+exports.rebuilt = helper;
+```
+
+Create `tests/fixtures/structured/typescript/valid.cts`:
+
+```typescript
+function helper(): number {
+  return 1;
+}
+
+export = { rebuilt: helper };
+```
+
+For `.cjs` and `.cts`, the assignment-style exports (`exports.rebuilt = helper`
+and `export = { rebuilt: helper }`) are intentionally left in the fixtures to
+visualize the known Phase 1 limitation. They must **not** be asserted as
+extracted declarations.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/unit/structured/typescript-parser.test.ts -t "parses valid"`
+
+Expected: PASS for all four fixtures.
+
+If any fixture unexpectedly produces syntactic diagnostics, stop implementation
+and follow this order:
+
+1. Stop implementation.
+2. Update `docs/superpowers/specs/2026-09-08-expand-structured-index-languages-design.md`
+   with the exact fixture, the diagnostic reason, and the proposed new
+   expected `status` / `retrievability`.
+3. Update Task 2 in this plan to match the new expectation.
+4. Re-check design → plan and plan → design traceability.
+5. Only then resume implementation.
+
+- [ ] **Step 5: Run the relevant parser suite**
+
+Run: `npx vitest run tests/unit/structured/typescript-parser.test.ts`
+
+Expected: PASS.
+
+- [ ] **Step 6: Run typecheck and lint**
+
+```bash
+npx tsc --noEmit
+npm run lint
+```
+
+Expected: both pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+GIT_MASTER=1 git add tests/fixtures/structured/typescript/valid.* tests/unit/structured/typescript-parser.test.ts
+GIT_MASTER=1 git commit -m "test(structured-index): TypeScript モジュール変種の構造化解析フィクスチャを追加"
+```
+
+---
+
+### Task 3: Extend TypeScript-Family Plugin Extensions
+
+**Files:**
+- Modify: `src/plugins/languages/typescript.ts`
+- Modify: `tests/unit/plugins/languages/typescript.test.ts`
+- Modify: `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
+- Modify: `tests/unit/indexer/chunker.test.ts`
+
+**Interfaces:**
+- Consumes:
+  - existing `LanguagePlugin` contract (`fileExtensions`, `supports(filePath)`),
+  - `IndexPipeline.reindex(events, loadContent, true)`,
+  - `metadataStore.resolveFile`,
+  - `metadataStore.getFileDeclarations`,
+  - test-only `metadataStore.getActiveImportsForFile` from Task 1,
+  - `PluginRegistry.registerLanguage`,
+  - `Chunker.chunkFiles`.
+- Produces:
+  - `TypeScriptLanguagePlugin.fileExtensions` includes `.mjs`, `.cjs`, `.mts`, `.cts`;
+  - regression tests proving `.mjs` routing on the structured and vector paths.
+
+This task applies the single production change (`fileExtensions`) only after
+all dependent regression tests have been written and confirmed to fail against
+the old extension set.
+
+- [ ] **Step 1: Add the plugin routing regression test**
+
+Append to `tests/unit/plugins/languages/typescript.test.ts`:
+
+```typescript
+it('supports TypeScript and JavaScript module variants', () => {
+  const plugin = new TypeScriptLanguagePlugin();
+
+  for (const extension of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']) {
+    expect(plugin.supports(`src/example${extension}`)).toBe(true);
+  }
+
+  for (const extension of ['.rs', '.py', '.go', '.txt', '.md']) {
+    expect(plugin.supports(`src/example${extension}`)).toBe(false);
+  }
+});
+```
+
+- [ ] **Step 2: Confirm the routing test is RED before the production change**
+
+Run: `npx vitest run tests/unit/plugins/languages/typescript.test.ts -t "supports TypeScript and JavaScript module variants"`
+
+Expected: FAIL because `.mjs`, `.cjs`, `.mts`, and `.cts` are not yet in
+`fileExtensions`.
+
+- [ ] **Step 3: Add the `.mjs` full-reindex integration regression test**
 
 Append to `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`:
 
 ```typescript
 it('persists .mjs declarations and imports after a structured full rebuild', async () => {
-  const { metadataStore, pipeline, coordinator } = await createStructuredPipeline();
+  const { metadataStore, pipeline } = await createStructuredPipeline();
   const filePath = 'src/rebuilt.mjs';
   const content = [
     "import { dependency } from './dependency.js';",
@@ -367,50 +382,15 @@ it('persists .mjs declarations and imports after a structured full rebuild', asy
 });
 ```
 
-- [ ] **Step 2: Run the failing test**
+- [ ] **Step 4: Confirm the full-reindex test is RED before the production change**
 
 Run: `npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -t "persists .mjs declarations and imports"`
 
-Expected: FAIL because `.mjs` is not yet routed to the TypeScript plugin if Task 1 is not applied; after Task 1 it should PASS.
+Expected: FAIL because `.mjs` is not routed to the TypeScript structured
+parser, so the file is not included in the structured full rebuild and no
+active generation is created.
 
-- [ ] **Step 3: Ensure the dependency is applied and run the test**
-
-Verify Task 1 is merged. Run:
-
-```bash
-npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -t "persists .mjs declarations and imports"
-```
-
-Expected: PASS.
-
-- [ ] **Step 4: Run typecheck and lint**
-
-```bash
-npx tsc --noEmit
-npm run lint
-```
-
-Expected: both pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add tests/unit/indexer/pipeline-structured-lifecycle.test.ts
-git commit -m "test(structured-index): .mjs の完全再索引で宣言と import が永続化することを検証"
-```
-
----
-
-### Task 5: Add `.mjs` Vector/Shared-Routing Regression
-
-**Files:**
-- Modify: `tests/unit/indexer/chunker.test.ts`
-
-**Interfaces:**
-- Consumes: `PluginRegistry.registerLanguage`, `Chunker.chunkFiles`, `TypeScriptLanguagePlugin`.
-- Produces: assertion that a `.mjs` file yields a declaration-based chunk with `symbolName: 'rebuilt'` and `symbolKind: 'function'`.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 5: Add the `.mjs` vector/shared-routing regression test**
 
 Append to `tests/unit/indexer/chunker.test.ts`:
 
@@ -436,19 +416,53 @@ it('routes .mjs files through the TypeScript plugin and produces declaration chu
 });
 ```
 
-- [ ] **Step 2: Run the failing test**
+- [ ] **Step 6: Confirm the vector routing test is RED before the production change**
 
 Run: `npx vitest run tests/unit/indexer/chunker.test.ts -t "routes .mjs files through the TypeScript plugin"`
 
-Expected: FAIL before Task 1; PASS after Task 1.
+Expected: FAIL because the chunker cannot find a language plugin for `.mjs`
+under the old `fileExtensions`, so it falls back to fixed-line chunking and
+produces no declaration-based chunks.
 
-- [ ] **Step 3: Verify with Task 1 applied**
+- [ ] **Step 7: Apply the minimal production change**
 
-Run: `npx vitest run tests/unit/indexer/chunker.test.ts`
+In `src/plugins/languages/typescript.ts`, change:
 
-Expected: PASS.
+```typescript
+readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx'];
+```
 
-- [ ] **Step 4: Run typecheck and lint**
+to:
+
+```typescript
+readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
+```
+
+This is the only production change in Phase 1.
+
+- [ ] **Step 8: Run the targeted regression tests and confirm GREEN**
+
+Run each targeted test:
+
+```bash
+npx vitest run tests/unit/plugins/languages/typescript.test.ts -t "supports TypeScript and JavaScript module variants"
+npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -t "persists .mjs declarations and imports"
+npx vitest run tests/unit/indexer/chunker.test.ts -t "routes .mjs files through the TypeScript plugin"
+```
+
+Expected: all PASS.
+
+- [ ] **Step 9: Run the relevant suites**
+
+```bash
+npx vitest run tests/unit/plugins/languages/typescript.test.ts
+npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts
+npx vitest run tests/unit/indexer/chunker.test.ts
+```
+
+Expected: all PASS.
+
+- [ ] **Step 10: Run typecheck and lint**
 
 ```bash
 npx tsc --noEmit
@@ -457,16 +471,16 @@ npm run lint
 
 Expected: both pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add tests/unit/indexer/chunker.test.ts
-git commit -m "test(chunker): .mjs ファイルが TypeScript プラグイン経由で declaration チャンクを生成することを検証"
+GIT_MASTER=1 git add src/plugins/languages/typescript.ts tests/unit/plugins/languages/typescript.test.ts tests/unit/indexer/pipeline-structured-lifecycle.test.ts tests/unit/indexer/chunker.test.ts
+GIT_MASTER=1 git commit -m "feat(structured-index): TypeScript プラグインで .mjs/.cjs/.mts/.cts をサポート"
 ```
 
 ---
 
-### Task 6: Document Supported Structured-Index Languages
+### Task 4: Document Supported Structured-Index Languages
 
 **Files:**
 - Create: `docs/structured-index.md`
@@ -495,10 +509,17 @@ symbol-aware retrieval and reasoning.
 | Python                  | `.py`                                                  |
 | Go                      | `.go`                                                  |
 
+A file with a supported extension is routed to the structured parser for that
+language family. It still receives vector chunks at the same time. Structured
+declarations and imports are produced only when the parser actually extracts
+them from the file; not every supported file necessarily contributes
+structured records.
+
 ## Structured index vs vector index
 
-Files with supported extensions are parsed for declarations and imports and
-contribute to **both** the structured index and the vector index.
+Files with supported extensions may contribute to both the structured index
+and the vector index, depending on whether the structured parser extracts
+declarations and imports from them.
 
 Files with unsupported extensions (for example `.rs`, `.md`, `.txt`) are still
 indexed, but only as fixed-line **vector chunks**. They do not produce
@@ -507,9 +528,9 @@ structured declarations or imports.
 ## Known limitations
 
 - CommonJS `require()` calls and assignment-style exports such as
-  `module.exports` or `exports.foo` are **not extracted** as structured
-  declarations or imports in Phase 1. Only ECMAScript `import` and
-  declaration syntax is captured.
+  `module.exports`, `exports.foo`, and `export = { ... }` are **not extracted**
+  as structured declarations or imports in Phase 1. Only ECMAScript `import`
+  and declaration syntax is captured.
 
 ## Requesting additional languages
 
@@ -521,27 +542,21 @@ includes:
 3. The declarations and imports you expect to be extracted.
 ```
 
-- [ ] **Step 2: Verify the file renders as Markdown**
+- [ ] **Step 2: Validate the documentation with the existing repo tool**
 
 Run:
 
 ```bash
-npx markdownlint-cli2 docs/structured-index.md
+npx prettier --check docs/structured-index.md
 ```
 
-If `markdownlint-cli2` is not installed locally, install it with:
-
-```bash
-npm install -g markdownlint-cli2
-```
-
-Expected: no errors.
+Expected: no formatting errors.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add docs/structured-index.md
-git commit -m "docs(structured-index): サポート言語と拡張子、制限事項を記載"
+GIT_MASTER=1 git add docs/structured-index.md
+GIT_MASTER=1 git commit -m "docs(structured-index): サポート言語と拡張子、制限事項を記載"
 ```
 
 ---
@@ -552,15 +567,16 @@ git commit -m "docs(structured-index): サポート言語と拡張子、制限�
 
 | Spec requirement | Task |
 | --- | --- |
-| Route `.mjs`/`.cjs`/`.mts`/`.cts` to `TypeScriptStructuredParser` | Task 1 |
-| Keep existing `.ts`/`.tsx`/`.js`/`.jsx` behavior | Tasks 1, 2, 5, full suite |
-| Add plugin routing regression tests | Task 1 |
+| Route `.mjs`/`.cjs`/`.mts`/`.cts` to `TypeScriptStructuredParser` | Task 3 (after RED confirmation) |
+| Keep existing `.ts`/`.tsx`/`.js`/`.jsx` behavior | Tasks 2, 3, full suite |
+| Add plugin routing regression tests | Task 3 |
 | Add structured parser regression tests + fixtures | Task 2 |
-| Add `.mjs` full-reindex integration regression | Task 4 |
-| Add test-only `getActiveImportsForFile` helper | Task 3 |
-| Add `.mjs` vector/shared-routing regression | Task 5 |
-| Document supported extensions and unsupported distinction | Task 6 |
-| No new plugins, frameworks, or dependencies | Tasks 1-6 |
+| Add `.mjs` full-reindex integration regression | Task 3 |
+| Add test-only `getActiveImportsForFile` helper | Task 1 |
+| Add `.mjs` vector/shared-routing regression | Task 3 |
+| Document supported extensions and unsupported distinction | Task 4 |
+| No new plugins, frameworks, or dependencies | Tasks 1-4 |
+| `.cjs`/`.cts` assignment-style exports are not extracted | Task 2 (fixture expectations) |
 
 **2. Placeholder scan:**
 
@@ -568,6 +584,8 @@ git commit -m "docs(structured-index): サポート言語と拡張子、制限�
 - No vague `add appropriate error handling` or `write tests for the above`.
 - No `Similar to Task N` references.
 - Every code step includes concrete file content and run commands.
+- No `or`, `適宜`, `if needed`, `unless`, or `adjust as needed` instructions
+  that delegate design decisions to the implementer.
 
 **3. Type consistency:**
 
@@ -575,15 +593,15 @@ git commit -m "docs(structured-index): サポート言語と拡張子、制限�
 - `TypeScriptLanguagePlugin.fileExtensions` is updated in one place.
 - Test assertions use `qualifiedName`, `kind`, `moduleSpecifier`, `bindingName` consistently with existing tests and the `StructuredImport` contract.
 
----
+**4. RED-GREEN order:**
 
-## Execution Handoff
+- Task 1 helper: test is written first and fails before the helper is added.
+- Task 2 fixtures: parser test is written first and fails because fixtures are missing, then fixtures are added.
+- Task 3 production change: routing, full-reindex, and chunker tests are all written and confirmed RED before `fileExtensions` is changed; GREEN is confirmed after the change.
+- No source change precedes the tests that justify it.
 
-**Plan complete and saved to `docs/superpowers/plans/2026-09-08-expand-structured-index-languages.md`.**
+**5. Traceability:**
 
-**Two execution options:**
-
-1. **Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
-2. **Inline Execution** — Execute tasks in this session using `superpowers:executing-plans`, batch execution with checkpoints.
-
-**Which approach?**
+- Each plan task maps to one or more design spec requirements.
+- The design spec's expected fixture status (`ok`/`exact`) matches the plan's assertions.
+- The design spec's CommonJS non-goals match the plan's fixture expectations and documentation text.
