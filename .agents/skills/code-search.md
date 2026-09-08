@@ -2,135 +2,109 @@
 
 ## When to load
 
-Load this skill before any code investigation or design exploration. Trigger phrases include:
+Load this skill before code investigation, implementation tracing, architectural exploration, or requests such as:
 
-- "Where is this implemented?", "find the reindex logic", or "locate the relevant code".
-- "Who calls `<symbol>`?", "show the call sites", or "trace this symbol".
-- "〜を調べて", "〜の実装を探して", or "〜の影響範囲を知りたい".
-- "How does this feature work?", architecture questions, and dependency exploration.
-- "Search the codebase", "find an example", or any request to inspect implementation details.
+- "Where is this implemented?"
+- "Who calls this symbol?"
+- "Find the relevant code."
+- "How does this feature work?"
+- "Trace the dependency/call path."
 
-Do not return a search-only answer when the task requires understanding code. Follow the pipeline below.
+Do not return a search-only answer when the task requires understanding code. Retrieve enough verified source to support the conclusion.
 
 ## Standard pipeline
 
-Use this order for every code-search task:
+**classify task → check index → search/outline → exact retrieval or bounded context → act**
 
-**task classification → choose index → get context → act**
+This is an agent procedure, not an MCP protocol requirement. Nexus tools can be called independently.
 
-This is an agent procedure, not a Nexus MCP prerequisite. Nexus accepts its tools
-in any order, so clients that call tools directly are not blocked by this sequence.
+### 1. Classify the task
 
-1. **Task classification**
-   - Vague, conceptual, or architectural request: identify concepts and likely related areas.
-   - Exact symbol, error, string, or code fragment: preserve the exact search term.
-   - Structural or call-tree request: determine whether CodeGraph is available.
-2. **Choose index**
-   - Call Nexus `index_status` before any Nexus search. If indexing is running, treat results as potentially incomplete.
-   - Use `codegraph_explore` for structural tracing only when the project has a `.codegraph/` directory.
-   - Without a CodeGraph index, trace structural requests with `index_status`, then Nexus `hybrid_search` and `get_context`.
-   - Use Nexus `hybrid_search` for vague or conceptual exploration.
-   - Use Nexus `grep_search` for exact symbols, errors, and strings.
-   - If a branch switch or large file change may have made the index stale, call `reindex` before relying on search results.
-3. **Get context**
-   - Retrieve the smallest useful line ranges with Nexus `get_context` using both `startLine` and `endLine`.
-   - Prefer the definition, its callers, and the surrounding control flow over whole-file reads.
-4. **Act**
-   - Explain the relevant path, answer the question, or make the requested change using the retrieved context.
-   - Include file paths and line ranges so the result can be checked without another broad search.
+- Vague, conceptual, or architectural request: identify concepts and likely areas.
+- Exact symbol, error, string, or code fragment: preserve the exact search term.
+- Structural/call-tree request: check whether `.codegraph/` is available.
 
-## One-Call pattern
+### 2. Check the relevant index
 
-After a search returns candidates, call `get_context` for the top candidates before
-returning search results. Select the most relevant one to three candidates, request
-targeted line ranges, and use those snippets to validate relevance. The first
-response should contain an actionable answer or a grounded summary, not only a list
-of search hits. This pattern may use multiple MCP calls, but produces one
-evidence-based agent response.
+- Before Nexus search tools, call `index_status`.
+- `pipelineProgress.status === 'running'` means background indexing is active; searches remain available but may be incomplete.
+- Treat indexing as successfully completed only when `indexStats.lastIndexedAt` is non-null and `pipelineProgress.lastError` is absent.
+- CodeGraph exploration does not depend on the Nexus index.
 
-For a vague query, the normal sequence is:
+### 3. Search or outline
+
+- Use `hybrid_search` for semantic, vague, feature, or architecture questions.
+- Use `grep_search` for exact symbols, error strings, constants, and exact code fragments.
+- Use `semantic_search` when vector-only ranking is specifically useful.
+- Use `codegraph_explore` for structural/call-tree tracing only when `.codegraph/` exists.
+- Use `get_file_outline` for a known supported TypeScript/JavaScript, Python, or Go source file when you need a symbol map before selecting a declaration.
+
+### 4. Prefer exact structured retrieval when possible
+
+Search chunks and logical symbols are different retrieval units. A search result can identify a declaration through `symbolId`, while exact retrieval returns the complete verified logical declaration.
+
+When a `semantic_search` or `hybrid_search` result contains a usable `chunk.symbolId`:
+
+- use `get_symbol_source` when you need the exact declaration;
+- use `get_symbol_context` when you need the exact declaration plus validated related imports within a token budget.
+
+Do **not** replace this path with generic line retrieval merely because a search result also contains `startLine` / `endLine`.
+
+Use `get_context` instead when:
+
+- the hit is line-oriented or comes from `grep_search`;
+- the declaration is not represented by a usable `symbolId`;
+- the language/path is unsupported by structured retrieval;
+- structured retrieval reports degraded/incomplete coverage and the task can be answered safely from bounded lines;
+- you need a specific non-symbol line range.
+
+For `get_context`, request the smallest useful range with explicit `startLine` and `endLine`. Avoid whole-file reads when a bounded range is sufficient.
+
+### 5. Act
+
+Explain the implementation, answer the question, or make the requested change from retrieved evidence. Preserve file paths and relevant line/symbol references so the result remains traceable.
+
+## Common retrieval patterns
+
+### Conceptual feature search
 
 1. `index_status`
 2. `hybrid_search`
-3. `get_context` for the top candidates with explicit line ranges
-4. Return the concise finding with file and line references
+3. If top result has a usable `symbolId`: `get_symbol_source` or `get_symbol_context`
+4. Otherwise: `get_context` for the most relevant bounded ranges
+5. Return a grounded summary
 
-For an exact query, replace `hybrid_search` with `grep_search`. For a structural query, use `codegraph_explore` when `.codegraph/` exists, then use `get_context` when Nexus context is needed.
+### Exact symbol trace
 
-`hybrid_search` also supports `includeSnippet: true` (with optional `contextLines`, default 3, clamped to a maximum of 20) to attach a code snippet directly to each result (`snippet`, `snippetStartLine`, `snippetEndLine`). When the top candidates already carry a sufficient snippet this way, the agent can reduce or skip the follow-up `get_context` call in step 3 above.
+1. `index_status`
+2. `grep_search` to locate exact references, or `get_file_outline` if the file is already known
+3. Use a returned `symbolId` with `get_symbol_source` / `get_symbol_context` for declarations
+4. Use `get_context` for individual call sites or other line-oriented hits
+5. Distinguish the declaration from callers
 
-## Deferred Loading
+### Structural dependency request
 
-Return a summary and file/line numbers first. Expand the explanation or retrieve additional context only when the user asks for details, the initial snippets are insufficient, or an edit requires more surrounding code. Keep the initial context bounded by `startLine` and `endLine`; never load an entire file through `get_context` merely to provide background.
+If `.codegraph/` exists:
 
-When expanding, request the next smallest relevant range rather than repeating the full search. Preserve the original candidate paths and line numbers so deferred results remain traceable.
+1. `codegraph_explore`
+2. Use Nexus exact/bounded retrieval only for source evidence needed to support the graph
 
-`get_context` also exposes a built-in Deferred Loading mechanism via `mode: "deferred"`: instead of full content, it returns `totalLines`, a bounded `summary` preview (the requested range when both `startLine` and `endLine` are given, otherwise up to 20 lines), `previewStartLine`/`previewEndLine`, and a `hint` describing how to fetch a specific range. Prefer this mode over manually re-reading a large file in chunks; follow the returned `hint` to request the next range only when needed.
+If `.codegraph/` does not exist:
 
-## Nexus MCP usage rules
+1. `index_status`
+2. `hybrid_search`
+3. Prefer structured exact retrieval for symbol-bearing results
+4. Use bounded `get_context` for remaining references
 
-Nexus is a local-first code indexing platform that combines semantic search, ripgrep search, and AST-based context parsing.
+## Deferred loading
 
-- **Index status:** Always run `index_status` before searching. If `pipelineProgress.status === 'running'`, search results may be incomplete.
-- **Search strategy:** Use `hybrid_search` for semantic queries, vague feature exploration, or architectural questions; it combines vector and ripgrep results through RRF.
-- **Exact search:** Use `grep_search` to pinpoint exact symbols, class or function names, error messages, and code fragments.
-- **Context budgeting:** Use `get_context` with explicit `startLine` and `endLine` values. Do not read a whole file when a minimal snippet answers the question.
-- **Structured symbol search:** Use `get_symbol_source` / `get_symbol_context` with a `symbolId` for verified, exact source and bounded context. Use `get_file_outline` for a source-free symbol map of a known supported file.
-- **Index freshness:** After switching branches or making massive code changes, call `reindex` to refresh the local index before relying on semantic results.
-- **Project context:** When Nexus is active, consult `SPEC.md` for architecture details and `AGENTS.md` for project constraints when those details affect the task.
+Return a concise finding with file/symbol references first. Expand to additional source only when the initial evidence is insufficient or the requested edit requires more surrounding code.
 
-All exploration should remain local-first. Do not introduce external data transmission as part of code search unless the user explicitly requests it.
+`get_context` supports `mode: "deferred"` for preview-first reads. Prefer this over repeatedly reading large files in chunks.
 
-## Verification examples
+## Freshness and failure handling
 
-Use the following scenarios to confirm that the standard pipeline, One-Call pattern, and tool triggers are applied correctly.
-
-### 1. Vague feature search
-
-**User input:** "Where is the reindex logic implemented?"
-
-**Expected tool sequence:**
-1. Load this skill (`code-search.md`).
-2. Call `index_status` to confirm the index is ready.
-3. Call `hybrid_search` with a query like `reindex logic`.
-4. Call `get_context` for the top 1–3 candidates with explicit `startLine` and `endLine`.
-
-**Success criteria:**
-- `hybrid_search` is chosen instead of `grep_search`.
-- The final answer includes the implementation file path(s) and the line ranges retrieved via `get_context`.
-- The answer explains the reindex logic using the retrieved snippets, not just a list of search hits.
-
-### 2. Exact symbol trace
-
-**User input:** "Who calls `executeHybridSearch`?"
-
-**Expected tool sequence:**
-1. Load this skill (`code-search.md`).
-2. Call `index_status` to confirm the index is ready.
-3. Call `grep_search` for the exact symbol `executeHybridSearch`.
-4. Call `get_context` for each call site with explicit line ranges.
-
-**Success criteria:**
-- `grep_search` uses the exact symbol name as the query.
-- The final answer lists every call site with file path and line number.
-- The answer distinguishes callers from the definition itself.
-
-### 3. Structural call-tree request
-
-**User input:** "Show me the dependency graph of the search module."
-
-**Expected tool sequence (if `.codegraph/` exists):**
-1. Load this skill (`code-search.md`).
-2. Call `codegraph_explore` for the search module structure.
-3. Use `get_context` to retrieve key line ranges that support the reported graph.
-
-**Expected tool sequence (if `.codegraph/` does not exist):**
-1. Load this skill (`code-search.md`).
-2. Call `index_status` to confirm the index is ready.
-3. Call `hybrid_search` to explore files under the `search/` directory or related symbols.
-4. Call `get_context` for relevant results.
-
-**Success criteria:**
-- The tool choice branches on the presence of `.codegraph/`.
-- `codegraph_explore` is never called when `.codegraph/` is absent.
-- The final answer includes module dependencies and the evidence paths.
+- After branch switches or large file changes, call `reindex` before relying on semantic results.
+- Structured retrieval is fail-closed. Treat `stale`, `not_found`, `unsupported`, `degraded`, `index_incomplete`, or equivalent status/error codes as evidence that exact retrieval is unavailable for that request.
+- Never guess source from a stale or retired `symbolId`.
+- Fall back to bounded current-working-tree context only when that fallback is appropriate for the task.
