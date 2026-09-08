@@ -194,6 +194,13 @@ it.each([
       expect(result.imports).toContainEqual(
         expect.objectContaining({ moduleSpecifier: './dependency.js', bindingName: 'dependency' }),
       );
+    } else {
+      expect(result.imports).not.toContainEqual(
+        expect.objectContaining({ moduleSpecifier: './dependency.js' }),
+      );
+      expect(
+        result.declarations.some((item) => item.qualifiedName === 'rebuilt'),
+      ).toBe(false);
     }
   },
 );
@@ -230,8 +237,10 @@ export function rebuilt(): number {
 Create `tests/fixtures/structured/typescript/valid.cjs`:
 
 ```javascript
+const dependency = require('./dependency.js');
+
 function helper() {
-  return 1;
+  return dependency;
 }
 
 exports.rebuilt = helper;
@@ -240,17 +249,19 @@ exports.rebuilt = helper;
 Create `tests/fixtures/structured/typescript/valid.cts`:
 
 ```typescript
+import dependency = require('./dependency.js');
+
 function helper(): number {
-  return 1;
+  return dependency;
 }
 
 export = { rebuilt: helper };
 ```
 
 For `.cjs` and `.cts`, the assignment-style exports (`exports.rebuilt = helper`
-and `export = { rebuilt: helper }`) are intentionally left in the fixtures to
-visualize the known Phase 1 limitation. They must **not** be asserted as
-extracted declarations.
+and `export = { rebuilt: helper }`) and the CommonJS `require()` imports are
+intentionally left in the fixtures to visualize the known Phase 1 limitation.
+They must **not** be asserted as extracted declarations or imports.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
