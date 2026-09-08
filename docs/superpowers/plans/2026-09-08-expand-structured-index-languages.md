@@ -16,7 +16,7 @@
 - Do not add production interfaces or public APIs solely for test observation.
 - Do not add new language plugins, parser frameworks, or dependencies.
 - Unsupported extensions still receive only fixed-line vector chunks; no new generic routing abstraction.
-- Tests run with `npx vitest run <file>` and the full suite runs with `npx vitest run`.
+- Tests run with `npx vitest run <file>`.
 - Type check with `npx tsc --noEmit`.
 - Lint with `npm run lint`.
 
@@ -456,6 +456,7 @@ Expected: all PASS.
 
 ```bash
 npx vitest run tests/unit/plugins/languages/typescript.test.ts
+npx vitest run tests/unit/structured/typescript-parser.test.ts
 npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts
 npx vitest run tests/unit/indexer/chunker.test.ts
 ```
@@ -568,7 +569,7 @@ GIT_MASTER=1 git commit -m "docs(structured-index): サポート言語と拡張�
 | Spec requirement | Task |
 | --- | --- |
 | Route `.mjs`/`.cjs`/`.mts`/`.cts` to `TypeScriptStructuredParser` | Task 3 (after RED confirmation) |
-| Keep existing `.ts`/`.tsx`/`.js`/`.jsx` behavior | Tasks 2, 3, full suite |
+| Keep existing `.ts`/`.tsx`/`.js`/`.jsx` behavior | Task 3 Step 9 post-change suites |
 | Add plugin routing regression tests | Task 3 |
 | Add structured parser regression tests + fixtures | Task 2 |
 | Add `.mjs` full-reindex integration regression | Task 3 |
