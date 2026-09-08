@@ -106,5 +106,6 @@ Return a concise finding with file/symbol references first. Expand to additional
 
 - After branch switches or large file changes, call `reindex` before relying on semantic results.
 - Structured retrieval is fail-closed. Treat `stale`, `not_found`, `unsupported`, `degraded`, `index_incomplete`, or equivalent status/error codes as evidence that exact retrieval is unavailable for that request.
+- A retired symbol identity returns `stale_identity`; a file-hash mismatch returns `stale` with `INDEX_FILE_HASH_MISMATCH`. Do not silently map either case to a similar symbol or return guessed source.
 - Never guess source from a stale or retired `symbolId`.
 - Fall back to bounded current-working-tree context only when that fallback is appropriate for the task.

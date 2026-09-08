@@ -112,6 +112,8 @@ Structured retrieval compares the indexed file identity/hash with the current wo
 
 If the current file, structured generation, parser coverage, or symbol hash does not satisfy the exactness contract, the request fails closed with an explicit structured status/error. It must not silently return stale or guessed source as exact.
 
+For example, a current file hash mismatch returns `stale` with reason code `INDEX_FILE_HASH_MISMATCH`, while a retired symbol identity returns `stale_identity` with reason code `SYMBOL_RETIRED`.
+
 ### 6.5 Embedding independence
 
 Once a structured catalog generation exists, `get_file_outline`, `get_symbol_source`, and `get_symbol_context` do not require semantic-search or embedding availability to retrieve structured data. They use the structured catalog plus the current working tree.
