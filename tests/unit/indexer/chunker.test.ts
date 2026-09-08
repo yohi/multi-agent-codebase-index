@@ -181,7 +181,28 @@ describe('Chunker', () => {
     expect(chunks[0]?.hash).toMatch(/^[0-9a-f]{16}$/);
   });
 
+
+  it('routes .mjs files through the TypeScript plugin and produces declaration chunks', async () => {
+    const registry = new PluginRegistry();
+    registry.registerLanguage(new TypeScriptLanguagePlugin());
+
+    const chunker = new Chunker(registry);
+    const content = 'export function rebuilt() {\n  return 1;\n}\n';
+    const chunks = await chunker.chunkFiles([
+      {
+        filePath: 'src/rebuilt.mjs',
+        language: 'typescript',
+        content,
+      },
+    ]);
+
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks).toContainEqual(
+      expect.objectContaining({ symbolName: 'rebuilt', symbolKind: 'function' }),
+    );
 });
+});
+
 
 describe('Chunker – maxChunkChars', () => {
   it('splits an oversized AST declaration into multiple sub-chunks', async () => {
