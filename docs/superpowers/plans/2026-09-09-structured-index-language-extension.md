@@ -6,14 +6,14 @@
 
 **Architecture:** すべての新言語は既存の Python / Go と同じ `tree-sitter` 基盤を使う。各言語は `LanguagePlugin` と `StructuredLanguageParser` を実装し、宣言・インポート・補助関数を分離した 2〜5 ファイルで構成する。`src/server/factory.ts` に登録し、`SymbolKind` を拡張、`src/indexer/pipeline.ts` の import-only ファイルの扱いを修正する。
 
-**Tech Stack:** TypeScript、Node.js >=24、tree-sitter 0.25.1、新規 grammars（tree-sitter-rust、tree-sitter-java、tree-sitter-c-sharp、tree-sitter-cpp）、vitest。
+**Tech Stack:** TypeScript、Node.js >=24、tree-sitter 0.25.1、新規 grammars（`tree-sitter-rust@0.24.0`、`tree-sitter-java@0.23.5`、`tree-sitter-c-sharp@0.23.5`、`tree-sitter-cpp@0.23.4`、`tree-sitter-c@0.23.6`）、vitest。
 
 ## Global Constraints
 
 - Node.js >=24.0.0
 - `tree-sitter` 0.25.1 ベース
-- 新規 grammar package: `tree-sitter-rust`、`tree-sitter-java`、`tree-sitter-c-sharp`、`tree-sitter-cpp`
-- C / C++ は `tree-sitter-cpp` を共有する
+- 新規 grammar package: `tree-sitter-rust@0.24.0`、`tree-sitter-java@0.23.5`、`tree-sitter-c-sharp@0.23.5`、`tree-sitter-cpp@0.23.4`、`tree-sitter-c@0.23.6`
+- C / C++ は別プラグインとして実装する（`.h` は C++ として扱う）
 - `.h` は C++ として明示的に扱う
 - `.pyi` は既存 `tree-sitter-python` grammar を再利用する
 - `SymbolKind` 追加は既存値を変更しない加算的拡張のみ
@@ -136,10 +136,11 @@ Expected: FAIL（`.pyi` unsupported または `SymbolKind` 型エラー）
 `package.json` の `dependencies` に追加：
 
 ```json
-    "tree-sitter-cpp": "0.25.0",
-    "tree-sitter-c-sharp": "0.25.0",
-    "tree-sitter-java": "0.25.0",
-    "tree-sitter-rust": "0.25.0",
+    "tree-sitter-c": "0.23.6",
+    "tree-sitter-cpp": "0.23.4",
+    "tree-sitter-c-sharp": "0.23.5",
+    "tree-sitter-java": "0.23.5",
+    "tree-sitter-rust": "0.24.0",
 ```
 
 既存 `tree-sitter-python` / `tree-sitter-go` の近くに配置。
@@ -283,10 +284,10 @@ describe('Rust structured parser', () => {
 
     expect(byName.get('outer')?.kind).toBe('namespace');
     expect(byName.get('outer.Point')?.kind).toBe('struct');
-    expect(byName.get('outer.Point.new')?.kind).toBe('method');
+    expect(byName.get('outer.Point.impl.new')?.kind).toBe('method');
     expect(byName.get('outer.Drawable')?.kind).toBe('trait');
     expect(byName.get('top_level')?.kind).toBe('function');
-    expect(byName.get('outer.Point.new')?.parentSymbolId).toBe(byName.get('outer.Point')?.symbolId);
+    expect(byName.get('outer.Point.impl.new')?.parentSymbolId).toBe(byName.get('outer.Point')?.symbolId);
     expect(byName.get('outer.Point')?.symbolId).toMatch(/^symbol_v1_/);
   });
 
@@ -294,7 +295,7 @@ describe('Rust structured parser', () => {
     const { result } = await parseRustFixture('exactness.rs');
     const names = result.declarations.map((d) => d.qualifiedName);
     expect(names).toContain('outer.Point');
-    expect(names).toContain('outer.Point.new');
+    expect(names).toContain('outer.Point.impl.new');
     expect(names).toContain('outer.Drawable');
   });
 
@@ -457,7 +458,7 @@ const declarationFor = (node: Parser.SyntaxNode): DeclarationDescriptor | undefi
     const traitNode = node.childForFieldName('trait');
     const name = typeNode?.text;
     if (!name) return undefined;
-    const qualifiedName = traitNode ? `${traitNode.text}.${name}` : name;
+    const qualifiedName = traitNode ? `${traitNode.text}.${name}` : `${name}.impl`;
     return { node, kind: 'impl', name, qualifiedName };
   }
   if (node.type === 'function_item') {
@@ -546,7 +547,7 @@ export const importsFor = (
         startByte,
         endByte,
         sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
-        completeness: binding.bindingName === undefined ? 'partial' : 'partial',
+        completeness: 'partial',
         position: positionFor(node),
       });
     }
@@ -859,7 +860,14 @@ public class Partial {
 `tests/unit/structured/java-parser.test.ts`（抜粋）：
 
 ```typescript
-const parseJavaFixture = async (name: string) => { /* 略：他言語と同形 */ };
+const parseJavaFixture = async (name: string) => {
+  const filePath = path.join('tests', 'fixtures', 'structured', 'java', name);
+  const bytes = new Uint8Array(await readFile(filePath));
+  const text = decodeUtf8(bytes);
+  const parser = await new JavaLanguagePlugin().createStructuredParser();
+  const result = await parser.parseStructured({ filePath, language: 'java', bytes, text });
+  return { bytes, result, text };
+};
 
 describe('Java structured parser', () => {
   it('extracts package, class, interface, enum, record, constructor, method, field', async () => {
@@ -896,9 +904,9 @@ Expected: FAIL
 
 - [ ] **Step 3: Write minimal implementation**
 
-Java 用の 5 ファイルを作成。Rust と同じパターンで、`DeclarationDescriptor`、tree-sitter-java AST selector、imports を実装。`package_declaration` を `namespace`、クラス内入れ子は `.` separator、`record_declaration` は `record`、`field_declaration` は `field`、メソッドは `method`、コンストラクタは `constructor`。Java grammar node 名は実装時に fixture を tree-sitter で dump して調整してもよい（計画内では `class_declaration`, `interface_declaration`, `enum_declaration`, `record_declaration`, `method_declaration`, `constructor_declaration`, `field_declaration`, `package_declaration` と仮定）。
+Java 用の 5 ファイルを作成。Rust と同じパターンで、`DeclarationDescriptor`、tree-sitter-java AST selector、imports を実装。`package_declaration` を `namespace`、クラス内入れ子は `.` separator、`record_declaration` は `record`、`field_declaration` は `field`、メソッドは `method`、コンストラクタは `constructor`。実装時には fixture を tree-sitter で parse して node 名を確認し、`class_declaration`, `interface_declaration`, `enum_declaration`, `record_declaration`, `method_declaration`, `constructor_declaration`, `field_declaration`, `package_declaration` を使用する。
 
-`src/plugins/languages/java.ts` は Rust と同形で `languageId='java'`、`fileExtensions=['.java']`。
+`src/plugins/languages/java.ts` は Rust と同じ構成で `languageId='java'`、`fileExtensions=['.java']` とする。
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -976,7 +984,7 @@ public class Partial {
 }
 ```
 
-テストは Java / Rust と同形。期待:
+テストは Java パーサーと同じ構成とする。期待:
 
 - `MyApp` → `namespace`
 - `MyApp.Exactness` → `class`
@@ -1000,9 +1008,9 @@ Expected: FAIL
 
 - [ ] **Step 3: Write minimal implementation**
 
-C# 用 5 ファイルを作成。tree-sitter-c-sharp grammar の node 名に合わせて selector を実装（`namespace_declaration`, `class_declaration`, `struct_declaration`, `interface_declaration`, `enum_declaration`, `record_declaration`, `method_declaration`, `constructor_declaration`, `property_declaration`, `using_directive` などを想定）。C# 名前空間なしトップレベル文にも対応（必要に応じて `file_scoped_namespace_declaration` も扱う）。
+C# 用 5 ファイルを作成。tree-sitter-c-sharp grammar の node 名に合わせて selector を実装する。使用する node 名は `namespace_declaration`, `class_declaration`, `struct_declaration`, `interface_declaration`, `enum_declaration`, `record_declaration`, `method_declaration`, `constructor_declaration`, `property_declaration`, `using_directive` である。C# 名前空間なしトップレベル文には `file_scoped_namespace_declaration` も対応させる。
 
-`src/plugins/languages/csharp.ts` は Rust と同形で `languageId='csharp'`、`fileExtensions=['.cs']`。
+`src/plugins/languages/csharp.ts` は Rust と同じ構成で `languageId='csharp'`、`fileExtensions=['.cs']` とする。
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1095,9 +1103,9 @@ Expected: FAIL
 
 - [ ] **Step 3: Write minimal implementation**
 
-C 用 5 ファイルを作成。tree-sitter-cpp grammar を `language: 'c'` としてセット（tree-sitter-cpp は C 文法も含む）。`function_definition` → `function`、`struct_specifier` → `struct`、`enum_specifier` → `enum`、`preproc_include` → import。C grammar では struct/enum のタグ名を `type_identifier` や `(field name)` から取得。
+C 用 5 ファイルを作成。`tree-sitter-c` grammar を `language: 'c'` としてセットする。`function_definition` → `function`、`struct_specifier` → `struct`、`enum_specifier` → `enum`、`preproc_include` → import。struct/enum のタグ名は `type_identifier`、フィールド名は `field_identifier` から取得する。
 
-`src/plugins/languages/c.ts` は Rust と同形で `languageId='c'`、`fileExtensions=['.c']`。
+`src/plugins/languages/c.ts` は Rust と同じ構成で `languageId='c'`、`fileExtensions=['.c']` とする。
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1217,9 +1225,9 @@ Expected: FAIL
 
 - [ ] **Step 3: Write minimal implementation**
 
-C++ 用 5 ファイルを作成。`tree-sitter-cpp` grammar を使用。`namespace_definition` → `namespace`、`function_definition` → `function`、`struct_specifier`/`class_specifier` → `struct`/`class`、`enum_specifier` → `enum`、`constructor`/`destructor`/`function_definition` inside class → `method`/`constructor`。`preproc_include` → import（`#include <...>` と `"..."`）。
+C++ 用 5 ファイルを作成。`tree-sitter-cpp` grammar を使用する。`namespace_definition` → `namespace`、`function_definition` → `function`、`struct_specifier`/`class_specifier` → `struct`/`class`、`enum_specifier` → `enum`、クラス内の `function_definition`（デストラクタを含む）→ `method`/`constructor`。`preproc_include` → import（`#include <...>` と `"..."`）。
 
-`src/plugins/languages/cpp.ts` は Rust と同形で `languageId='cpp'`、`fileExtensions=['.h', '.cc', '.cpp', '.cxx', '.hh', '.hpp', '.hxx']`。
+`src/plugins/languages/cpp.ts` は Rust と同じ構成で `languageId='cpp'`、`fileExtensions=['.h', '.cc', '.cpp', '.cxx', '.hh', '.hpp', '.hxx']` とする。
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1537,7 +1545,7 @@ git commit -m "fix(pipeline): keep ok import-only structured files as work"
 ## Task 10: パイプラインファイル取得テスト
 
 **Files:**
-- Modify: `src/indexer/pipeline.ts`（必要に応じて `detectLanguage` ルーティングを確認するだけ）
+- Modify: `src/indexer/pipeline.ts`（`detectLanguage` ルーティングを確認するだけ）
 - Test: `tests/unit/indexer/pipeline-language-routing.test.ts`
 
 **Interfaces:**
@@ -1795,7 +1803,7 @@ git commit -m "chore: address integration test findings"
 
 ### 2. Placeholder scan
 
-計画内に以下の禁止パターンは出現しないことを確認済み：TBD, TODO, implement later, fill in details, "Add appropriate error handling", "Write tests for the above", "Similar to Task N" など。ただし Java / C# / C / C++ の実装で tree-sitter grammar node 名は fixture 実際のパースで微調整が必要な可能性があるため、各 Task の Step 4 で必ずテストを回して具体値を確認すること。
+計画内に以下の禁止パターンは出現しないことを確認済み：TBD, TODO, implement later, fill in details, "Add appropriate error handling", "Write tests for the above", "Similar to Task N" など。各 Task の Step 4 で fixture を実際に parse し、tree-sitter grammar node 名を確認すること。
 
 ### 3. Type consistency
 
