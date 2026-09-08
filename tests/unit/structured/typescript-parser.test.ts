@@ -224,7 +224,11 @@ describe('TypeScript structured parser', () => {
 
       if (expectsImport) {
         expect(result.imports).toContainEqual(
-          expect.objectContaining({ moduleSpecifier: './dependency.js', bindingName: 'dependency' }),
+          expect.objectContaining({
+            moduleSpecifier: './dependency.js',
+            bindingName: 'dependency',
+            completeness: 'complete',
+          }),
         );
       } else {
         expect(result.imports).not.toContainEqual(
