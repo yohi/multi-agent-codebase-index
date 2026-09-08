@@ -80,16 +80,61 @@ support change in Phase 1.
 
 ### Change List
 
+#### Production
+
 1. `src/plugins/languages/typescript.ts`
    - Update `fileExtensions` from `['.ts', '.tsx', '.js', '.jsx']` to
      `['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']`.
+
+#### Documentation
+
 2. `docs/structured-index.md`
    - Create a "Supported languages and extensions" table.
+   - Describe the structured/vector distinction for unsupported extensions.
+   - Document CommonJS limitations for Phase 1.
+
+#### Tests
+
+3. `tests/unit/plugins/languages/typescript.test.ts`
+   - Add extension routing regression cases for `.mjs`, `.cjs`, `.mts`, `.cts`
+     and existing extensions.
+
+4. `tests/unit/structured/typescript-parser.test.ts`
+   - Add module-variant parser regression cases using the four new fixtures.
+
+5. `tests/fixtures/structured/typescript/valid.mjs`
+   - New fixture: valid ESM JavaScript declaration with an ES `import`.
+
+6. `tests/fixtures/structured/typescript/valid.mts`
+   - New fixture: valid ESM TypeScript declaration with an ES `import`.
+
+7. `tests/fixtures/structured/typescript/valid.cjs`
+   - New fixture: valid CommonJS JavaScript declaration.
+   - Does not assert `require()` based structured import extraction.
+
+8. `tests/fixtures/structured/typescript/valid.cts`
+   - New fixture: valid CommonJS TypeScript declaration.
+   - Does not assert `require()` based structured import extraction.
+
+9. `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
+   - Add `.mjs` full-reindex integration regression verifying declaration and
+     import persistence after `pipeline.reindex(..., true)`.
+
+#### Test support
+
+10. `tests/unit/storage/in-memory-metadata-store.ts`
+    - Add the test-only helper:
+      `getActiveImportsForFile(filePath: string): readonly StructuredImport[]`
+    - Helper is used only by the full-reindex integration test to inspect the
+      active generation's `imports` array; it is not part of any production
+      interface.
 
 ### Test Strategy
 
-Testing is split into three layers. Each layer has a single, concrete target
-test file and deterministic expectations.
+Testing is split into three layers covering the main structured indexing paths,
+plus a vector/shared-routing regression and a test-only storage inspection
+helper. Each item has a single, concrete target test file and deterministic
+expectations.
 
 #### A. Plugin routing test
 
@@ -136,16 +181,25 @@ Target file: `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
 
 Add a `.mjs` test case that exercises the full pipeline:
 
-1. Create a `.mjs` source containing at least one declaration and one ES `import`.
+1. Create a `.mjs` source file with the exact content:
+
+   ```js
+   import { dependency } from './dependency.js';
+
+   export function rebuilt() {
+     return dependency;
+   }
+   ```
+
 2. Call `pipeline.reindex(..., true)` to trigger a clean full rebuild.
 3. Verify the `.mjs` file is included in the structured full-rebuild input.
-4. Verify the resulting structured work contains the expected declaration and
-   import.
+4. Verify the resulting structured work contains the expected declaration (`rebuilt`)
+   and one ES `import`.
 5. Verify the file has an active structured generation after the rebuild
    completes.
 6. Verify the declaration is retrievable from the active structured metadata
    (`resolveFile(filePath)` returns active and `getFileDeclarations(filePath)`
-   returns the expected declaration).
+   contains a declaration whose `qualifiedName` includes `rebuilt`).
 7. Verify the ES `import` is persisted in the active generation by using the
    test-only inspection helper added to `InMemoryMetadataStore`. Do not add a
    production API or extend `IStructuredCatalog` solely for test observation.
@@ -165,12 +219,12 @@ Implementation notes for the helper:
 - After the full rebuild the test asserts:
 
   - `resolveFile(filePath)` returns `{ kind: 'active', generationId }`.
-  - `getFileDeclarations(filePath)` contains the expected declaration.
-  - `getActiveImportsForFile(filePath)` contains the expected ES import.
-
-The expected ES import must be matched by at least `moduleSpecifier` and the
-fixture-appropriate import identity (e.g. `bindingName` or a combination of
-`moduleSpecifier`, `bindingName`, `startByte`, and `completeness`).
+  - `getFileDeclarations(filePath)` contains the `rebuilt` declaration.
+  - `getActiveImportsForFile(filePath)` contains exactly one ES import whose
+    `moduleSpecifier` is `'./dependency.js'` and whose `bindingName` is
+    `'dependency'`. (These are fixture-level expectations; the parser may still
+    produce other fields such as `startByte`, but this integration test does not
+    assert them.)
 
 This test directly validates Issue #287's acceptance condition: after
 `--reindex --full`, `.mjs` declarations and imports are present in the
