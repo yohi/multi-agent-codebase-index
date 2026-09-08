@@ -27,13 +27,29 @@ The package lockfile is authoritative for dependency resolution.
 
 ## Package Usage
 
-Use the published package when you do not need to modify Nexus source:
+`@yohi/nexus` is published to GitHub Packages (`https://npm.pkg.github.com`). Configure npm authentication for the `@yohi` scope before installing or executing the published package.
+
+A typical project-level `.npmrc` entry is:
+
+```ini
+@yohi:registry=https://npm.pkg.github.com
+```
+
+Provide the GitHub Packages credential through npm's normal credential configuration for your environment; do not commit tokens to the repository.
+
+After the registry is configured:
 
 ```bash
 npx @yohi/nexus
 ```
 
-Package deployments can also use `NEXUS_PACKAGE_MODE=1`. Package mode applies additional distribution constraints, including the configured embedding-provider requirements. See [Configuration](configuration.md) and [Distribution](distribution.md).
+For a tokenless source-based dependency, the repository can also be installed through its Git URL:
+
+```bash
+npm install github:yohi/nexus
+```
+
+Package deployments can use `NEXUS_PACKAGE_MODE=1`. Package mode applies additional distribution constraints, including the configured embedding-provider requirements. See [Configuration](configuration.md) and [Distribution](distribution.md).
 
 ## MCP Client Setup
 
