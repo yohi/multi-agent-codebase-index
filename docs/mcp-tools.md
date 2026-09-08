@@ -64,6 +64,6 @@ A stale or retired identity must not be silently mapped to a similar symbol.
 
 `reindex` accepts optional `fullRebuild` and `reason` (`manual`, `overflow-recovery`, or `startup-reconciliation`). If indexing is already running, it reports that state instead of starting a second pipeline. A full rebuild is not successfully complete while unresolved dead-letter work remains.
 
-## HTTTP Bridge
+## HTTP Bridge
 
 `nexus http-bridge` adapts stdio-only MCP clients to a Nexus Streamable HTTP endpoint. Without an explicit URL it discovers or starts the project-scoped loopback server. Transport and managed-server safety invariants are defined in [SPEC.md](../SPEC.md).

@@ -29,7 +29,7 @@ git clone https://github.com/yohi/nexus.git
 cd nexus
 npm ci
 npm run build
-npx nexus
+node dist/bin/nexus.js
 ```
 
 公開パッケージ `@yohi/nexus` は GitHub Packages を使用するため、registry と認証の設定が必要です。Package Usage は [Setup](docs/setup.md) を参照してください。

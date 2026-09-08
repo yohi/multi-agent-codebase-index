@@ -9,7 +9,7 @@ This document is part of the canonical Nexus configuration reference. See [Confi
 | `embedding.provider` | `ollama` | `NEXUS_EMBEDDING_PROVIDER` | `ollama`, `openai-compat`, `bedrock`, or `test`. |
 | `embedding.model` | `nomic-embed-text` | `NEXUS_EMBEDDING_MODEL` | Provider model name. |
 | `embedding.dimensions` | `768` | `NEXUS_EMBEDDING_DIMENSIONS` | Expected vector dimensions. |
-| `embedding.baseUrl` | `http://127.0.0.1:11434` | `NEXUS_EMBEDDING_BASE_URL` | For HTTP providers. With `openai-compat`, supply the complete endpoint path. |
+| `embedding.baseUrl` | `http://127.0.0.1:11434` | `NEXUS_EMBEDDING_BASE_URL` | For HTTP providers. With `openai-compat`, supply the complete endpoint path. If `embedding.apiKey` is set, this URL must use `https:`; HTTP is allowed without an API key. |
 | `embedding.apiKey` | unset | `NEXUS_EMBEDDING_API_KEY` | Optional provider API key. |
 | `embedding.region` | unset; Bedrock falls back to `us-east-1` | `NEXUS_EMBEDDING_REGION` | AWS region for `bedrock`. |
 | `embedding.profile` | unset | `NEXUS_EMBEDDING_PROFILE` | Optional named AWS profile for `bedrock`. |

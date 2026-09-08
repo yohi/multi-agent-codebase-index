@@ -28,7 +28,9 @@ This is an agent procedure, not an MCP protocol requirement. Nexus tools can be 
 
 - Before Nexus search tools, call `index_status`.
 - `pipelineProgress.status === 'running'` means background indexing is active; searches remain available but may be incomplete.
-- Treat indexing as successfully completed only when `indexStats.lastIndexedAt` is non-null and `pipelineProgress.lastError` is absent.
+- After calling `reindex`, call `index_status` again regardless of whether it returns a completed result, `already_running`, `incomplete`, or raises an exception.
+- Treat indexing as successfully completed only when `pipelineProgress.status === 'idle'`, `indexStats.lastIndexedAt` is non-null, `pipelineProgress.lastError` is absent, and `indexStats.lastError` is absent.
+- Do not treat `already_running`, `incomplete`, exceptions, or `pipelineProgress.status === 'running'` as completion. Wait and re-check `index_status` before relying on complete-index search results.
 - CodeGraph exploration does not depend on the Nexus index.
 
 ### 3. Search or outline

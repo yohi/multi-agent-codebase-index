@@ -20,7 +20,7 @@ git clone https://github.com/yohi/nexus.git
 cd nexus
 npm ci
 npm run build
-npx nexus
+node dist/bin/nexus.js
 ```
 
 The package lockfile is authoritative for dependency resolution.
