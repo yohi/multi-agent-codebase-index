@@ -1,436 +1,168 @@
-# Nexus ⚡️
+# Nexus
 
-**AI エージェントのための、ローカル MCP ベース・コードインデックス基盤**
+[日本語](README.ja.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![MCP Protocol](https://img.shields.io/badge/MCP-Supported-green.svg)](https://modelcontextprotocol.io/)
+[![MCP](https://img.shields.io/badge/MCP-Supported-green.svg)](https://modelcontextprotocol.io/)
 
-Nexus は、AI エージェントが巨大なコードベースを効率的に理解し、正確なコンテキストを取得するための MCP (Model Context Protocol) サーバーです。
-Semantic search、Exact grep search、File context 取得を 1 つのローカルインデックスに集約し、高速かつ一貫性のある検索体験を提供します。
+**A local-first MCP code index for fast, evidence-based code search and exact symbol retrieval.**
+
+Nexus helps AI agents explore large codebases without repeatedly loading whole files. It combines semantic search, ripgrep, AST-aware indexing, exact symbol retrieval, and bounded context extraction behind one local MCP server.
 
 > [!IMPORTANT]
-> **v2 はメジャーリリースです。** MCP プロトコル v2 への移行に伴い、v1 で公開していた MCP ツール仕様・CLI オプション・設定キーの一部が後方互換性のない形で変更されています。
+> **v2 contains breaking changes.** The MCP tool contracts, CLI options, and configuration keys changed from v1. Use the current [MCP tool reference](docs/mcp-tools.md) and [configuration reference](docs/configuration.md) when migrating.
 
-### v2 への移行 (Breaking Changes)
+## Quick Start
 
-- **MCP ツール仕様**: v1 で公開していたツール定義・入出力形式は v2 で置き換えられました。最新の仕様は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
-- **サーバー起動オプション・設定**: `nexus serve` などの CLI オプションと `.nexus.json` の設定キーが再設計されています。設定方法は [docs/configuration.md](docs/configuration.md) を参照してください。
-- **HTTP トランスポート**: ストリーミング対応の Streamable HTTP transport が標準となり、v1 の構成とは互換性がありません。直接起動する `nexus serve` は stateless v2 HTTP、`nexus http-bridge` が管理する HTTP サーバーはクライアント接続ごとに独立した MCP transport/server instance を生成しつつ共有ランタイムを持ちます。ここでの「セッション」は接続のライフサイクルを指し、クライアントごとにインデックス状態を複製するサーバー側セッション状態ではありません。
+### Requirements
 
-v1 からの移行手順と前提条件は [docs/setup.md](docs/setup.md) を参照してください。
+- Node.js 24 or later
+- npm
+- An embedding provider. Ollama is the default local provider.
 
-## 🚀 特徴
+### Install and run
 
-- **ハイブリッド検索**: LanceDB によるベクトル検索と ripgrep による高速な文字列検索を統合。
-- **インテリジェント・チャンキング**: AST 解析に基づき、関数のセマンティクスを維持したままコードを分割。
-- **低レイテンシ**: ローカル実行に特化し、ネットワーク遅延のない高速なレスポンスを実現。
-- **構造化 symbol 検索**: TypeScript/JavaScript, Python, Go に対応し、`semantic_search` / `hybrid_search` の結果に含まれる `symbolId` を使い、`get_symbol_source` / `get_symbol_context` / `get_file_outline` で正確なソースと関連コンテキストを取得できます（DB へのソース本文複製なし、SHA-256 二段階検証による TOCTOU 防止、BPE トークン会計によるコンテキスト最適化）。
-- **自律的メンテナンス**: ファイル監視 (Watcher) とデッドレターキュー (DLQ) による自動的なインデックス更新とリカバリ。
-- **初回バックグラウンド Full Index**: 未インデックスのプロジェクトを通常サービスとして起動すると、
-  サーバーを利用可能なまま Full Index を一度だけ開始します。
-  既存の stale インデックスは自動再構築しません。
-- **アプリケーション層 Observability**: MCP ツール利用状況、検索ヒット数、取得コンテキスト行数、Embedding API レイテンシを Prometheus メトリクスとして公開。
-- **Telemetry Aggregator**: `nexus dashboard` が複数 Nexus プロセスのメトリクスを自動登録・集約し、Grafana から `localhost:9470/metrics` をスクレイプできます。
-- **プロセス間排他制御・CPU負荷抑制**: `proper-lockfile` によるファイルベースのロックで同一プロジェクトへの複数プロセス同時起動や Ollama の CPU 奪い合いを防止（Ollama リクエストは `AbortSignal` 対応の無制限キューイングで安全に順番待ち）。さらに、Ollama への埋め込みリクエスト単位でスレッド数を制限（デフォルト 2、範囲 1〜16）し、ホストマシンのレスポンシブネスを維持します。
-- **プロジェクト単位の自動コネクター**: `nexus http-bridge` はプロジェクトごとに 1 つの loopback HTTP プロセスを自動的に発見・起動し、複数の MCP クライアントが同時に接続できます。最後のクライアントが切断すると自動的に停止するため、ポート番号や PID を手動管理する必要はありません。
-- **CLI 手動リインデックス**: `nexus --reindex` で即座に 1 回だけインデックスを再構築し、`--full` を付けると clean full rebuild で実行します。
-- **マルチ Embedding プロバイダ対応**: ローカルの `ollama`、OpenAI 互換 API (`openai-compat`) に加え、AWS Bedrock (Titan v2) を追加の代理サービスなしで直接呼び出せます。`NEXUS_PACKAGE_MODE=1` で provider を `bedrock` に固定する業務配布用の制限プロファイルも備えています。
-
-## 🛠 セットアップ
-
-### FOR HUMANS (推奨)
-
-> [!TIP]
-> 人間は環境構築や設定を打ち間違えることがあるため、AIエージェントに丸投げすることを強く推奨します。
-> **Gemini CLI**, **Claude Code**, **Cursor** などの AI エージェントを使用している場合は、以下のプロンプトをコピーして貼り付けてください。
->
-```text
-Install and configure Nexus. First, read the local README.md and AGENTS.md in this repository. You MUST use your interaction tool (e.g., ask_user, input) to let me choose the installation method BEFORE executing any other commands.
+```bash
+npx @yohi/nexus
 ```
 
-#### 📝 エージェントの恒久的な設定（グローバル AGENTS.md への追記推奨）
+For a source checkout:
 
-AI エージェントが常にこの Nexus MCP を正しく、かつコンテキストを節約して使いこなせるようにするため、あなたのグローバルなエージェント指示書（例: `.github/copilot-instructions.md`、`.cursorrules`、グローバルの `AGENTS.md` など）に以下のガイドラインを追記することを強く推奨します。
-
-````markdown
-## Nexus MCP Server Usage Guidelines
-
-When using **Nexus MCP** tools for codebase exploration and semantic search, adhere to these instructions for optimal performance and token budget.
-
-### 1. WHAT & WHY (Project Overview)
-- **Purpose**: Nexus is a local-first code indexing and search platform for AI agents, providing hybrid semantic search, ripgrep, and AST-based context parsing.
-
-### 2. Tool Selection Triggers
-- **Load the code-search skill first**: For any code investigation or design exploration, load the project-local `.agents/skills/code-search.md` before searching. It defines the standard pipeline and One-Call / Deferred Loading patterns.
-- **Structural / call-tree tracing**: If the repository has a `.codegraph/` directory, prefer `codegraph_explore` for dependency and call-tree questions; otherwise use Nexus search tools.
-- **Vague or conceptual search**: Use `hybrid_search` (combines vector & ripgrep via RRF).
-- **Exact symbol or error-string search**: Use `grep_search`.
-- **Minimal file context retrieval**: Use `get_context` with explicit `startLine` and `endLine`.
-- **Structured symbol retrieval**: When `semantic_search` / `hybrid_search` results include `chunk.symbolId`, prefer `get_symbol_source` for the exact source or `get_symbol_context` for validated imports and bounded context. Use `get_file_outline` for known supported files when you need a symbol map before selecting a symbol. Fall back to `get_context` for line-oriented hits, unsupported declarations, or non-indexed files.
-
-### 3. One-Call & Deferred Loading Patterns
-- **One-Call pattern**: After `hybrid_search` or `grep_search` returns candidates, call `get_context` for the top 1-3 candidates before answering. The first response should contain an actionable, evidence-based summary with file paths and line ranges, not just a list of hits.
-- **Deferred Loading**: Return a summary plus file/line references first. Expand the explanation or fetch additional ranges only when the user asks for details or the initial snippets are insufficient. Never load an entire file through `get_context` merely for background.
-
-### 4. Tool Usage Rules (Playbook)
-- **Index Status**: Run `index_status` before any Nexus search (`hybrid_search`,
-  `grep_search`, `semantic_search`). `pipelineProgress.status === 'running'` means
-  background indexing is active but does not block searches. Treat indexing as
-  successfully completed only when `indexStats.lastIndexedAt` is non-null and
-  `pipelineProgress.lastError` is absent. CodeGraph exploration does not depend
-  on the Nexus index, so `index_status` is not required before `codegraph_explore`.
-- **Search Strategy**:
-  - Use `hybrid_search` for semantic queries, vague feature exploration, or architectural questions (combines vector & ripgrep via RRF).
-  - Use `grep_search` to pinpoint exact symbols, class/function names, or error strings.
-  - If the repository has a `.codegraph/` directory, use `codegraph_explore` for structural or call-tree tracing.
-- **Context Budgeting**:
-  - When calling `get_context`, **prefer** partial reads: specify `startLine` and `endLine` to retrieve the minimal relevant snippet whenever you know the range. If you need a complete analysis of a file, omitting the range to read the entire file is acceptable.
-  - If you switch branches or make massive code changes, manually call `reindex` to refresh the local LanceDB store.
-
-### 5. Project-Specific Context
-- **Local Documentation**: In repositories where Nexus is active, refer to the project-local `SPEC.md` for architecture details and `AGENTS.md` for specific development constraints, if they exist.
-- **Skill Layer**: For code-search tasks, the canonical skill file is `.agents/skills/code-search.md`. It contains the standard pipeline (task classification → choose index → get context → act), One-Call pattern, and Deferred Loading guidance.
-````
-
-<details>
-<summary><h3>FOR AGENTS (AIエージェント向け手順)</h3></summary>
-
-あなたがターミナル操作可能なAIエージェントであるなら、**まず [AGENTS.md](AGENTS.md) を読み込み、そこに記載された「[Mandatory constraints](AGENTS.md#mandatory-constraints)」に即座に従ってください。**
-
-**重要要件**:
-- **ステップ0**: 独断で進めず、必ずお手持ちの**ユーザー対話ツール（`ask_user`, `input`, `confirm` 等）**を使用して、ユーザーに以下のいずれのインストール方式を希望するか確認してください。
-- **PATの扱い**: 「ソースからビルド」を選択した場合、GitHub PAT (Personal Access Token) は**不要**です。`bootstrap` スクリプトが自動的に認証問題を回避するように設計されています。
-- **秘匿情報の保護**: チャット内でユーザーにトークンの直接入力を求めることは禁止されています。
-
-選択された方式に従って、[AGENTS.md](AGENTS.md) に集約されている詳細な手順を自律的に遂行してください。
-
-より詳細な運用方法については [AGENTS.md](AGENTS.md) を参照してください。
-
-#### 💡 運用ガイドライン (Playbook)
-
-- **インデックス状態の確認**: Nexus の検索（`hybrid_search`、`grep_search`、
-  `semantic_search`）を実行する前に `index_status` を呼び出してください。
-  `pipelineProgress.status === 'running'` はバックグラウンドのインデックス処理中であることを示しますが、検索は利用できます。正常完了の判定には
-  `indexStats.lastIndexedAt !== null` と
-  `pipelineProgress.lastError` が未設定であることを併せて確認してください。
-  CodeGraph のみを使う構造探索では不要です。
-- **スキルのロード**: コード調査や設計把握のタスクでは、検索実行前にプロジェクトローカルの `.agents/skills/code-search.md` を読み込んでください。そこに標準パイプライン、One-Call パターン、Deferred Loading の手順が定義されています。
-- **構造・コールツリーの追跡**: リポジトリに `.codegraph/` ディレクトリが存在する場合は、構造追跡に `codegraph_explore` を優先してください。CodeGraph が存在しない場合は、`index_status` を確認してから Nexus の検索ツールでカバーします。
-- **検索の使い分け**:
-  - **曖昧な探索・関連箇所の特定**: `hybrid_search` を最優先で使用してください。セマンティック検索と ripgrep が融合され、最適な結果が得られます。
-  - **特定のシンボルやコード断片の検索**: `grep_search` を使用してください。特定のクラス名、関数定義、エラーメッセージなどをピンポイントで検出できます。
-  - **構造・コールツリーの追跡**: `.codegraph/` が存在する場合は `codegraph_explore` を優先してください。
-- **One-Call パターン**: `hybrid_search` や `grep_search` の結果を返す前に、上位 1〜3 件の候補に対して `get_context` を呼び出し、行範囲付きの根拠をまとめてください。最初の回答は検索ヒット一覧だけでなく、ファイルパスと行番号を含む実用的なまとめであるべきです。
-- **Deferred Loading**: 最初はサマリーとファイル/行番号のみを返し、ユーザーが詳細を求めた場合や初回スニペットで不足する場合だけ追加の範囲を取得してください。背景説明だけを目的に `get_context` でファイル全体を取得しないでください。
-- **インデックスの鮮度**: 大規模なファイル変更や `git checkout` によるブランチ切り替えの後は、`reindex` を呼び出してインデックスを手動で更新することを強く推奨します。
-
-設定が必要な場合は、プロジェクトルートに `.nexus.json` を作成してください。
-
-#### 🛠 MCP 設定例 (Claude Desktop / Gemini CLI)
-
-各エージェントの設定ファイル（例: `claude_desktop_config.json`）の `mcpServers` セクションに以下を追加してください。
-
-```json
-{
-  "mcpServers": {
-    "nexus": {
-      "command": "nexus",
-      "args": [],
-      "env": {
-        "NEXUS_STORAGE_ROOT_DIR": "/path/to/your/project/.nexus"
-      }
-    }
-  }
-}
+```bash
+npm ci
+npm run build
+npx nexus
 ```
 
-#### 🌉 HTTP Bridge 経由で接続する場合
+Nexus stores project-local index data under `<projectRoot>/.nexus` by default.
 
-stdio-only の MCP クライアント（OpenCode など）から使う場合は、`nexus http-bridge` を使います。Bridge は stdio 上の JSON-RPC を Nexus の Streamable HTTP エンドポイントに転送します。
+### Verify the index
 
-引数なしで実行すると、プロジェクトごとに 1 つの loopback HTTP Nexus プロセスを自動的に発見または起動し、最後の MCP クライアントが切断すると自動的に停止します。descriptor は `<storage.rootDir>/endpoint.json` に保存され、デフォルトは `.nexus/endpoint.json` です。`NEXUS_STORAGE_ROOT_DIR` または `.nexus.json` の `storage.rootDir` で保存先を変更できます。ポート番号や URL を手動で管理する必要はありません。
+Connect your MCP client to the `nexus` command, then call `index_status`.
 
-同一プロジェクトに対して複数の MCP クライアント（複数のエディタウィンドウやエージェントなど）が同時に接続でき、それぞれ独立した MCP transport/server instance（接続単位のセッション・ライフサイクル）を持ちながら、同じインデックス（SQLite/LanceDB）や File Watcher などの共有ランタイム状態を共有します。ここでの「セッション」は接続のライフサイクルを指し、クライアントごとにインデックス状態を複製するサーバー側状態ではありません。
+A usable index has a non-null `indexStats.lastIndexedAt` and no `pipelineProgress.lastError`. Initial indexing runs in the background; searches can run while indexing is in progress, but results may be incomplete.
 
-```json
-{
-  "mcpServers": {
-    "nexus": {
-      "command": "nexus",
-      "args": ["http-bridge"],
-      "env": {
-        "NEXUS_STORAGE_ROOT_DIR": "/path/to/your/project/.nexus"
-      }
-    }
-  }
-}
+For client-specific setup and the Source Build / Package Usage choice, see [Setup](docs/setup.md).
+
+## Features
+
+- **Hybrid search** — semantic vector search and ripgrep results fused with Reciprocal Rank Fusion.
+- **Exact search** — fast exact text and regex search through ripgrep.
+- **Structured symbol retrieval** — stable `symbolId` values for TypeScript/JavaScript, Python, and Go, with exact source, bounded context, and file outlines.
+- **Incremental indexing** — file watching, diff detection, and recovery queues keep indexes current.
+- **Local-first operation** — Ollama can keep source-derived embedding data on the host; externally configured embedding providers may transmit source-derived text to those services.
+- **Observability** — Prometheus metrics and a dashboard/aggregator for multi-process monitoring.
+- **HTTP bridge and server modes** — stdio clients can connect to a project-scoped local HTTP server without manually managing ports or PIDs.
+
+## Agent Setup
+
+Repository-wide AI-agent behavior belongs in [AGENTS.md](AGENTS.md). The canonical code-search workflow is [.agents/skills/code-search.md](.agents/skills/code-search.md).
+
+For a typical search:
+
+1. Check `index_status`.
+2. Use `hybrid_search` for conceptual exploration or `grep_search` for exact text.
+3. When a result has a usable `symbolId`, prefer `get_symbol_source` or `get_symbol_context`.
+4. Use `get_context` for line-oriented hits, unsupported/degraded structured retrieval, or other non-symbol cases.
+
+See [MCP Tools](docs/mcp-tools.md) for the complete public tool reference.
+
+## Usage
+
+### Rebuild the index
+
+```bash
+nexus --reindex
+nexus --reindex --full
 ```
 
-外部の Nexus HTTP サービスに明示的に接続したい場合は、`--url` 引数または `NEXUS_BRIDGE_URL` 環境変数で上書きできます。これらを指定した場合、Bridge は自動起動を一切行わず、指定 URL にのみ接続します。詳細は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
+`--full` performs a clean full rebuild.
 
-プロジェクトルートを明示的に指定したい場合は `--project-root <path>` 引数または `NEXUS_PROJECT_ROOT` 環境変数を使用します（未指定時はカレントディレクトリ）。
-
-#### MCP v2 HTTP サーバーを直接起動する
-
-`nexus serve` は、MCP プロトコル `2026-07-28` 準拠のローカルHTTPサーバーを起動します。既定の待受先は loopback の `127.0.0.1:9200` であり、外部ネットワーク向けのホストは指定できません。
+### Run a local HTTP MCP server
 
 ```bash
 nexus serve
 nexus serve --host 127.0.0.1 --port 9200
 ```
 
-`.nexus.json` の `http` ブロック、または `NEXUS_HTTP_HOST` / `NEXUS_HTTP_PORT` で待受先を設定できます。local-only モードのため、`openai-compat` と `bedrock` の埋め込みプロバイダーは使用できません。
+Local HTTP v2 is loopback-only by design. See [SPEC.md](SPEC.md) for the current transport and safety invariants.
 
-</details>
-
-## 📖 使い方
-
-### ダッシュボード (TUI) の起動
-
-Nexus サーバーが起動している状態で、以下のコマンドを実行すると、ターミナル上でリアルタイムなインデックス状態やキューの監視が可能なダッシュボードが開きます。
+### Use the stdio HTTP bridge
 
 ```bash
-# グローバルインストールされている場合
+nexus http-bridge
+```
+
+The bridge discovers or starts the project-scoped local HTTP server and forwards stdio JSON-RPC traffic to the Streamable HTTP endpoint.
+
+### Dashboard
+
+```bash
 nexus dashboard
-
-# ポート番号(指定時はそのポートを使用、未指定時は自動検出)や更新間隔(デフォルト: 2000ms, 最小: 1000ms)を指定する場合
-nexus dashboard --port 9470 --interval 3000
-
-# Aggregator の待受ポートを指定する場合（Prometheus/Grafana の scrape target）
-nexus dashboard --aggregator-port 9470
-
-# リポジトリ内からソースを直接実行する場合（Dashboard 単体のエントリーポイント）
-npx tsx packages/dashboard/src/cli.ts --port 9470 --interval 3000
 ```
 
-### メトリクス集約サーバー (Aggregator) の単体・デーモン起動
+For aggregator and Grafana/Prometheus setup, see [Observability](docs/observability/README.md).
 
-TUI（画面表示）を起動せずに、メトリクス集約サーバー (Aggregator) のみをバックグラウンドや systemd 等で常時起動しておきたい場合は、`aggregator` コマンドを使用します。
-
-```bash
-# 9470 ポート（デフォルト）で集約サーバーのみを起動
-nexus-aggregator
-
-# ポート番号を指定して起動する場合
-nexus-aggregator --port 9472
-```
-
-#### systemd による自動起動（デーモン化）設定例
-
-マシン起動時に集約サーバーが自動起動するようにするには、
-`/etc/systemd/system/nexus-aggregator.service` を以下の内容で作成します。
-`User` や `WorkingDirectory` はご利用の環境に合わせて適宜修正してください。
-
-```ini
-[Unit]
-Description=Nexus Metrics Aggregator
-After=network.target
-
-[Service]
-Type=simple
-User=nexus
-WorkingDirectory=/opt/nexus
-ExecStart=/usr/bin/node dist/bin/aggregator.js
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-サービスファイルを配置後、以下のコマンドで自動起動を有効化・起動します。
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable nexus-aggregator
-sudo systemctl start nexus-aggregator
-```
-
-### Prometheus / Grafana 連携
-
-`nexus dashboard` は Telemetry Aggregator も起動します。各 Nexus サーバープロセスは自身のメトリクス HTTP サーバーを起動後、Aggregator に起動時および 30 秒間隔で登録します。Aggregator は登録済みノードの `/metrics/json` を並列取得し、`project` / `pid` ラベルで分離された Prometheus テキストへ再構築します。
-
-Prometheus には以下の scrape target を設定してください。Grafana ダッシュボード JSON と詳細手順は [docs/observability/README.md](docs/observability/README.md) を参照してください。
-
-```yaml
-scrape_configs:
-  - job_name: 'nexus'
-    scrape_interval: 10s
-    static_configs:
-      - targets: ['localhost:9470']
-```
-
-### ライブラリとして組み込む
-
-Nexus は Node.js プロセスに組み込んで、独自の MCP サーバーとして公開できます。
-
-```ts
-import { createServer } from 'node:http';
-import { createNexusServer } from '@yohi/nexus';
-import { createStreamableHttpHandler } from '@yohi/nexus/transport';
-
-const handler = createStreamableHttpHandler({
-  createServer: () => createNexusServer({
-    /* config */
-  }),
-});
-
-const server = createServer((req, res) => void handler(req, res));
-server.listen(3000, '127.0.0.1');
-```
-
-### インデックスの手動更新
-
-`nexus --reindex` を実行すると、即座に 1 回だけインデックスを再構築して終了します。
-`--full` を付けると incremental ではなく clean full rebuild で実行します。
-
-通常サービスは、`index_stats` 行が存在しない、`lastIndexedAt` が `null`、または `lastError` が設定されたプロジェクトで起動時にバックグラウンド Full Index を開始します。
-この処理はサーバーの初期化や検索を待たせず、同一 Runtime では再試行しません。
-`lastIndexedAt` が設定済みで `lastError` がない stale インデックスは自動再構築の対象外です。
-
-手動・自動を問わず、リインデックスの正常完了には DLQ が空であることが必要です。
-DLQ が残ると `index_stats` の完了日時は更新されず、`reindex` は `incomplete` を返します。
-`index_status` の `indexStats.lastError`、`pipelineProgress.lastError`、`skippedFiles` を確認して原因を解消してから再実行してください。`indexStats.lastError` は再起動後も保持され、再試行開始時に消去されます。
-DLQ 自動リカバリの成功だけでは完了日時は更新されないため、原因解消後の再リインデックスが必要です。
-
-## ⚙️ 設定
-
-プロジェクトルートの `.nexus.json` で挙動をカスタマイズできます。詳細は [docs/configuration.md](docs/configuration.md) を参照してください。
-
-### デフォルトの除外設定 (Watcher Ignore)
-
-以下のディレクトリおよびファイルは、パフォーマンスとインデックスの正確性を維持するため、デフォルトで監視・インデックス対象から除外されます。
-
-- **依存・ビルド**: `node_modules`, `dist`, `build`, `out`
-- **ロックファイル**: `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`, `*.lock`
-- **内部データ**: `.git`, `.nexus`, `.nexus/`, `.worktrees`, `.claude`, `.agents/`, `AGENTS.md`
-- **テスト・キャッシュ**: `coverage`, `.cache`, `.parcel-cache`
-- **Python キャッシュ**: `__pycache__`, `*.pyc`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`
-- **仮想環境**: `venv`, `.venv`, `env`
-- **エディタ・OS設定**: `.idea`, `.vscode`, `.DS_Store`
-- **環境変数ファイル**: `.env`, `.env.*` は常に除外対象に追加されます（`ignorePaths` のカスタマイズでも除外できません）。
-
-### 設定のカスタマイズ
-
-除外対象を追加または変更するには、以下の方法があります。
-
-1.  **`.nexus.json`**: プロジェクトルートに作成し、`watcher.ignorePaths` を指定します。
-    > **注意**: `ignorePaths` を指定すると、デフォルトのリストは完全に置き換えられます（ただし `.env` / `.env.*` は常に追加されます）。既存のデフォルトを維持したい場合は、デフォルトのパス（`node_modules`, `.git` など）も一緒に列挙してください。
-    ```json
-    {
-      "watcher": {
-        "ignorePaths": ["node_modules", ".git", "custom_tmp"]
-      }
-    }
-    ```
-2.  **環境変数**: `NEXUS_WATCHER_IGNORE_PATHS` にカンマ区切りで指定します。
-    > **注意**: 環境変数を指定した場合も、デフォルトのリストは上書きされます（マージされません）（ただし `.env` / `.env.*` は常に追加されます）。
-    ```bash
-    export NEXUS_WATCHER_IGNORE_PATHS="node_modules,.git,tmp"
-    ```
-
-### 主要な設定項目
-
-| 環境変数 / キー | デフォルト値 | 説明 |
-| :--- | :--- | :--- |
-| `NEXUS_STORAGE_ROOT_DIR` | `<projectRoot>/.nexus` | インデックスデータの保存先 |
-| `NEXUS_WATCHER_IGNORE_PATHS` | (上記デフォルトリスト) | 除外するパスのリスト。**この設定はデフォルトを上書きします。** |
-| `NEXUS_PROJECT_NAME` / `projectName` | `<projectRoot>` のベース名 | Prometheus の `project` ラベルに使用するプロジェクト名 |
-| `NEXUS_METRICS_PORT` / `metricsPort` | 自動割当 | Nexus プロセス自身の `/metrics`, `/metrics/json`, `/health` 待受ポート |
-| `NEXUS_AGGREGATOR_PORT` / `aggregatorPort` | `9470` | Dashboard Aggregator の待受ポート |
-| `NEXUS_EMBEDDING_PROVIDER` / `embedding.provider` | `ollama` | 使用する Embedding プロバイダー (`ollama`, `openai-compat`, `bedrock`)。`bedrock` は AWS Bedrock を直接呼び出します |
-| `NEXUS_EMBEDDING_MODEL` / `embedding.model` | `nomic-embed-text` | Embedding モデル名 |
-| `NEXUS_EMBEDDING_BASE_URL` / `embedding.baseUrl` | `http://127.0.0.1:11434` | HTTP ベース provider の URL。`openai-compat` では `https://api.openai.com/v1/embeddings` や `https://gateway.truefoundry.ai/embeddings` のように完全なエンドポイント URL パスを指定します |
-| `NEXUS_OLLAMA_LOCK_TIMEOUT_MS` / `embedding.ollamaLockTimeoutMs` | `300000` | Ollama の共有ロックを待機する最大時間（ミリ秒）。超過時はインデックスを失敗として記録します。 |
-| `NEXUS_OLLAMA_NUM_THREAD` / `embedding.ollamaNumThread` | `2` | Ollama 埋め込みリクエストのスレッド数 (`1`〜`16`)。無効な値は `2` にフォールバック。 |
-| `NEXUS_PACKAGE_MODE` / `packageMode` | `false` | `true` の場合、`embedding.provider` を `bedrock` にハードロック（fail-fast）。詳細は [docs/configuration.md](docs/configuration.md#package-mode) と [SPEC.md](SPEC.md) を参照 |
-
-### Package Mode（業務配布用）
-
-Nexus は単一コードベース上で、開発者向けのオリジナル動作（`packageMode=false`、デフォルト）と、社内向けに統制されたパッケージ版プラグイン（`packageMode=true`）の両方を提供します。
-
-#### 特徴
-
-- **Embedding プロバイダのロック**: `packageMode=true` の場合、`embedding.provider` に `bedrock`（AWS Bedrock）以外を指定するとサーバー起動時に fail-fast で例外を投げます（provider の値を自動的に書き換えるわけではありません）。`bedrock` を指定すれば正常に起動します。
-- **可変値の許容**: `model` / `dimensions` / `region` はロック対象外で、デプロイ時に運用者が変更できます。
-- **メトリクス層は維持**: ローカルの metrics HTTP サーバーおよび `nexus dashboard`（TUI）は `packageMode` の値に関わらず常に起動します。
-- **外部連携のスキップ**: Grafana/Prometheus 向けの Aggregator への自動登録（Heartbeat）のみ `packageMode=true` でスキップされます。
-
-#### 利用方法
-
-**環境変数で有効化:**
-```bash
-NEXUS_PACKAGE_MODE=1 npx nexus
-```
-
-**`.nexus.json` で設定:**
-```json
-{
-  "packageMode": true,
-  "embedding": {
-    "provider": "bedrock",
-    "model": "amazon.titan-embed-text-v2:0",
-    "dimensions": 1024,
-    "region": "us-east-1"
-  }
-}
-```
-
-#### セットアップ
-
-パッケージ版を利用する場合、以下の前提条件を満たしてください：
-
-1. **AWS Bedrock モデルアクセスの有効化**: AWS コンソール → Bedrock → Model access で「Titan Embed Text v2」を有効化
-2. **AWS 認証情報の設定**: 環境変数、AWS SSO、名前付きプロファイル、IAM ロールのいずれかで認証情報を用意
-3. **GitHub Actions 変数の設定**（配布時）: `NEXUS_EMBEDDING_REGION`、`NEXUS_EMBEDDING_MODEL`、`NEXUS_EMBEDDING_DIMENSIONS` を設定
-
-詳細は [docs/distribution.md](docs/distribution.md) の Prerequisites （P5: AWS 資格情報、P6: GitHub Actions 変数）を参照してください。
-
-#### 配布フロー
-
-Nexus は社内 Claude Code plugin marketplace（Bitbucket Cloud）を通じて `yohi-nexus` として配布されます。配布前提条件と運用手順は [docs/distribution.md](docs/distribution.md) にまとめられています。
-
-## 🧰 MCP ツール一覧
-
-詳細は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
-
-| ツール名 | 説明 |
-| :--- | :--- |
-| `hybrid_search` | セマンティックと grep を組み合わせた強力な検索 |
-| `semantic_search` | ベクトル検索による意味的なコード探索 |
-| `grep_search` | ripgrep を用いた正確な文字列検索 |
-| `get_context` | ファイルの指定範囲のコードをコンテキストとして取得 |
-| `get_file_outline` | 既知ファイルのシンボル・アウトラインを取得 |
-| `get_symbol_source` | 構造化シンボル ID の正確なソースを取得 |
-| `get_symbol_context` | 構造化シンボル ID の検証済み関連コンテキストを取得 |
-| `index_status` | 現在のインデックス進捗や統計情報の確認 |
-| `reindex` | インデックスの手動再作成 |
-
-### 検索コンテキストの効率化
-
-- `hybrid_search` に `includeSnippet: true` を指定すると、検索結果に前後のコードスニペットを追加できます。`contextLines` は前後の行数（既定値 3、最大 20）です。
-- スニペットのファイル読込に失敗しても、検索結果本体は維持され、該当結果のスニペットだけ省略されます。
-- `get_context` に `mode: "deferred"` を指定すると、全文ではなくプレビューと追加取得案内を返します。`startLine` と `endLine` を両方指定した場合はファイル境界にクランプしたその範囲、それ以外は最大 20 行をプレビューします。
-- `mode` を省略した場合は従来どおり eager モードで、指定範囲の本文を返します。
-
-詳細な引数・レスポンス例は [docs/mcp-tools.md](docs/mcp-tools.md) を参照してください。
-
-## 🏗 アーキテクチャ
-
-アーキテクチャの詳細な設計仕様、各コンポーネントの役割、およびセキュリティ機構については、[SPEC.md](SPEC.md) を参照してください。
+## How It Works
 
 ```mermaid
 graph TD
-    Client[AI Agent / Client] -->|MCP| Server[Nexus MCP Server]
+    Client[AI Agent / MCP Client] -->|MCP| Server[Nexus]
     Server --> Search[Search Orchestrator]
     Search --> Vector[LanceDB Vector Store]
-    Search --> Grep[Ripgrep Engine]
+    Search --> Grep[Ripgrep]
     Watcher[File Watcher] --> Pipeline[Indexing Pipeline]
-    Pipeline --> Chunker[AST Chunker]
+    Pipeline --> Chunker[AST / fallback chunking]
     Chunker --> Embed[Embedding Provider]
     Embed --> Vector
+    Pipeline --> Structured[Structured Symbol Catalog]
+    Structured --> Exact[Exact Symbol Retrieval]
 ```
 
-## ⚠️ ライセンス
+Search chunks and logical symbols are separate retrieval units. Semantic results can identify a symbol, while structured retrieval reads and verifies the complete logical declaration from the current working tree.
 
-MIT License - 詳細は [LICENSE](LICENSE) ファイルを確認してください。
-同梱されるサードパーティライセンスについては [NOTICE](NOTICE) を参照してください。
+For architecture invariants and current behavioral contracts, see [SPEC.md](SPEC.md).
+
+## Configuration
+
+Nexus reads project configuration from `.nexus.json` and supports environment-variable overrides for supported settings. Important examples include:
+
+| Setting | Purpose |
+| --- | --- |
+| `NEXUS_STORAGE_ROOT_DIR` / `storage.rootDir` | Index storage location |
+| `NEXUS_EMBEDDING_PROVIDER` / `embedding.provider` | `ollama`, `openai-compat`, or `bedrock` |
+| `NEXUS_WATCHER_IGNORE_PATHS` / `watcher.ignorePaths` | Additional watcher/index exclusions |
+| `NEXUS_PACKAGE_MODE` / `packageMode` | Package-distribution constraints |
+
+Do not treat this table as the complete configuration contract. See [Configuration](docs/configuration.md).
+
+## Documentation
+
+| Reader / task | Canonical document |
+| --- | --- |
+| Current architecture, invariants, compatibility, transport behavior | [SPEC.md](SPEC.md) |
+| AI-agent repository instructions | [AGENTS.md](AGENTS.md) |
+| Code-search agent workflow | [.agents/skills/code-search.md](.agents/skills/code-search.md) |
+| MCP tools, inputs, outputs, and status values | [docs/mcp-tools.md](docs/mcp-tools.md) |
+| Installation and client setup | [docs/setup.md](docs/setup.md) |
+| Runtime configuration | [docs/configuration.md](docs/configuration.md) |
+| Distribution and operator workflow | [docs/distribution.md](docs/distribution.md) |
+| Metrics and dashboards | [docs/observability/README.md](docs/observability/README.md) |
+| Future target state | [ROADMAP.md](ROADMAP.md) |
+| Released changes | [CHANGELOG.md](CHANGELOG.md) |
+
+## Development
+
+```bash
+npm ci
+npm run build
+npm run lint
+npx tsc --noEmit
+npx vitest run
+```
+
+Run focused tests first when changing a subsystem, then run the full relevant checks before completion.
+
+## License
+
+MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
