@@ -408,7 +408,7 @@ Each new language parser test covers the record families separately.
   the rebuild.
 
 The full repository quality checks (`npm ci`, `npm run build`, `npm run lint`,
-`npx tsc --noEmit`, `npm run license:check`, and `npx vitest run`) must pass before
+`npx tsc --noEmit`, `npm run license:check`, and `npm run test`) must pass before
 the implementation is considered complete.
 
 ## Risks and Mitigations
@@ -446,7 +446,7 @@ the implementation is considered complete.
       (e.g. `module.Trait`, `Type.method`) so that `symbolId` is stable.
 - [ ] Existing TypeScript / Python / Go structured indexing tests continue to
       pass with no `symbolId` or source-range regressions.
-- [ ] `npm ci`, `npm run build`, `npm run lint`, `npx tsc --noEmit`, `npm run license:check`, and `npx vitest run`
+- [ ] `npm ci`, `npm run build`, `npm run lint`, `npx tsc --noEmit`, `npm run license:check`, and `npm run test`
 - [ ] `docs/structured-index.md` and `docs/mcp-tools.md` are updated with the
       new supported languages, extensions, and `SymbolKind` values.
 
