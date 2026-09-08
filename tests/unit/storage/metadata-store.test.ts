@@ -64,9 +64,7 @@ it('exposes active generation imports through the test-only helper', async () =>
     expectedRebuildEpoch: 1,
   });
 
-  expect(store.getActiveImportsForFile('src/example.mjs')).toEqual([
-    expect.objectContaining({ moduleSpecifier: './dependency.js', bindingName: 'dependency' }),
-  ]);
+  expect(store.getActiveImportsForFile('src/example.mjs')).toEqual([importRecord]);
 });
 
 const makeDeadLetterEntry = (overrides: Partial<DeadLetterEntry>): DeadLetterEntry => ({
