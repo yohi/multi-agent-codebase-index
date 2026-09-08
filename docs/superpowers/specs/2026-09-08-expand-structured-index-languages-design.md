@@ -86,55 +86,70 @@ support change in Phase 1.
    - Update `fileExtensions` from `['.ts', '.tsx', '.js', '.jsx']` to
      `['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']`.
 
-#### Documentation
+#### Documentation update
 
-2. `docs/structured-index.md`
+1. `docs/structured-index.md`
    - Create a "Supported languages and extensions" table.
    - Describe the structured/vector distinction for unsupported extensions.
    - Document CommonJS limitations for Phase 1.
 
-#### Tests
+#### Plugin routing test
 
-3. `tests/unit/plugins/languages/typescript.test.ts`
+1. `tests/unit/plugins/languages/typescript.test.ts`
    - Add extension routing regression cases for `.mjs`, `.cjs`, `.mts`, `.cts`
      and existing extensions.
 
-4. `tests/unit/structured/typescript-parser.test.ts`
+#### Structured parser test
+
+1. `tests/unit/structured/typescript-parser.test.ts`
    - Add module-variant parser regression cases using the four new fixtures.
 
-5. `tests/fixtures/structured/typescript/valid.mjs`
+2. `tests/fixtures/structured/typescript/valid.mjs`
    - New fixture: valid ESM JavaScript declaration with an ES `import`.
 
-6. `tests/fixtures/structured/typescript/valid.mts`
+3. `tests/fixtures/structured/typescript/valid.mts`
    - New fixture: valid ESM TypeScript declaration with an ES `import`.
 
-7. `tests/fixtures/structured/typescript/valid.cjs`
+4. `tests/fixtures/structured/typescript/valid.cjs`
    - New fixture: valid CommonJS JavaScript declaration.
    - Does not assert `require()` based structured import extraction.
 
-8. `tests/fixtures/structured/typescript/valid.cts`
+5. `tests/fixtures/structured/typescript/valid.cts`
    - New fixture: valid CommonJS TypeScript declaration.
    - Does not assert `require()` based structured import extraction.
 
-9. `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
+#### Full-reindex integration regression
+
+1. `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
    - Add `.mjs` full-reindex integration regression verifying declaration and
      import persistence after `pipeline.reindex(..., true)`.
 
+#### Vector/shared-routing regression
+
+1. `tests/unit/indexer/chunker.test.ts`
+   - Add `.mjs` regression case verifying the TypeScript plugin is selected on
+     the legacy/vector path, vector chunks are still produced, and
+     declaration-based chunks contain the expected symbol when a declaration
+     is present.
+   - Files without a declaration continue to use the fixed-line fallback
+     already provided by the chunker.
+   - Do not duplicate the existing unsupported-language or parser-failure
+     fallback tests.
+
 #### Test support
 
-10. `tests/unit/storage/in-memory-metadata-store.ts`
-    - Add the test-only helper:
-      `getActiveImportsForFile(filePath: string): readonly StructuredImport[]`
-    - Helper is used only by the full-reindex integration test to inspect the
-      active generation's `imports` array; it is not part of any production
-      interface.
+1. `tests/unit/storage/in-memory-metadata-store.ts`
+   - Add the test-only helper:
+     `getActiveImportsForFile(filePath: string): readonly StructuredImport[]`
+   - Helper is used only by the full-reindex integration test to inspect the
+     active generation's `imports` array; it is not part of any production
+     interface.
 
 ### Test Strategy
 
-Testing is split into three layers covering the main structured indexing paths,
-plus a vector/shared-routing regression and a test-only storage inspection
-helper. Each item has a single, concrete target test file and deterministic
-expectations.
+Testing is split into four layers covering the main structured indexing paths,
+the vector/shared-routing regression, and a test-only storage inspection helper.
+Each item has a single, concrete target test file and deterministic expectations.
 
 #### A. Plugin routing test
 
@@ -230,26 +245,67 @@ This test directly validates Issue #287's acceptance condition: after
 `--reindex --full`, `.mjs` declarations and imports are present in the
 structured index.
 
+#### D. Vector/shared-routing regression
+
+Target file: `tests/unit/indexer/chunker.test.ts`
+
+Add a `.mjs` regression case with a valid function declaration:
+
+1. Register `TypeScriptLanguagePlugin` in a `PluginRegistry`.
+2. Pass a file whose path ends in `.mjs` (for example `src/rebuilt.mjs`) and
+   whose source contains one valid function declaration, such as:
+
+   ```js
+   export function rebuilt() {
+     return 1;
+   }
+   ```
+
+3. Call `chunker.chunkFiles(...)`.
+4. Assert the result is non-empty.
+5. Assert the returned chunks contain a declaration-based chunk whose
+   `symbolName` is `rebuilt` and whose `symbolKind` is `function`.
+
+This test is scoped strictly to verifying that `.mjs` files continue to be
+indexed on the vector path after `TypeScriptLanguagePlugin.fileExtensions` is
+extended. It does not add fallback regression coverage because the existing
+chunker tests already cover unsupported-language and parser-failure fallbacks.
+It also does not require new production hooks or spies to confirm parser
+selection; the presence of a declaration-based chunk with the expected symbol
+is sufficient evidence that the TypeScript plugin routed and parsed the file.
+
 ### Risks and Mitigations
 
 | Risk | Mitigation |
 | ---- | ---------- |
-| `.cjs` / `.cts` use `require` / `module.exports`, which are outside | Document in `docs/structured-index.md` and in test fixtures that |
-| TypeScript's import syntax. | `require()` based imports and assignment-style CommonJS exports |
-| | (`module.exports`, `exports.foo`) are not extracted as structured |
-| | declarations or imports in Phase 1. |
-| `.mjs` / `.mts` may produce syntactic parse diagnostics and fall | Valid fixtures must expect `status: 'ok'` / `retrievability: 'exact'`. |
-| back to `fileCompleteness: 'partial'` / `retrievability: 'partial'`. | If a syntactic diagnostic is unavoidable, document the exact fixture, |
-| Unresolved modules are handled at the import level and do not alone | reason, and expected `status: 'degraded'` / `retrievability: 'partial'` |
-| degrade the file-level status. | in this design before implementation. |
-| Existing `.ts` / `.tsx` / `.js` / `.jsx` behavior may regress. | Run the full TypeScript plugin test suite, structured parser tests, and |
-| | pipeline structured lifecycle tests after the change. |
-| Adding the four extensions to `fileExtensions` may change vector | Add a `.mjs` regression case to |
-| chunking behavior for `.mjs` files that previously received | `tests/unit/indexer/chunker.test.ts` that asserts the TypeScript plugin |
-| fixed-line chunks. | is selected on the legacy/vector path, vector chunks are still produced, |
-| | and declaration-based chunks contain the expected symbol when a |
-| | declaration is present. Files without a declaration continue to use the |
-| | fixed-line fallback already provided by the chunker. |
+| `.cjs` / `.cts` use | Document in `docs/structured-index.md` and in |
+| `require` / `module.exports`, | test fixtures that `require()` based imports |
+| which are outside TypeScript's | and assignment-style CommonJS exports |
+| import syntax. | (`module.exports`, `exports.foo`) are not |
+| | extracted as structured declarations or |
+| | imports in Phase 1. |
+| `.mjs` / `.mts` may produce | Valid fixtures must expect `status: 'ok'` / |
+| syntactic parse diagnostics | `retrievability: 'exact'`. If a syntactic |
+| and fall back to | diagnostic is unavoidable, document the exact |
+| `fileCompleteness: 'partial'` / | fixture, reason, and expected |
+| `retrievability: 'partial'`. | `status: 'degraded'` / |
+| Unresolved modules are handled | `retrievability: 'partial'` in this design |
+| at the import level and do not | before implementation. |
+| alone degrade the file-level | |
+| status. | |
+| Existing `.ts` / `.tsx` / | Run the full TypeScript plugin test suite, |
+| `.js` / `.jsx` behavior may | structured parser tests, and pipeline |
+| regress. | lifecycle tests after the change. |
+| Adding the four extensions to | Add a `.mjs` regression case to |
+| `fileExtensions` may change | `tests/unit/indexer/chunker.test.ts` (see |
+| vector chunking behavior for | Test Strategy section D). The case asserts |
+| `.mjs` files that previously | the TypeScript plugin is selected on the |
+| received fixed-line chunks. | legacy/vector path, vector chunks are still |
+| | produced, and declaration-based chunks contain |
+| | the expected symbol when a declaration is |
+| | present. Files without a declaration |
+| | continue to use the fixed-line fallback |
+| | already provided by the chunker. |
 
 ## Documentation
 
@@ -258,11 +314,12 @@ Create `docs/structured-index.md` containing:
 - What the structured index is.
 - The "Supported languages and extensions" table:
 
-  | Language family         | Structured extensions                                      |
-  | ----------------------- | ---------------------------------------------------------- |
-  | TypeScript / JavaScript | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts` |
-  | Python                  | `.py`                                                      |
-  | Go                      | `.go`                                                      |
+  | Language family         | Structured extensions            |
+  | ----------------------- | -------------------------------- |
+  | TypeScript / JavaScript | `.ts`, `.tsx`, `.js`, `.jsx`,    |
+  |                         | `.mjs`, `.cjs`, `.mts`, `.cts`   |
+  | Python                  | `.py`                            |
+  | Go                      | `.go`                            |
 
 - The distinction between "structured index" and "vector index" for
   unsupported extensions.
