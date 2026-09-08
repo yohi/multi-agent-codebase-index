@@ -204,7 +204,10 @@ describe('loadConfig', () => {
     await writeFile(
       path.join(tempDir, '.nexus.json'),
       JSON.stringify({
-        embedding: { apiKey: '  secret-key  ' },
+        embedding: {
+          apiKey: '  secret-key  ',
+          baseUrl: '  https://embedding.example.test  ',
+        },
       }),
       'utf8',
     );
@@ -220,6 +223,64 @@ describe('loadConfig', () => {
     expect(config.embedding.provider).toBe('test');
     expect(config.embedding.model).toBe('nomic-embed-text');
     expect(config.embedding.apiKey).toBe('secret-key');
+  });
+
+  it('rejects an HTTP embedding endpoint when an API key is configured', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({
+        embedding: {
+          provider: 'openai-compat',
+          baseUrl: 'http://embedding.example.test/v1/embeddings',
+          apiKey: 'secret-key',
+        },
+      }),
+      'utf8',
+    );
+
+    await expect(loadConfig({ projectRoot: tempDir, env: {} })).rejects.toThrow(
+      /embedding\.baseUrl must use https when embedding\.apiKey is configured/i,
+    );
+  });
+
+  it('allows an HTTPS embedding endpoint when an API key is configured', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({
+        embedding: {
+          provider: 'openai-compat',
+          baseUrl: 'https://embedding.example.test/v1/embeddings',
+          apiKey: 'secret-key',
+        },
+      }),
+      'utf8',
+    );
+
+    const config = await loadConfig({ projectRoot: tempDir, env: {} });
+
+    expect(config.embedding.baseUrl).toBe('https://embedding.example.test/v1/embeddings');
+    expect(config.embedding.apiKey).toBe('secret-key');
+  });
+
+  it('allows an HTTP embedding endpoint without an API key', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'nexus-config-'));
+    await writeFile(
+      path.join(tempDir, '.nexus.json'),
+      JSON.stringify({
+        embedding: {
+          provider: 'openai-compat',
+          baseUrl: 'http://embedding.example.test/v1/embeddings',
+        },
+      }),
+      'utf8',
+    );
+
+    const config = await loadConfig({ projectRoot: tempDir, env: {} });
+
+    expect(config.embedding.baseUrl).toBe('http://embedding.example.test/v1/embeddings');
+    expect(config.embedding.apiKey).toBeUndefined();
   });
 
   it('includes Claude Code, lockfile entries, and the secret denylist in the default ignorePaths', async () => {

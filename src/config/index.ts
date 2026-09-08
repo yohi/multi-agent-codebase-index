@@ -209,6 +209,8 @@ export const loadConfig = async (options: LoadConfigOptions): Promise<Config> =>
       false,
   };
 
+  assertEmbeddingApiKeyTransport(merged.embedding);
+
   if (options.transportMode === 'v2-http') {
     await assertHttpV2Constraints(merged);
   }
@@ -269,6 +271,23 @@ export const assertLoopbackHost = async (host: string, description = 'host'): Pr
 };
 
 const normalizeHost = (host: string): string => host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+
+function assertEmbeddingApiKeyTransport(embedding: EmbeddingConfig): void {
+  if (embedding.apiKey === undefined) {
+    return;
+  }
+
+  let parsedBaseUrl: URL;
+  try {
+    parsedBaseUrl = new URL(embedding.baseUrl ?? '');
+  } catch {
+    throw new Error('embedding.baseUrl must use https when embedding.apiKey is configured.');
+  }
+
+  if (parsedBaseUrl.protocol !== 'https:') {
+    throw new Error('embedding.baseUrl must use https when embedding.apiKey is configured.');
+  }
+}
 
 /**
  * Local HTTP v2 constraints (design doc §3.2 / §6.1). Runs only when the
