@@ -15,11 +15,12 @@ parser that produces `StructuredDeclaration`, `StructuredImport`, and
 `StructuredGeneration` records. These records power `get_file_outline`,
 `get_symbol_source`, and `get_symbol_context`.
 
-Requirement `REQUIREMENTS.md` asks to extend this experience to Rust, Java, C#,
-C, C++, and Python type stubs (`.pyi`), with the same guarantees: outline,
-qualified names, parent-child structure, stable `symbolId`, exact source
-retrieval, bounded context, partial-parse resilience, and fallback to normal
-indexing when structured parsing is unavailable.
+This design extends the structured indexing experience to Rust, Java, C#,
+C, C++, and Python type stubs (`.pyi`). The new languages must provide the
+same guarantees as existing languages: outline, qualified names, parent-child
+structure, stable `symbolId`, exact source retrieval, bounded context,
+partial-parse resilience, and fallback to normal indexing when structured
+parsing is unavailable.
 
 ## Goal
 
@@ -136,11 +137,14 @@ export type SymbolKind =
   | 'trait'    // Rust trait
   | 'impl'     // Rust impl block
   | 'record'   // Java / C# record
-  | 'field';   // Java / C# / C / C++ field or member variable
+  | 'field';   // Java field (C# / C / C++ member variables are out of scope)
 ```
 
 Existing kinds are preserved unchanged. New kinds are additive, so existing
 symbols keep the same `symbolId`.
+
+C# properties are mapped to `property`; C# / C / C++ member variables are
+intentionally out of scope for this change.
 
 ### 5. Language-specific declaration mapping
 
@@ -198,9 +202,10 @@ symbols keep the same `symbolId`.
 - Java / C# / C++ nested classes, structs, and namespaces contribute to
   qualified names using `.` as the separator, matching the existing TypeScript
   convention.
-- Rust modules and traits use qualified names such as `module::Trait` or
-  `Type::method`. The separator remains `.` in `qualifiedName` for consistency
-  with the catalog contract, while the source language semantics are captured
+- Rust modules and traits use `::` in source notation (e.g. `module::Trait`,
+  `Type::method`). The canonical `qualifiedName` stored in the catalog uses
+  `.` as the separator for consistency with the catalog contract
+  (e.g. `module.Trait`, `Type.method`). Source-language semantics are captured
   by `languageId`.
 
 ### 7. Stable symbol identity
@@ -242,18 +247,38 @@ Bindings with unresolved or wildcard imports are marked `completeness: 'partial'
 - Declarations whose own node, range node, or scope node contains an
   `ERROR` / `MISSING` node are skipped.
 - Remaining valid declarations are emitted with status `degraded` / `partial`.
-- If no declarations can be extracted, the file returns `parse-failed` from
-  `IndexPipeline.readStructuredFile`, which routes the file to normal chunk
-  indexing and records the failure only for metrics/logging.
-- Parser load failures are caught by the plugin's `createParser` wrapper and
-  fall back to fixed-line chunking, matching the Python plugin behavior.
+- Normal/search chunk generation and structured-catalog generation are
+  separate paths. A structured parsing failure does not stop normal chunks
+  from being computed, but it does affect whether the structured catalog is
+  updated in that pass.
+- In an incremental update, a structured parse failure causes the file to be
+  routed to the dead-letter queue; neither the structured catalog nor the
+  normal chunk vectors for that file are updated in that pass. This matches
+  the existing fail-closed semantics.
+- In a full rebuild (`nexus --reindex --full`), any structured parse failure
+  aborts the entire rebuild, preserving the existing fail-closed semantics.
+  If future requirements demand that unparseable files be ignored during a
+  full rebuild, `src/indexer/pipeline.ts` and its full-rebuild integration
+  tests must be changed explicitly.
+- Parser load failures in the structured path are not caught by the normal
+  `createParser` wrapper; `readStructuredFile` calls
+  `plugin.createStructuredParser()` directly and converts exceptions into
+  `parse-failed`.
+- A valid structured result that contains imports but no declarations is kept
+  as structured work so that import-only files (e.g. a C/C++ header with only
+  `#include` directives) persist their imports in the structured catalog.
 
 ### 10. Incremental integration
 
-No migration operation is required. New files are discovered by the normal file
-watcher and scan flows. Because `LanguagePlugin.supports()` is the only routing
-boundary, existing workspaces will automatically start structured indexing for
-new extensions on the next incremental update or full rebuild.
+No dedicated migration operation is required. Newly created or modified files
+with the supported extensions are discovered by the normal file watcher and
+incremental scan flows, and are structured-indexed on the next update.
+
+However, files that already existed in a workspace before this feature is
+deployed and have not changed since are not reprocessed automatically; a stale
+but successful index is not rebuilt solely because it is old (see `SPEC.md`
+§4.1). To backfill existing unchanged files with the new extensions, run
+`nexus --reindex --full`.
 
 ## Change List
 
@@ -266,15 +291,15 @@ new extensions on the next incremental update or full rebuild.
    - Extend `SymbolKind` with `struct`, `trait`, `impl`, `record`, `field`.
 3. New language plugin modules under `src/plugins/languages/`:
    - `rust.ts`, `rust-structured.ts`, `rust-structured-declarations.ts`,
-     `rust-structured-imports.ts`
+     `rust-structured-imports.ts`, `rust-structured-support.ts`
    - `java.ts`, `java-structured.ts`, `java-structured-declarations.ts`,
-     `java-structured-imports.ts`
+     `java-structured-imports.ts`, `java-structured-support.ts`
    - `csharp.ts`, `csharp-structured.ts`, `csharp-structured-declarations.ts`,
-     `csharp-structured-imports.ts`
+     `csharp-structured-imports.ts`, `csharp-structured-support.ts`
    - `c.ts`, `c-structured.ts`, `c-structured-declarations.ts`,
-     `c-structured-imports.ts`
+     `c-structured-imports.ts`, `c-structured-support.ts`
    - `cpp.ts`, `cpp-structured.ts`, `cpp-structured-declarations.ts`,
-     `cpp-structured-imports.ts`
+     `cpp-structured-imports.ts`, `cpp-structured-support.ts`
 4. `src/plugins/languages/python.ts`
    - Add `.pyi` to `fileExtensions`.
    - The structured parser already handles Python syntax; no grammar change is
@@ -284,6 +309,14 @@ new extensions on the next incremental update or full rebuild.
      `NexusServerFactory.setupPluginRegistry`.
 6. `docs/mcp-tools.md`
    - Update the `SymbolKind` list in the structured retrieval section.
+7. `src/indexer/pipeline.ts`
+   - Update `readStructuredFile` so that a valid structured result with zero
+     declarations but non-zero imports is kept as structured work instead of
+     being retired.
+   - Confirm that the failure/fallback semantics documented in §9 match the
+     current implementation; if the requirement to ignore unparseable files
+     during a full rebuild is added later, change this file and its
+     full-rebuild integration tests explicitly.
 
 ### Documentation
 
@@ -292,6 +325,10 @@ new extensions on the next incremental update or full rebuild.
      languages and extensions.
    - Clarify that `.h` is parsed as C++.
    - Note the C/C++ source-only parsing limitation.
+2. Upgrade / backfill documentation in `docs/structured-index.md` or
+   `docs/setup.md`
+   - Document that existing unchanged files require `nexus --reindex --full`
+     to backfill structured indexing after upgrading to the new language set.
 
 ### Tests
 
@@ -313,12 +350,21 @@ new extensions on the next incremental update or full rebuild.
    `tests/unit/plugins/registry.test.ts` cases for the new extensions.
 4. Regression: run the full existing TypeScript, Python, and Go structured
    parser suites and verify no `symbolId`, kind, or source-range regressions.
+5. Pipeline integration tests
+   - Structured parse failure in an incremental update routes the file to the
+     dead-letter queue.
+   - Structured parse failure in a full rebuild aborts the rebuild.
+   - An import-only C/C++ fixture persists its `#include` records in the
+     structured catalog.
+   - A full reindex backfills existing unchanged files with newly supported
+     extensions.
 
 ## Test Strategy
 
 Each new language parser test covers:
 
-- The required declaration families from `REQUIREMENTS.md` are detected.
+- The required declaration families from §5 Language-specific declaration
+  mapping are detected.
 - Each detected declaration has a stable `symbolId` matching the
   `symbol_v1_` prefix and distinct for overloads / constructors.
 - `qualifiedName` reflects the logical nesting path.
@@ -340,7 +386,7 @@ considered complete.
 
 | Risk | Mitigation |
 | ---- | ---------- |
-| Tree-sitter native addons fail to install or load on some environments. | The plugin's `createParser` catches parser load errors and falls back to fixed-line chunking, matching the existing Python fallback path. |
+| Tree-sitter native addons fail to install or load on some environments. | Normal chunking falls back to fixed-line; structured path returns `parse-failed`. |
 | C/C++ grammar produces different node shapes for C and C++ constructs. | The C and C++ plugins are separate and use grammar-specific selectors; shared helpers are only used where the node shapes align. |
 | `.h` parsed as C++ may misclassify pure C headers. | Documented limitation; behavior is explicit per requirements. |
 | New `SymbolKind` values may surprise existing clients. | Kinds are additive; existing values are unchanged. `docs/mcp-tools.md` is updated to list the new kinds. |
@@ -351,13 +397,23 @@ considered complete.
 
 - [ ] `.pyi`, `.rs`, `.java`, `.cs`, `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hh`,
       `.hpp`, `.hxx` are routed to their respective structured parsers.
-- [ ] Each new language recognizes the declarations listed in `REQUIREMENTS.md`
-      and produces stable `symbolId`, exact source, and parent-child links.
+- [ ] Each new language recognizes the declarations listed in
+      §5 Language-specific declaration mapping and produces stable `symbolId`,
+      exact source, and parent-child links.
 - [ ] Import / include / use / using statements are extracted as
       `StructuredImport` records.
+- [ ] A valid structured result that contains imports but no declarations is
+      kept as structured work so that import-only files (e.g. a C/C++ header
+      with only `#include` directives) persist their imports in the catalog.
 - [ ] Partially broken files emit valid declarations with `degraded` / `partial`
       status, and do not corrupt the index pipeline.
-- [ ] Completely unparseable files fall back to normal chunk indexing.
+- [ ] Completely unparseable files do not corrupt the index pipeline. In an
+      incremental update they are routed to the dead-letter queue; in a full
+      rebuild they abort the rebuild.
+- [ ] After `nexus --reindex --full`, existing unchanged files with newly
+      supported extensions appear in the structured catalog.
+- [ ] Rust declarations use the canonical `.` separator in `qualifiedName`
+      (e.g. `module.Trait`, `Type.method`) so that `symbolId` is stable.
 - [ ] Existing TypeScript / Python / Go structured indexing tests continue to
       pass with no `symbolId` or source-range regressions.
 - [ ] `npm run build`, `npm run lint`, `npx tsc --noEmit`, and `npx vitest run`
