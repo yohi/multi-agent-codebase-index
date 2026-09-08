@@ -14,12 +14,59 @@ import { SqliteMetadataStore } from '../../../src/storage/metadata-store.js';
 import type { Database } from 'better-sqlite3';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
 import { InMemoryVectorStore } from './in-memory-vector-store.js';
+import { InMemoryMetadataStore } from './in-memory-metadata-store.js';
+import type { StructuredImport } from '../../../src/structured/contracts.js';
 
 const makeNode = (overrides: Partial<MerkleNodeRow>): MerkleNodeRow => ({
   path: overrides.path ?? 'src/index.ts',
   hash: overrides.hash ?? 'hash',
   parentPath: overrides.parentPath ?? 'src',
   isDirectory: overrides.isDirectory ?? false,
+});
+
+it('exposes active generation imports through the test-only helper', async () => {
+  const store = new InMemoryMetadataStore();
+  await store.initialize();
+  await store.bootstrapStructuredSchema();
+  await store.incrementRebuildEpoch();
+  const generationId = 'test-generation';
+  const importRecord: StructuredImport = {
+    id: 'import-1',
+    moduleSpecifier: './dependency.js',
+    bindingName: 'dependency',
+    startByte: 0,
+    endByte: 1,
+    sourceHash: 'hash',
+    completeness: 'complete',
+    position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 },
+  };
+  await store.stageGeneration({
+    filePath: 'src/example.mjs',
+    generation: {
+      generationId,
+      schemaVersion: 1,
+      parserId: 'typescript',
+      parserVersion: '5.9.3',
+      fileHash: 'hash',
+      fileCompleteness: 'complete',
+    },
+    declarations: [],
+    imports: [importRecord],
+    rebuildEpoch: 1,
+    bytes: new Uint8Array([0]),
+    fileHash: 'hash',
+    fileCompleteness: 'complete',
+  });
+  await store.activateGeneration({
+    filePath: 'src/example.mjs',
+    generationId,
+    expectedActiveGeneration: null,
+    expectedRebuildEpoch: 1,
+  });
+
+  expect(store.getActiveImportsForFile('src/example.mjs')).toEqual([
+    expect.objectContaining({ moduleSpecifier: './dependency.js', bindingName: 'dependency' }),
+  ]);
 });
 
 const makeDeadLetterEntry = (overrides: Partial<DeadLetterEntry>): DeadLetterEntry => ({
