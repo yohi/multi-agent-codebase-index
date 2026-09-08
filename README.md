@@ -22,17 +22,17 @@ Nexus helps AI agents explore large codebases without repeatedly loading whole f
 
 ### Install and run
 
-```bash
-npx @yohi/nexus
-```
-
-For a source checkout:
+For the shortest repository-local path:
 
 ```bash
+git clone https://github.com/yohi/nexus.git
+cd nexus
 npm ci
 npm run build
 npx nexus
 ```
+
+The published `@yohi/nexus` package uses GitHub Packages and requires registry/authentication setup. See [Setup](docs/setup.md) for Package Usage.
 
 Nexus stores project-local index data under `<projectRoot>/.nexus` by default.
 
@@ -161,7 +161,7 @@ npx tsc --noEmit
 npx vitest run
 ```
 
-Run focused tests first when changing a subsystem, then run the full relevant checks before completion.
+Run focused tests first when changing a specific subsystem, then run the full relevant checks before completion.
 
 ## License
 
