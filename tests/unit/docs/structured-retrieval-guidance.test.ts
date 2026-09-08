@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-// When running under a git worktree, __dirname may be inside .worktrees/.../feat/branch,
-// so locate the project root by walking up until package.json is found instead of assuming
-// a fixed number of parent directories.
+
 const findProjectRoot = (start: string): string => {
   let current = start;
   while (current !== "/") {
@@ -28,61 +26,79 @@ function readGuidanceFile(filePath: string): string {
 
 const GUIDANCE_FILES = {
   readme: "README.md",
+  readmeJa: "README.ja.md",
   spec: "SPEC.md",
+  roadmap: "ROADMAP.md",
+  agents: "AGENTS.md",
   mcpTools: "docs/mcp-tools.md",
+  setup: "docs/setup.md",
   skill: ".agents/skills/code-search.md",
 } as const;
 
-describe("structured-retrieval guidance (AC-17)", () => {
+describe("documentation architecture and structured retrieval guidance", () => {
   const readme = readGuidanceFile(GUIDANCE_FILES.readme);
+  const readmeJa = readGuidanceFile(GUIDANCE_FILES.readmeJa);
   const spec = readGuidanceFile(GUIDANCE_FILES.spec);
+  const roadmap = readGuidanceFile(GUIDANCE_FILES.roadmap);
+  const agents = readGuidanceFile(GUIDANCE_FILES.agents);
   const mcpTools = readGuidanceFile(GUIDANCE_FILES.mcpTools);
+  const setup = readGuidanceFile(GUIDANCE_FILES.setup);
   const skill = readGuidanceFile(GUIDANCE_FILES.skill);
 
-  it("documents symbol-aware retrieval flow in README", () => {
-    expect(readme).toContain("semantic_search");
-    expect(readme).toContain("hybrid_search");
-    expect(readme).toContain("get_symbol_source");
-    expect(readme).toContain("get_symbol_context");
-    expect(readme).toContain("get_file_outline");
-    expect(readme).toContain("chunk.symbolId");
-    expect(readme).toContain("Structured symbol retrieval");
-    expect(readme).toContain("get_context");
+  it("routes readers from the README instead of duplicating canonical references", () => {
+    expect(readme).toContain("[日本語](README.ja.md)");
+    expect(readme).toContain("[SPEC.md](SPEC.md)");
+    expect(readme).toContain("[AGENTS.md](AGENTS.md)");
+    expect(readme).toContain("[ROADMAP.md](ROADMAP.md)");
+    expect(readme).toContain("[docs/mcp-tools.md](docs/mcp-tools.md)");
+    expect(readme).toContain("[docs/configuration.md](docs/configuration.md)");
+    expect(readmeJa).toContain("[English](README.md)");
   });
 
-  it("documents the canonical flow in docs/mcp-tools.md", () => {
-    expect(mcpTools).toContain("semantic_search / hybrid_search result with symbolId");
-    expect(mcpTools).toContain("-> get_symbol_source or get_symbol_context");
-    expect(mcpTools).toContain("known supported file");
-    expect(mcpTools).toContain("-> get_file_outline");
-    expect(mcpTools).toContain("-> get_symbol_source or get_symbol_context");
+  it("separates current specification from future roadmap state", () => {
+    expect(spec).toContain("canonical source for **current** Nexus architecture");
+    expect(spec).toContain("[ROADMAP.md](ROADMAP.md)");
+    expect(roadmap).toContain("**future target state and planned work**");
+    expect(roadmap).toContain("**Planned**");
+    expect(roadmap).toContain("[SPEC.md](SPEC.md)");
   });
 
-  it("documents full-rebuild upgrade requirement and status matrix", () => {
-    expect(mcpTools).toContain("reindex({ fullRebuild: true })");
-    expect(mcpTools).toContain("STRUCTURED_INDEX_MISSING");
-    expect(mcpTools).toContain("INDEX_FILE_HASH_MISMATCH");
+  it("documents exact structured retrieval in the canonical MCP reference", () => {
+    expect(mcpTools).toContain("get_file_outline");
+    expect(mcpTools).toContain("get_symbol_source");
+    expect(mcpTools).toContain("get_symbol_context");
+    expect(mcpTools).toContain("usable `symbolId`");
     expect(mcpTools).toContain("stale_identity");
+    expect(mcpTools).toContain("INDEX_FILE_HASH_MISMATCH");
+    expect(mcpTools).toContain("STRUCTURED_INDEX_MISSING");
   });
 
-  it("preserves get_context exceptions in skill guidance", () => {
+  it("prefers exact symbol retrieval in the agent search workflow", () => {
+    expect(skill).toContain("chunk.symbolId");
     expect(skill).toContain("get_symbol_source");
     expect(skill).toContain("get_symbol_context");
     expect(skill).toContain("get_file_outline");
     expect(skill).toContain("get_context");
+    expect(skill).toContain("stale_identity");
   });
 
-  it("retains CodeGraph guidance unchanged", () => {
-    expect(skill).toContain(".codegraph/");
-    expect(skill).toContain("codegraph_explore");
+  it("keeps repository-wide agent behavior out of human setup guidance", () => {
+    expect(agents).toContain("Source Build");
+    expect(agents).toContain("Package Usage");
+    expect(agents).toContain("Do not choose an installation mode on the user's behalf");
+    expect(readmeJa).not.toContain("Do not choose an installation mode on the user's behalf");
+    expect(setup).not.toContain("Do not choose an installation mode on the user's behalf");
+    expect(setup).toContain("This guide is for people");
+    expect(setup).toContain("Source Build");
+    expect(setup).toContain("Package Usage");
+    expect(setup).toContain("GitHub Packages");
   });
 
-  it("documents structured retrieval contract in SPEC.md", () => {
-    expect(spec).toContain("get_file_outline");
-    expect(spec).toContain("get_symbol_source");
-    expect(spec).toContain("get_symbol_context");
-    expect(spec).toContain("symbol_v1_");
-    expect(spec).toContain("reindex({ fullRebuild: true })");
+  it("preserves structured retrieval invariants in SPEC.md", () => {
+    expect(spec).toContain("Logical symbols are independent of search chunks");
+    expect(spec).toContain("complete verified logical declaration");
+    expect(spec).toContain("Embedding independence");
+    expect(spec).toContain("Repository scope and exclusions");
     expect(spec).toContain("INDEX_FILE_HASH_MISMATCH");
   });
 });

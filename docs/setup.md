@@ -1,27 +1,100 @@
-# Nexus Setup & Installation Guide
+# Setup
 
-## 🛑 Installation & Setup Protocol (MANDATORY)
+This guide is for people installing or connecting Nexus. AI-agent behavioral rules belong in [AGENTS.md](../AGENTS.md), not in this document.
 
-If you are tasked with installing or configuring Nexus, you **MUST** follow this protocol before running any other commands:
+## Requirements
 
-1. **No Unapproved Commands**: Do not run any CLI, shell, or package manager commands before the user makes a choice.
-2. **MANDATORY INTERACTION**: Use your interaction tool (e.g., `ask_user`, `input`) to let the user select their intent:
-   - **A. Source Build (Recommended)**: Build and develop Nexus directly in this repository.
-   - **B. Package Usage**: Integrate `@yohi/nexus` into an external project.
-3. **NO AUTONOMOUS DECISIONS**: Do not make the decision on behalf of the user.
-4. **Credential Privacy**: Never ask the user to type sensitive credentials (such as Personal Access Tokens / PATs) directly in the chat.
+- Node.js 24 or later
+- npm
+- An embedding provider
+- For the default Ollama provider, a reachable Ollama service and the configured embedding model
 
-### IF CHOICE A: SOURCE BUILD (Local Development)
+Nexus supports two installation modes. Choose the mode that matches how you will run it.
 
-- **Install**: Run `npm install` to resolve dependencies.
-- **Build**: Run `npm run build` to build workspaces.
-- **Fallback**: If installation fails due to token auth issues, run `node scripts/bootstrap.mjs`.
-- **Test**: Run `npm test` to verify tests pass.
-- **Verify Build Output**: Ensure that `dist/bin/nexus.js` exists.
+## Source Build
 
-### IF CHOICE B: PACKAGE USAGE (External Integration)
+Use this when developing Nexus itself or when you need a source checkout.
 
-- **GitHub Packages**: Requires a Personal Access Token (PAT) via the `NEXUS_GH_PACKAGE_TOKEN` env variable.
-- **Token Check**: If the token is missing, prompt the user to export it in their shell.
-- **Git URL**: Install tokenless via `npm install github:yohi/nexus`.
-- **Project Setup**: Configure the external project's `.npmrc` to point `@yohi:registry` to `https://npm.pkg.github.com`.
+```bash
+git clone https://github.com/yohi/nexus.git
+cd nexus
+npm ci
+npm run build
+node dist/bin/nexus.js
+```
+
+The package lockfile is authoritative for dependency resolution.
+
+## Package Usage
+
+`@yohi/nexus` is published to GitHub Packages (`https://npm.pkg.github.com`). Configure npm authentication for the `@yohi` scope before installing or executing the published package.
+
+A typical project-level `.npmrc` entry is:
+
+```ini
+@yohi:registry=https://npm.pkg.github.com
+```
+
+Provide the GitHub Packages credential through npm's normal credential configuration for your environment; do not commit tokens to the repository.
+
+After the registry is configured:
+
+```bash
+npx @yohi/nexus
+```
+
+For a tokenless source-based dependency, the repository can also be installed through its Git URL:
+
+```bash
+npm install github:yohi/nexus
+```
+
+Package deployments can use `NEXUS_PACKAGE_MODE=1`. Package mode applies additional distribution constraints, including the configured embedding-provider requirements. See [Configuration](configuration.md) and [Distribution](distribution.md).
+
+## MCP Client Setup
+
+For a client that can start a stdio MCP server, configure `nexus` as the command. If you need an explicit project root, use the CLI/project-root setting supported by your client environment.
+
+Example shape:
+
+```json
+{
+  "mcpServers": {
+    "nexus": {
+      "command": "nexus",
+      "args": [],
+      "env": {
+        "NEXUS_STORAGE_ROOT_DIR": "/path/to/project/.nexus"
+      }
+    }
+  }
+}
+```
+
+Do not copy example paths literally; use the project you intend to index.
+
+For stdio-only clients that need to connect through local HTTP, use:
+
+```bash
+nexus http-bridge
+```
+
+The bridge discovers or starts the project-scoped local HTTP server and forwards JSON-RPC over Streamable HTTP.
+
+## Verify the Installation
+
+After the MCP connection is established:
+
+1. Call `index_status`.
+2. Confirm `pipelineProgress.lastError` is absent.
+3. Wait for `indexStats.lastIndexedAt` to become non-null before treating initial indexing as complete.
+4. Run a small `grep_search` or `hybrid_search` query and confirm it returns project results.
+
+Initial indexing runs in the background. Searches remain available while it is running, but may be incomplete.
+
+## Next Steps
+
+- [MCP tool reference](mcp-tools.md)
+- [Configuration reference](configuration.md)
+- [Current technical specification](../SPEC.md)
+- [Distribution and operator workflow](distribution.md)
