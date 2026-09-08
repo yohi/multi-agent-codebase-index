@@ -1,49 +1,46 @@
 # Nexus — Instructions for AI Agents
 
-Nexus is a local-first TypeScript MCP server that provides fast,
-private, evidence-based codebase search and symbol context retrieval.
+Nexus is a local-first TypeScript MCP server for fast, evidence-based codebase search and exact symbol context retrieval.
 
-## What: Architecture & Map
+## Repository Map
 
-- **Root**: Core MCP server, retrieval engines (AST/BM25/vector), storage, and CLI.
-- **`packages/dashboard`**: Observability and metrics web dashboard (npm workspace).
-- **`.agents/skills/`**: Canonical repository skills (e.g. [`code-search.md`](.agents/skills/code-search.md)).
+- **Root**: MCP server, retrieval engines, storage, indexing pipeline, transport, and CLI.
+- **`packages/dashboard/`**: observability and metrics dashboard.
+- **`.agents/skills/`**: canonical task-specific repository skills.
 
-## Why: Core Principles
+## Core Principles
 
-- **Local-first & private**: With a local-only embedding provider such as
-  Ollama, source code stays on the host and no source-derived data is sent
-  externally. The `openai-compat` and `bedrock` providers may send
-  source-derived chunks to configured external services.
-  `transportMode="v2-http"` rejects those providers via
-  `assertHttpV2Constraints`.
-- **Evidence-based**: Ground retrievals in verified symbols and deterministic tools over guessing.
-- **Deterministic tooling**: Rely on the linter, type checker, and tests rather than prose rules.
+- Prefer verified repository evidence over guesses.
+- Keep code exploration local-first. External embedding providers can transmit source-derived text; do not enable or introduce external transmission unless the task requires it.
+- Use deterministic tooling: tests, type checking, linting, and build output are authoritative over prose assumptions.
+- Current technical behavior is defined by [SPEC.md](SPEC.md); future target state is defined separately by [ROADMAP.md](ROADMAP.md).
 
-## How: Workflow & Commands
+## Workflow
 
-- **Environment**: Node.js >=24 and `npm`; `package-lock.json` is authoritative.
-- **Investigation**: Load [`.agents/skills/code-search.md`](.agents/skills/code-search.md) before code search.
-- **Test**: `npx vitest run <file>` (narrow first), `npx vitest run` (before completion).
-- **Typecheck**: `npx tsc --noEmit`
-- **Lint**: `npm run lint`
-- **Build**: `npm run build` (when changing public exports or package outputs).
+- **Environment**: Node.js >=24 and npm. `package-lock.json` is authoritative.
+- **Code investigation**: load [.agents/skills/code-search.md](.agents/skills/code-search.md) before repository search or implementation tracing.
+- **Focused tests**: `npx vitest run <file>`.
+- **Full tests**: `npx vitest run`.
+- **Type check**: `npx tsc --noEmit`.
+- **Lint**: `npm run lint`.
+- **Build**: `npm run build` when changing public exports, CLI output, package artifacts, or build-sensitive code.
 
 ## Universal Constraints
 
 - Do not commit credentials, tokens, machine-specific paths, or generated local state.
-- Never ask the user to paste secrets or GitHub tokens into chat.
-- Ask the user to choose **Source Build** or **Package Usage** before initial setup ([docs/setup.md](docs/setup.md)).
-- Do not create project-level agent configuration files outside [`.agents/skills/`](.agents/skills/).
+- Never ask the user to paste secrets, GitHub tokens, or other credentials into chat.
+- Before an initial Nexus installation/setup, ask the user to choose **Source Build** or **Package Usage** before running setup commands. Do not choose an installation mode on the user's behalf.
+- Do not create project-level agent configuration files outside [.agents/skills/](.agents/skills/).
+- Do not duplicate repository-wide agent rules into README or human setup documentation.
 
 ## Progressive Disclosure
 
-Read a document only when its topic is relevant to the current task:
+Read a document only when its topic is relevant:
 
-- Architecture & behavioral contracts: [SPEC.md](SPEC.md)
-- MCP tool schemas & response formats: [docs/mcp-tools.md](docs/mcp-tools.md)
-- Runtime configuration & environment variables: [docs/configuration.md](docs/configuration.md)
-- Setup choices & prerequisites: [docs/setup.md](docs/setup.md)
-- Packaging & release distribution: [docs/distribution.md](docs/distribution.md)
-- Metrics & Grafana dashboard: [docs/observability/README.md](docs/observability/README.md)
-- Product requirements & roadmap: [REQUIREMENTS.md](REQUIREMENTS.md)
+- Current architecture and behavioral contracts: [SPEC.md](SPEC.md)
+- Future product direction: [ROADMAP.md](ROADMAP.md)
+- MCP tool reference: [docs/mcp-tools.md](docs/mcp-tools.md)
+- Runtime configuration: [docs/configuration.md](docs/configuration.md)
+- Human setup and prerequisites: [docs/setup.md](docs/setup.md)
+- Packaging and release distribution: [docs/distribution.md](docs/distribution.md)
+- Metrics and Grafana dashboard: [docs/observability/README.md](docs/observability/README.md)
