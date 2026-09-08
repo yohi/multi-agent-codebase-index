@@ -173,7 +173,7 @@ class TypeScriptParser {
 export class TypeScriptLanguagePlugin implements LanguagePlugin {
   readonly languageId = 'typescript';
 
-  readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx'];
+  readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
 
   supports(filePath: string): boolean {
     return this.fileExtensions.some((extension) => filePath.endsWith(extension));

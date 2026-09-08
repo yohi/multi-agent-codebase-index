@@ -179,3 +179,15 @@ describe('TypeScriptLanguagePlugin', () => {
     expect(varA?.endLine).toBe(varB?.endLine);
   });
 });
+
+  it('supports TypeScript and JavaScript module variants', () => {
+    const plugin = new TypeScriptLanguagePlugin();
+
+    for (const extension of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']) {
+      expect(plugin.supports(`src/example${extension}`)).toBe(true);
+    }
+
+    for (const extension of ['.rs', '.py', '.go', '.txt', '.md']) {
+      expect(plugin.supports(`src/example${extension}`)).toBe(false);
+    }
+  });

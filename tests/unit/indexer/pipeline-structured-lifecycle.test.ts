@@ -309,3 +309,36 @@ describe('IndexPipeline structured lifecycle', () => {
     await expect(fixture.metadataStore.getFileDeclarations(filePath)).resolves.toHaveLength(1);
   });
 });
+
+  it('persists .mjs declarations and imports after a structured full rebuild', async () => {
+    const { metadataStore, pipeline } = await createStructuredPipeline();
+    const filePath = 'src/rebuilt.mjs';
+    const content = [
+      "import { dependency } from './dependency.js';",
+      '',
+      'export function rebuilt() {',
+      '  return dependency;',
+      '}',
+    ].join('\n');
+
+    await pipeline.reindex(
+      async () => [createEvent('added', filePath, content)],
+      async () => content,
+      true,
+    );
+
+    const resolution = await metadataStore.resolveFile(filePath);
+    expect(resolution).toEqual({ kind: 'active', generationId: expect.any(String) });
+
+    const declarations = await metadataStore.getFileDeclarations(filePath);
+    expect(declarations).toContainEqual(
+      expect.objectContaining({ qualifiedName: 'rebuilt', kind: 'function' }),
+    );
+
+    const imports = metadataStore.getActiveImportsForFile(filePath);
+    expect(imports).toHaveLength(1);
+    expect(imports[0]).toMatchObject({
+      moduleSpecifier: './dependency.js',
+      bindingName: 'dependency',
+    });
+  });
