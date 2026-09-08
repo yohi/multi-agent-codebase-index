@@ -205,4 +205,39 @@ describe('TypeScript structured parser', () => {
     expect(names.has('default')).toBe(true);
     expect(names.has('日本語')).toBe(true);
   });
+
+  it.each([
+    ['valid.mjs', 'rebuilt', true],
+    ['valid.mts', 'rebuilt', true],
+    ['valid.cjs', 'helper', false],
+    ['valid.cts', 'helper', false],
+  ] as const)(
+    'parses %s with status ok and retrievability exact',
+    async (name, expectedDeclaration, expectsImport) => {
+      const { result } = await parseFixture(name);
+
+      expect(result.status).toBe('ok');
+      expect(result.retrievability).toBe('exact');
+      expect(
+        result.declarations.some((item) => item.qualifiedName === expectedDeclaration),
+      ).toBe(true);
+
+      if (expectsImport) {
+        expect(result.imports).toContainEqual(
+          expect.objectContaining({
+            moduleSpecifier: './dependency.js',
+            bindingName: 'dependency',
+            completeness: 'complete',
+          }),
+        );
+      } else {
+        expect(result.imports).not.toContainEqual(
+          expect.objectContaining({ moduleSpecifier: './dependency.js' }),
+        );
+        expect(
+          result.declarations.some((item) => item.qualifiedName === 'rebuilt'),
+        ).toBe(false);
+      }
+    },
+  );
 });
