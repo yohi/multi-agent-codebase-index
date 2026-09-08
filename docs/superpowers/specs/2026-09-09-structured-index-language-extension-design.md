@@ -19,8 +19,8 @@ This design extends the structured indexing experience to Rust, Java, C#,
 C, C++, and Python type stubs (`.pyi`). The new languages must provide the
 same guarantees as existing languages: outline, qualified names, parent-child
 structure, stable `symbolId`, exact source retrieval, bounded context,
-partial-parse resilience, and fallback to normal indexing when structured
-parsing is unavailable.
+partial-parse resilience, and fail-closed handling when structured parsing
+fails.
 
 ## Goal
 
@@ -157,16 +157,16 @@ intentionally out of scope for this change.
 |      | `impl` method | `method` |
 |      | `fn` | `function` |
 |      | `mod` | `namespace` |
-|      | `use` | `import` |
-| Java | class | `class` |
+| Java | `package` | `namespace` |
+|      | class | `class` |
 |      | interface | `interface` |
 |      | enum | `enum` |
 |      | record | `record` |
 |      | method | `method` |
 |      | constructor | `constructor` |
 |      | field | `field` |
-|      | `import` | `import` |
-| C# | class | `class` |
+| C# | namespace | `namespace` |
+|    | class | `class` |
 |    | interface | `interface` |
 |    | struct | `struct` |
 |    | enum | `enum` |
@@ -174,30 +174,26 @@ intentionally out of scope for this change.
 |    | method | `method` |
 |    | constructor | `constructor` |
 |    | property | `property` |
-|    | namespace | `namespace` |
-|    | `using` | `import` |
 | C | function | `function` |
 |   | struct | `struct` |
 |   | enum | `enum` |
-|   | `#include` | `import` |
-| C++ | function | `function` |
+| C++ | namespace | `namespace` |
+|     | function | `function` |
 |     | struct | `struct` |
 |     | class | `class` |
 |     | enum | `enum` |
-|     | namespace | `namespace` |
 |     | method | `method` |
 |     | constructor | `constructor` |
-|     | `#include` | `import` |
 | Python `.pyi` | class | `class` |
 |               | function | `function` |
 |               | method | `method` |
-|               | import | `import` |
 
 ### 6. Container and parent-child handling
 
-- Rust `mod`, C# `namespace`, C++ `namespace`, and Java packages (when a
+- Rust `mod`, C# `namespace`, C++ `namespace`, and Java `package` (when a
   `package` declaration is present) are represented as `namespace` declarations
-  that own nested declarations.
+  that own nested declarations. The Java `package` declaration itself is listed
+  in §5 as a `namespace` declaration.
 - Rust `impl` is represented as `impl` and acts as a container for its methods.
 - Java / C# / C++ nested classes, structs, and namespaces contribute to
   qualified names using `.` as the separator, matching the existing TypeScript
@@ -226,7 +222,10 @@ types, the signature and occurrence fields guarantee distinct stable IDs.
 ### 8. Import / include / use / using representation
 
 `StructuredImport` records are produced for each language's import-like syntax.
-
+The table below is the authoritative mapping from source construct to
+`StructuredImport` for all new languages. Import-like constructs are not
+represented as `StructuredDeclaration` records and do not receive a
+`symbolId` or `parentSymbolId`.
 | Language | Syntax | `moduleSpecifier` | `bindingName` |
 | -------- | ------ | ----------------- | ------------- |
 | Rust | `use std::fs::File;` | `std::fs::File` | `File` |
@@ -247,10 +246,10 @@ Bindings with unresolved or wildcard imports are marked `completeness: 'partial'
 - Declarations whose own node, range node, or scope node contains an
   `ERROR` / `MISSING` node are skipped.
 - Remaining valid declarations are emitted with status `degraded` / `partial`.
-- Normal/search chunk generation and structured-catalog generation are
-  separate paths. A structured parsing failure does not stop normal chunks
-  from being computed, but it does affect whether the structured catalog is
-  updated in that pass.
+- Normal/search chunk generation uses the fixed-line path via `createParser()`
+  and is independent of the structured path. A failure in the structured path
+  therefore does not cause a fallback to normal indexing; it only decides
+  whether the structured catalog is updated in that pass.
 - In an incremental update, a structured parse failure causes the file to be
   routed to the dead-letter queue; neither the structured catalog nor the
   normal chunk vectors for that file are updated in that pass. This matches
@@ -261,12 +260,14 @@ Bindings with unresolved or wildcard imports are marked `completeness: 'partial'
   full rebuild, `src/indexer/pipeline.ts` and its full-rebuild integration
   tests must be changed explicitly.
 - Parser load failures in the structured path are not caught by the normal
-  `createParser` wrapper; `readStructuredFile` calls
+  `createParser()` wrapper; `readStructuredFile` calls
   `plugin.createStructuredParser()` directly and converts exceptions into
   `parse-failed`.
 - A valid structured result that contains imports but no declarations is kept
   as structured work so that import-only files (e.g. a C/C++ header with only
-  `#include` directives) persist their imports in the structured catalog.
+  `#include` directives) persist their imports in the structured catalog. The
+  structured parser is retired only when both declarations and imports are
+  empty.
 
 ### 10. Incremental integration
 
@@ -312,11 +313,9 @@ but successful index is not rebuilt solely because it is old (see `SPEC.md`
 7. `src/indexer/pipeline.ts`
    - Update `readStructuredFile` so that a valid structured result with zero
      declarations but non-zero imports is kept as structured work instead of
-     being retired.
-   - Confirm that the failure/fallback semantics documented in §9 match the
-     current implementation; if the requirement to ignore unparseable files
-     during a full rebuild is added later, change this file and its
-     full-rebuild integration tests explicitly.
+     being retired. Do not change the fail-closed semantics: incremental
+     structured parse failures still route to the DLQ, and full-rebuild
+     structured parse failures still abort the rebuild.
 
 ### Documentation
 
@@ -361,7 +360,9 @@ but successful index is not rebuilt solely because it is old (see `SPEC.md`
 
 ## Test Strategy
 
-Each new language parser test covers:
+Each new language parser test covers the record families separately.
+
+**StructuredDeclaration tests**
 
 - The required declaration families from §5 Language-specific declaration
   mapping are detected.
@@ -372,11 +373,23 @@ Each new language parser test covers:
   type or namespace.
 - `rawSource`, `startByte`, `endByte`, and `sourceHash` match the original file
   bytes.
-- Import-like statements are extracted as `StructuredImport` records.
 - Files with intentional syntax errors keep their unaffected declarations and
   report `status: 'degraded'` / `retrievability: 'partial'`.
-- Completely unparseable files do not break the pipeline; they fall back to
-  normal indexing.
+
+**StructuredImport tests**
+
+- The import-like statements listed in §8 Import / include / use / using
+  representation are extracted as `StructuredImport` records.
+- `moduleSpecifier` and `bindingName` match the source construct.
+- Wildcard / unresolved imports are marked `completeness: 'partial'`.
+- `startByte`, `endByte`, and `sourceHash` match the original file bytes.
+- Files that contain imports but no declarations still return valid imports.
+
+**Pipeline failure tests**
+
+- Completely unparseable files do not corrupt the pipeline. In an incremental
+  update they are routed to the dead-letter queue; in a full rebuild they abort
+  the rebuild.
 
 The full repository quality checks (`npm run build`, `npm run lint`,
 `npx tsc --noEmit`, `npx vitest run`) must pass before the implementation is
@@ -386,7 +399,7 @@ considered complete.
 
 | Risk | Mitigation |
 | ---- | ---------- |
-| Tree-sitter native addons fail to install or load on some environments. | Normal chunking falls back to fixed-line; structured path returns `parse-failed`. |
+| Tree-sitter native addons fail to install or load on some environments. | Normal chunking via `createParser()` falls back to fixed-line; the structured path via `createStructuredParser()` returns `parse-failed`. |
 | C/C++ grammar produces different node shapes for C and C++ constructs. | The C and C++ plugins are separate and use grammar-specific selectors; shared helpers are only used where the node shapes align. |
 | `.h` parsed as C++ may misclassify pure C headers. | Documented limitation; behavior is explicit per requirements. |
 | New `SymbolKind` values may surprise existing clients. | Kinds are additive; existing values are unchanged. `docs/mcp-tools.md` is updated to list the new kinds. |
@@ -400,7 +413,8 @@ considered complete.
 - [ ] Each new language recognizes the declarations listed in
       §5 Language-specific declaration mapping and produces stable `symbolId`,
       exact source, and parent-child links.
-- [ ] Import / include / use / using statements are extracted as
+- [ ] Import / include / use / using statements listed in
+      §8 Import / include / use / using representation are extracted as
       `StructuredImport` records.
 - [ ] A valid structured result that contains imports but no declarations is
       kept as structured work so that import-only files (e.g. a C/C++ header
