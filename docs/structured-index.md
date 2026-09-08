@@ -31,10 +31,10 @@ structured declarations or imports.
 
 ## Known limitations
 
-- CommonJS `require()` calls and assignment-style exports such as
-  `module.exports`, `exports.foo`, and `export = { ... }` are **not extracted**
-  as structured declarations or imports in Phase 1. Only ECMAScript `import`
-  and declaration syntax is captured.
+- **TypeScript / JavaScript:** CommonJS `require()` calls and assignment-style
+  exports such as `module.exports`, `exports.foo`, and `export = { ... }` are
+  **not extracted** as structured declarations or imports in Phase 1. Only
+  ECMAScript `import` and declaration syntax is captured.
 
 ## Requesting additional languages
 
