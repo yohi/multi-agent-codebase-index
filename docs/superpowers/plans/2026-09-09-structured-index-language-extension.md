@@ -18,7 +18,11 @@
 - `.pyi` は既存 `tree-sitter-python` grammar を再利用する
 - `SymbolKind` 追加は既存値を変更しない加算的拡張のみ
 - `qualifiedName` はカタログ全体で `.` セパレータを使用する（Rust も `module.Trait`、`Type.method`）
+- Java `package_declaration` と C# `file_scoped_namespace_declaration` は AST body container ではなく、後続 top-level declaration に適用する logical file scope として扱う
+- 宣言の declaration node / range node / owning scope node のいずれかに `ERROR` / `MISSING` があれば出力せず、壊れた container の子を外側 scopeへ flatten しない
+- lexical `ownerKey` は traversal 中に owning descriptor の `declarationKey` を直接渡して確定する。`qualifiedName` の逆引きで復元しない
 - 構造化パース失敗は fail-closed: 増分更新では DLQ へ、フルリビルドでは中止
+- Task 3〜6 のproduction code blockは各対象ファイルの全内容を示し、未定義のhelperや省略記号に実装を委譲しない
 - `npm ci`、`npm run build`、`npm run lint`、`npx tsc --noEmit`、`npm run license:check`、`npm run test` がすべて通ること
 - ロックファイルは `npm install` で再生成し、手編集禁止
 
@@ -65,8 +69,10 @@
 | `tests/fixtures/structured/rust/exactness.rs` | Rust 正常 fixture |
 | `tests/fixtures/structured/rust/partial.rs` | Rust 部分破損 fixture |
 | `tests/fixtures/structured/java/Exactness.java` | Java 正常 fixture |
+| `tests/fixtures/structured/java/PackageLess.java` | Java package-less 正常 fixture |
 | `tests/fixtures/structured/java/Partial.java` | Java 部分破損 fixture |
 | `tests/fixtures/structured/csharp/Exactness.cs` | C# 正常 fixture |
+| `tests/fixtures/structured/csharp/FileScoped.cs` | C# file-scoped namespace 正常 fixture |
 | `tests/fixtures/structured/csharp/Partial.cs` | C# 部分破損 fixture |
 | `tests/fixtures/structured/c/exactness.c` | C 正常 fixture |
 | `tests/fixtures/structured/c/partial.c` | C 部分破損 fixture |
@@ -243,6 +249,14 @@ mod outer {
         fn draw(&self);
     }
 
+    pub struct Duplicate {
+        first: i32,
+    }
+
+    pub struct Duplicate {
+        second: i32,
+    }
+
     mod nested {
         pub struct Marker;
     }
@@ -263,10 +277,16 @@ pub struct Good {
 
 pub struct Bad {
     value: i32,
-    // 意図的な構文エラー: 閉じ括弧なし
+    pub fn malformed( {}
+}
+
+pub mod broken {
+    pub fn inside() {}
+    pub fn bad( {}
+}
 ```
 
-`tests/unit/structured/rust-parser.test.ts`（抜粋、全体はファイルに展開）：
+`tests/unit/structured/rust-parser.test.ts`:
 
 ```typescript
 import { readFile } from 'node:fs/promises';
@@ -305,6 +325,13 @@ describe('Rust structured parser', () => {
     expect(byName.get('outer.Point')?.symbolId).toMatch(/^symbol_v1_/);
   });
 
+  it('keeps repeated canonical names distinct', async () => {
+    const { result } = await parseRustFixture('exactness.rs');
+    const duplicates = result.declarations.filter((d) => d.qualifiedName === 'outer.Duplicate');
+    expect(duplicates).toHaveLength(2);
+    expect(new Set(duplicates.map((d) => d.symbolId)).size).toBe(2);
+  });
+
   it('uses dot separator in qualifiedName', async () => {
     const { result } = await parseRustFixture('exactness.rs');
     const names = result.declarations.map((d) => d.qualifiedName);
@@ -331,6 +358,8 @@ describe('Rust structured parser', () => {
     expect(result.retrievability).toBe('partial');
     expect(result.declarations.find((d) => d.qualifiedName === 'Good')).toBeDefined();
     expect(result.declarations.find((d) => d.qualifiedName === 'Bad')).toBeUndefined();
+    expect(result.declarations.find((d) => d.qualifiedName === 'inside')).toBeUndefined();
+    expect(result.declarations.find((d) => d.qualifiedName === 'broken.inside')).toBeUndefined();
   });
 
   it('matches rawSource, byte offsets, and sourceHash to the original file', async () => {
@@ -414,24 +443,27 @@ export const findDeclarationStartByte = (
 ```typescript
 import type Parser from 'tree-sitter';
 import type { SymbolKind } from '../../types/index.js';
+import { hasSyntaxProblem } from './rust-structured-support.js';
 
 export interface DeclarationDescriptor {
   readonly node: Parser.SyntaxNode;
+  readonly rangeNode: Parser.SyntaxNode;
+  readonly scopeNode?: Parser.SyntaxNode;
   readonly declarationKey: string;
+  readonly ownerKey?: string;
   readonly kind: SymbolKind;
   readonly name: string;
   readonly qualifiedName: string;
-  readonly ownerKey?: string;
 }
 
 interface UnresolvedDescriptor extends DeclarationDescriptor {
-  readonly ownerQualifiedName?: string;
   readonly targetQualifiedName?: string;
 }
 
 interface Scope {
   readonly qualifiedName: string;
-  readonly ownerQualifiedName?: string;
+  readonly ownerKey?: string;
+  readonly scopeNode?: Parser.SyntaxNode;
 }
 
 const declarationKeyFor = (node: Parser.SyntaxNode): string =>
@@ -459,29 +491,26 @@ const declarationFor = (
   scope: Scope,
 ): UnresolvedDescriptor | undefined => {
   const declarationKey = declarationKeyFor(node);
-  const ownerQualifiedName = scope.ownerQualifiedName;
+  const ownerKey = scope.ownerKey;
+  const scopeNode = scope.scopeNode;
   if (node.type === 'mod_item') {
     const name = nameNodeText(node);
     if (!name) return undefined;
     return {
-      node,
-      declarationKey,
+      node, rangeNode: node, scopeNode, declarationKey, ownerKey,
       kind: 'namespace',
       name,
       qualifiedName: joinQualifiedName(scope.qualifiedName, name),
-      ownerQualifiedName,
     };
   }
   if (node.type === 'struct_item' || node.type === 'enum_item' || node.type === 'trait_item') {
     const name = nameNodeText(node);
     if (!name) return undefined;
     return {
-      node,
-      declarationKey,
+      node, rangeNode: node, scopeNode, declarationKey, ownerKey,
       kind: kindForType(node),
       name,
       qualifiedName: joinQualifiedName(scope.qualifiedName, name),
-      ownerQualifiedName,
     };
   }
   if (node.type === 'impl_item') {
@@ -494,12 +523,10 @@ const declarationFor = (
       ? `${joinQualifiedName(scope.qualifiedName, traitNode.text)}.${name}.impl`
       : `${targetQualifiedName}.impl`;
     return {
-      node,
-      declarationKey,
+      node, rangeNode: node, scopeNode, declarationKey, ownerKey,
       kind: 'impl',
       name,
       qualifiedName,
-      ownerQualifiedName,
       targetQualifiedName,
     };
   }
@@ -507,12 +534,10 @@ const declarationFor = (
     const name = nameNodeText(node);
     if (!name) return undefined;
     return {
-      node,
-      declarationKey,
+      node, rangeNode: node, scopeNode, declarationKey, ownerKey,
       kind: 'function',
       name,
       qualifiedName: joinQualifiedName(scope.qualifiedName, name),
-      ownerQualifiedName,
     };
   }
   return undefined;
@@ -521,24 +546,57 @@ const declarationFor = (
 const isContainer = (descriptor: UnresolvedDescriptor): boolean =>
   descriptor.kind === 'namespace' || descriptor.kind === 'impl' || descriptor.kind === 'trait';
 
-const childrenScopeFor = (descriptor: UnresolvedDescriptor): Scope => {
+type TypeDescriptor = Pick<UnresolvedDescriptor, 'qualifiedName' | 'declarationKey'>;
+
+const childrenScopeFor = (
+  descriptor: UnresolvedDescriptor,
+  typeDescriptors: readonly TypeDescriptor[],
+): Scope => {
   if (descriptor.kind === 'impl') {
     const targetQualifiedName = descriptor.targetQualifiedName ?? descriptor.qualifiedName;
-    return { qualifiedName: targetQualifiedName, ownerQualifiedName: targetQualifiedName };
+    const targetCandidates = typeDescriptors.filter((candidate) => candidate.qualifiedName === targetQualifiedName);
+    const target = targetCandidates.length === 1 ? targetCandidates[0] : undefined;
+    return {
+      qualifiedName: targetQualifiedName,
+      ownerKey: target?.declarationKey,
+      scopeNode: descriptor.node,
+    };
   }
-  return { qualifiedName: descriptor.qualifiedName, ownerQualifiedName: descriptor.qualifiedName };
+  return {
+    qualifiedName: descriptor.qualifiedName,
+    ownerKey: descriptor.declarationKey,
+    scopeNode: descriptor.node,
+  };
 };
 
 export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
+  const typeDescriptors: TypeDescriptor[] = [];
+  const collectTypeDescriptors = (node: Parser.SyntaxNode, scope: Scope): void => {
+    const descriptor = declarationFor(node, scope);
+    if (descriptor === undefined) return;
+    if (descriptor.kind === 'struct' || descriptor.kind === 'enum' || descriptor.kind === 'trait') {
+      typeDescriptors.push(descriptor);
+    }
+    if (!isContainer(descriptor)) return;
+    const body = bodyNode(node);
+    if (body === undefined) return;
+    const childScope = descriptor.kind === 'impl'
+      ? { qualifiedName: descriptor.targetQualifiedName ?? descriptor.qualifiedName, scopeNode: descriptor.node }
+      : { qualifiedName: descriptor.qualifiedName, ownerKey: descriptor.declarationKey, scopeNode: descriptor.node };
+    for (const child of body.namedChildren) collectTypeDescriptors(child, childScope);
+  };
+  for (const child of root.namedChildren) collectTypeDescriptors(child, { qualifiedName: '' });
+
   const unresolved: UnresolvedDescriptor[] = [];
   const walk = (node: Parser.SyntaxNode, scope: Scope): void => {
     const descriptor = declarationFor(node, scope);
     if (descriptor === undefined) return;
     unresolved.push(descriptor);
     if (!isContainer(descriptor)) return;
+    if (hasSyntaxProblem(node)) return;
     const body = bodyNode(node);
     if (body === undefined) return;
-    const childScope = childrenScopeFor(descriptor);
+    const childScope = childrenScopeFor(descriptor, typeDescriptors);
     for (const child of body.namedChildren) walk(child, childScope);
   };
 
@@ -546,17 +604,14 @@ export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDe
     walk(child, { qualifiedName: '' });
   }
 
-  const keyByQualifiedName = new Map(
-    unresolved.map((descriptor) => [descriptor.qualifiedName, descriptor.declarationKey]),
-  );
-  return unresolved.map(({ ownerQualifiedName, targetQualifiedName: _target, ...descriptor }) => ({
-    ...descriptor,
-    ...(ownerQualifiedName === undefined
-      ? {}
-      : { ownerKey: keyByQualifiedName.get(ownerQualifiedName) }),
-  }));
+  return unresolved.map(({ targetQualifiedName: _target, ...descriptor }) => descriptor);
 };
 ```
+
+The `impl` target lookup is an explicit Rust semantic association, not lexical
+ownership reconstruction. It uses the collected type descriptors and leaves the
+owner unresolved when the target name is ambiguous; lexical `ownerKey` values
+are always copied directly from the active traversal scope.
 
 `src/plugins/languages/rust-structured-imports.ts`:
 
@@ -717,13 +772,17 @@ export class RustStructuredParser implements StructuredLanguageParser {
     const drafts: { declaration: StructuredDeclaration; ownerKey?: string; declarationKey: string }[] = [];
 
     for (const descriptor of declarationsFor(root)) {
-      if (hasSyntaxProblem(descriptor.node)) continue;
+      if (
+        hasSyntaxProblem(descriptor.node) ||
+        hasSyntaxProblem(descriptor.rangeNode) ||
+        (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
+      ) continue;
       const signatureDiscriminator = signatureFor(source, descriptor.node);
       const occurrenceKey = `${descriptor.qualifiedName}\u0000${descriptor.kind}\u0000${signatureDiscriminator}`;
       const occurrence = occurrences.get(occurrenceKey) ?? 0;
       occurrences.set(occurrenceKey, occurrence + 1);
-      const startByte = findDeclarationStartByte(textLines, descriptor.node.startPosition.row + 1, offsets);
-      const endByte = offsets.byteOffsetAtUtf16(descriptor.node.endIndex);
+      const startByte = findDeclarationStartByte(textLines, descriptor.rangeNode.startPosition.row + 1, offsets);
+      const endByte = offsets.byteOffsetAtUtf16(descriptor.rangeNode.endIndex);
       drafts.push({
         declarationKey: descriptor.declarationKey,
         declaration: {
@@ -737,7 +796,7 @@ export class RustStructuredParser implements StructuredLanguageParser {
           qualifiedName: descriptor.qualifiedName,
           kind: descriptor.kind,
           signatureDiscriminator,
-          position: positionFor(descriptor.node),
+          position: positionFor(descriptor.rangeNode),
           name: descriptor.name,
           startByte,
           endByte,
@@ -898,7 +957,7 @@ git commit -m "feat(structured): add Rust structured parser"
 - Create: `src/plugins/languages/java-structured.ts`
 - Create: `src/plugins/languages/java.ts`
 - Test: `tests/unit/structured/java-parser.test.ts`
-- Test fixtures: `tests/fixtures/structured/java/Exactness.java`, `tests/fixtures/structured/java/Partial.java`
+- Test fixtures: `tests/fixtures/structured/java/Exactness.java`, `tests/fixtures/structured/java/PackageLess.java`, `tests/fixtures/structured/java/Partial.java`
 
 **Interfaces:**
 - Consumes: 共通ヘルパーと同じ型群
@@ -938,15 +997,31 @@ public class Exactness {
 ```java
 package com.example;
 
-public class Partial {
-    public void good() {}
-    public void bad( {
+class Unaffected {
+}
+
+class Broken {
+    void good() {}
+    void bad( {
 }
 ```
 
-`tests/unit/structured/java-parser.test.ts`（抜粋）：
+`tests/fixtures/structured/java/PackageLess.java`:
+
+```java
+class PackageLess {
+}
+```
+
+`tests/unit/structured/java-parser.test.ts`:
 
 ```typescript
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { JavaLanguagePlugin } from '../../../src/plugins/languages/java.js';
+import { decodeUtf8, sha256Hex } from '../../../src/structured/hash.js';
+
 const parseJavaFixture = async (name: string) => {
   const filePath = path.join('tests', 'fixtures', 'structured', 'java', name);
   const bytes = new Uint8Array(await readFile(filePath));
@@ -958,9 +1033,10 @@ const parseJavaFixture = async (name: string) => {
 
 describe('Java structured parser', () => {
   it('extracts package, class, interface, enum, record, constructor, method, field', async () => {
-    const { result } = await parseJavaFixture('Exactness.java');
+    const { bytes, result } = await parseJavaFixture('Exactness.java');
     const byName = new Map(result.declarations.map((d) => [d.qualifiedName, d]));
 
+    expect(result.status).toBe('ok');
     expect(byName.get('com.example')?.kind).toBe('namespace');
     expect(byName.get('com.example.Exactness')?.kind).toBe('class');
     expect(byName.get('com.example.Exactness.Point')?.kind).toBe('record');
@@ -969,6 +1045,18 @@ describe('Java structured parser', () => {
     expect(byName.get('com.example.Exactness.field')?.kind).toBe('field');
     expect(byName.get('com.example.Exactness.Exactness')?.kind).toBe('constructor');
     expect(byName.get('com.example.Exactness.method')?.kind).toBe('method');
+    expect(byName.get('com.example.Exactness')?.parentSymbolId)
+      .toBe(byName.get('com.example')?.symbolId);
+    expect(byName.get('com.example.Exactness.method')?.parentSymbolId)
+      .toBe(byName.get('com.example.Exactness')?.symbolId);
+
+    const point = byName.get('com.example.Exactness.Point');
+    expect(point?.rawSource).toBe(
+      decodeUtf8(bytes.subarray(point?.startByte ?? 0, point?.endByte ?? 0)),
+    );
+    expect(point?.sourceHash).toBe(
+      sha256Hex(bytes.subarray(point?.startByte ?? 0, point?.endByte ?? 0)),
+    );
   });
 
   it('extracts imports and marks wildcard imports partial', async () => {
@@ -978,6 +1066,23 @@ describe('Java structured parser', () => {
     expect(listImport?.bindingName).toBe('List');
     expect(listImport?.completeness).toBe('complete');
     expect(wildcard?.completeness).toBe('partial');
+  });
+
+  it('keeps package-less declarations at the root scope', async () => {
+    const { result } = await parseJavaFixture('PackageLess.java');
+    const declaration = result.declarations.find((d) => d.qualifiedName === 'PackageLess');
+    expect(declaration?.kind).toBe('class');
+    expect(declaration?.parentSymbolId).toBeUndefined();
+  });
+
+  it('does not flatten declarations from a broken class into package scope', async () => {
+    const { result } = await parseJavaFixture('Partial.java');
+    const byName = new Map(result.declarations.map((d) => [d.qualifiedName, d]));
+    expect(result.status).toBe('degraded');
+    expect(byName.get('com.example.Unaffected')?.kind).toBe('class');
+    expect(byName.has('com.example.Broken')).toBe(false);
+    expect(byName.has('com.example.Broken.good')).toBe(false);
+    expect(byName.has('good')).toBe(false);
   });
 });
 ```
@@ -1037,9 +1142,12 @@ export const startByteFor = (node: Parser.SyntaxNode, offsets: Utf8OffsetTable):
 ```typescript
 import type Parser from 'tree-sitter';
 import type { SymbolKind } from '../../types/index.js';
+import { hasSyntaxProblem } from './java-structured-support.js';
 
 export interface DeclarationDescriptor {
   readonly node: Parser.SyntaxNode;
+  readonly rangeNode: Parser.SyntaxNode;
+  readonly scopeNode?: Parser.SyntaxNode;
   readonly declarationKey: string;
   readonly ownerKey?: string;
   readonly kind: SymbolKind;
@@ -1047,13 +1155,12 @@ export interface DeclarationDescriptor {
   readonly qualifiedName: string;
 }
 
-interface UnresolvedDescriptor extends DeclarationDescriptor {
-  readonly ownerQualifiedName?: string;
-}
+type UnresolvedDescriptor = DeclarationDescriptor;
 
 interface Scope {
   readonly qualifiedName: string;
-  readonly ownerQualifiedName?: string;
+  readonly ownerKey?: string;
+  readonly scopeNode?: Parser.SyntaxNode;
 }
 
 const keyFor = (node: Parser.SyntaxNode, index = 0): string =>
@@ -1069,22 +1176,26 @@ const bodyFor = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
   node.childForFieldName('body') ?? node.namedChildren.find((child) =>
     ['class_body', 'interface_body', 'enum_body', 'record_body', 'block'].includes(child.type));
 
-const kindFor = (node: Parser.SyntaxNode): SymbolKind | undefined => ({
-  class_declaration: 'class',
-  interface_declaration: 'interface',
-  enum_declaration: 'enum',
-  record_declaration: 'record',
-  method_declaration: 'method',
-  constructor_declaration: 'constructor',
-  field_declaration: 'field',
-}[node.type] as SymbolKind | undefined);
+const kindFor = (node: Parser.SyntaxNode): SymbolKind | undefined => {
+  switch (node.type) {
+    case 'class_declaration': return 'class';
+    case 'interface_declaration': return 'interface';
+    case 'enum_declaration': return 'enum';
+    case 'record_declaration': return 'record';
+    case 'method_declaration': return 'method';
+    case 'constructor_declaration': return 'constructor';
+    case 'field_declaration': return 'field';
+    default: return undefined;
+  }
+};
 
 const descriptorsForNode = (node: Parser.SyntaxNode, scope: Scope): UnresolvedDescriptor[] => {
   if (node.type === 'package_declaration') {
     const name = node.childForFieldName('name')?.text;
     return name === undefined ? [] : [{
-      node, declarationKey: keyFor(node), kind: 'namespace', name,
-      qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName,
+      node, rangeNode: node, scopeNode: scope.scopeNode,
+      declarationKey: keyFor(node), ownerKey: scope.ownerKey, kind: 'namespace', name,
+      qualifiedName: join(scope.qualifiedName, name),
     }];
   }
 
@@ -1096,8 +1207,9 @@ const descriptorsForNode = (node: Parser.SyntaxNode, scope: Scope): UnresolvedDe
       .map((child, index) => {
         const name = child.childForFieldName('name')?.text;
         return name === undefined ? undefined : {
-          node, declarationKey: keyFor(child, index), kind, name,
-          qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName,
+          node, rangeNode: node, scopeNode: scope.scopeNode,
+          declarationKey: keyFor(child, index), ownerKey: scope.ownerKey, kind, name,
+          qualifiedName: join(scope.qualifiedName, name),
         };
       })
       .filter((descriptor): descriptor is UnresolvedDescriptor => descriptor !== undefined);
@@ -1105,8 +1217,9 @@ const descriptorsForNode = (node: Parser.SyntaxNode, scope: Scope): UnresolvedDe
 
   const name = nameFor(node);
   return name === undefined ? [] : [{
-    node, declarationKey: keyFor(node), kind, name,
-    qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName,
+    node, rangeNode: node, scopeNode: scope.scopeNode,
+    declarationKey: keyFor(node), ownerKey: scope.ownerKey, kind, name,
+    qualifiedName: join(scope.qualifiedName, name),
   }];
 };
 
@@ -1114,49 +1227,161 @@ const isContainer = (descriptor: UnresolvedDescriptor): boolean =>
   ['namespace', 'class', 'interface', 'enum', 'record'].includes(descriptor.kind);
 
 export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
+  const packageNode = root.namedChildren.find((child) => child.type === 'package_declaration');
+  const packageDescriptor = packageNode === undefined
+    ? undefined
+    : descriptorsForNode(packageNode, { qualifiedName: '' })[0];
   const unresolved: UnresolvedDescriptor[] = [];
+  if (packageDescriptor !== undefined) unresolved.push(packageDescriptor);
+
   const walk = (node: Parser.SyntaxNode, scope: Scope): void => {
     const descriptors = descriptorsForNode(node, scope);
     for (const descriptor of descriptors) {
+      if (descriptor.node === packageNode) continue;
       unresolved.push(descriptor);
       if (isContainer(descriptor)) {
         const body = bodyFor(node);
-        if (body !== undefined) {
-          const childScope = { qualifiedName: descriptor.qualifiedName, ownerQualifiedName: descriptor.qualifiedName };
-          for (const child of body.namedChildren) walk(child, childScope);
-        }
+        if (body === undefined || hasSyntaxProblem(node)) continue;
+        const childScope = {
+          qualifiedName: descriptor.qualifiedName,
+          ownerKey: descriptor.declarationKey,
+          scopeNode: descriptor.node,
+        };
+        for (const child of body.namedChildren) walk(child, childScope);
       }
     }
   };
 
-  for (const child of root.namedChildren) walk(child, { qualifiedName: '' });
-  const keyByQualifiedName = new Map(unresolved.map((descriptor) => [descriptor.qualifiedName, descriptor.declarationKey]));
-  return unresolved.map(({ ownerQualifiedName, ...descriptor }) => ({
-    ...descriptor,
-    ...(ownerQualifiedName === undefined ? {} : { ownerKey: keyByQualifiedName.get(ownerQualifiedName) }),
-  }));
+  const baseScope = packageDescriptor === undefined
+    ? { qualifiedName: '' }
+    : {
+        qualifiedName: packageDescriptor.qualifiedName,
+        ownerKey: packageDescriptor.declarationKey,
+        scopeNode: packageDescriptor.node,
+      };
+  for (const child of root.namedChildren) {
+    if (child.type === 'package_declaration' || child.type === 'import_declaration') continue;
+    walk(child, baseScope);
+  }
+  return unresolved;
 };
 ```
 
-`src/plugins/languages/java-structured-imports.ts` は `import_declaration`だけを対象にし、path nodeのtextからspecifierを取得する。末尾が`.*`なら`moduleSpecifier`から`.*`を除去し、`bindingName`を`undefined`、`completeness`を`'partial'`とする。それ以外は最後の`.`以降を`bindingName`、`completeness`を`'complete'`とする。各recordの`id`は`filePath:startByte:moduleSpecifier:bindingName`のSHA-256、range/hash/positionはimport node全体から生成する。構文エラーを含むimport nodeは除外する。
+`src/plugins/languages/java-structured-imports.ts`:
+
+```typescript
+import { createHash } from 'node:crypto';
+import type Parser from 'tree-sitter';
+import type { StructuredImport, StructuredSource } from '../../structured/contracts.js';
+import { sha256Hex } from '../../structured/hash.js';
+import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+import { hasSyntaxProblem, positionFor } from './java-structured-support.js';
+
+const pathFor = (node: Parser.SyntaxNode): string | undefined =>
+  node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
+    ['identifier', 'scoped_identifier'].includes(child.type))?.text;
+
+export const importsFor = (
+  source: StructuredSource,
+  root: Parser.SyntaxNode,
+  offsets: Utf8OffsetTable,
+): readonly StructuredImport[] => {
+  const occurrences = new Map<string, number>();
+  const imports: StructuredImport[] = [];
+  for (const node of root.namedChildren) {
+    if (node.type !== 'import_declaration' || hasSyntaxProblem(node)) continue;
+    const path = pathFor(node);
+    if (path === undefined) continue;
+    const wildcard = path.endsWith('.*') || /\.\*\s*;\s*$/u.test(node.text);
+    const moduleSpecifier = path.endsWith('.*') ? path.slice(0, -2) : path;
+    const bindingName = wildcard ? undefined : moduleSpecifier.split('.').at(-1);
+    const startByte = offsets.byteOffsetAtUtf16(node.startIndex);
+    const endByte = offsets.byteOffsetAtUtf16(node.endIndex);
+    const importKey = `${source.filePath}:${startByte}:${moduleSpecifier}:${bindingName ?? ''}`;
+    const occurrence = occurrences.get(importKey) ?? 0;
+    occurrences.set(importKey, occurrence + 1);
+    imports.push({
+      id: `import_v1_${createHash('sha256').update(`${importKey}:${occurrence}`, 'utf8').digest('base64url')}`,
+      moduleSpecifier,
+      bindingName,
+      startByte,
+      endByte,
+      sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+      completeness: wildcard ? 'partial' : 'complete',
+      position: positionFor(node),
+    });
+  }
+  return imports;
+};
+```
 
 `src/plugins/languages/java-structured.ts` は次の順序を固定する。
 
 ```typescript
+import type Parser from 'tree-sitter';
+import type Java from 'tree-sitter-java';
+import type {
+  StructuredDeclaration,
+  StructuredGeneration,
+  StructuredLanguageParser,
+  StructuredParseResult,
+  StructuredSource,
+} from '../../structured/contracts.js';
+import { decodeUtf8, sha256Hex } from '../../structured/hash.js';
+import { createSymbolId } from '../../structured/identity.js';
+import {
+  createUtf8OffsetTable,
+  failedStructuredSource,
+  Utf8SourceError,
+} from '../../structured/utf8-offsets.js';
+import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+import { declarationsFor, type DeclarationDescriptor } from './java-structured-declarations.js';
+import { importsFor } from './java-structured-imports.js';
+import {
+  diagnosticsFor,
+  hasSyntaxProblem,
+  positionFor,
+  signatureFor,
+  startByteFor,
+} from './java-structured-support.js';
+
+export interface JavaTreeSitterRuntime {
+  readonly Parser: typeof Parser;
+  readonly Java: typeof Java;
+}
+
+const generationFor = (
+  source: StructuredSource,
+  diagnostics: readonly string[],
+): StructuredGeneration => ({
+  generationId: sha256Hex(source.bytes),
+  schemaVersion: 1,
+  parserId: 'java',
+  parserVersion: '0.23.5',
+  fileHash: sha256Hex(source.bytes),
+  fileCompleteness: diagnostics.length === 0 ? 'complete' : 'partial',
+  fileDiagnostics: diagnostics,
+});
+
 const declarationsWithIds = (
   source: StructuredSource,
   descriptors: readonly DeclarationDescriptor[],
   offsets: Utf8OffsetTable,
 ): readonly StructuredDeclaration[] => {
   const occurrences = new Map<string, number>();
-  const drafts = descriptors.filter(({ node }) => !hasSyntaxProblem(node)).map((descriptor) => {
+  const drafts = descriptors.flatMap((descriptor) => {
+    if (
+      hasSyntaxProblem(descriptor.node) ||
+      hasSyntaxProblem(descriptor.rangeNode) ||
+      (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
+    ) return [];
     const signatureDiscriminator = signatureFor(source, descriptor.node);
     const occurrenceKey = `${descriptor.qualifiedName}\u0000${descriptor.kind}\u0000${signatureDiscriminator}`;
     const occurrence = occurrences.get(occurrenceKey) ?? 0;
     occurrences.set(occurrenceKey, occurrence + 1);
-    const startByte = startByteFor(descriptor.node, offsets);
-    const endByte = offsets.byteOffsetAtUtf16(descriptor.node.endIndex);
-    return {
+    const startByte = startByteFor(descriptor.rangeNode, offsets);
+    const endByte = offsets.byteOffsetAtUtf16(descriptor.rangeNode.endIndex);
+    return [{
       descriptor,
       declaration: {
         symbolId: createSymbolId({
@@ -1169,7 +1394,7 @@ const declarationsWithIds = (
         qualifiedName: descriptor.qualifiedName,
         kind: descriptor.kind,
         signatureDiscriminator,
-        position: positionFor(descriptor.node),
+        position: positionFor(descriptor.rangeNode),
         name: descriptor.name,
         startByte,
         endByte,
@@ -1178,7 +1403,7 @@ const declarationsWithIds = (
         isExact: true,
         rawSource: decodeUtf8(source.bytes.subarray(startByte, endByte)),
       },
-    };
+    }];
   });
   const symbolByKey = new Map(drafts.map(({ descriptor, declaration }) => [descriptor.declarationKey, declaration.symbolId]));
   return drafts.map(({ descriptor, declaration }) => {
@@ -1191,10 +1416,10 @@ export class JavaStructuredParser implements StructuredLanguageParser {
   constructor(private readonly runtime: JavaTreeSitterRuntime) {}
 
   async parseStructured(source: StructuredSource): Promise<StructuredParseResult> {
-    if (source.bytes.length === 0) {
+    if (!source.bytes) {
       return {
-        status: 'failed',
-        retrievability: 'none',
+        status: 'degraded',
+        retrievability: 'partial',
         declarations: [],
         imports: [],
         failure: { reasonCode: 'invariant_violation', message: 'Java structured parsing requires source bytes.' },
@@ -1222,16 +1447,63 @@ export class JavaStructuredParser implements StructuredLanguageParser {
 }
 ```
 
-The file must define `JavaTreeSitterRuntime`, `generationFor`, `importsFor`,
-`createUtf8OffsetTable`, `failedStructuredSource`, and the imports used by the
-shown function. `generationFor` uses `parserId: 'java'`, grammar version
-`0.23.5`, the source hash, and `fileCompleteness: diagnostics.length === 0 ?
-'complete' : 'partial'`. A load or UTF-8 failure returns a failed structured
-result and is not converted into a successful empty result.
+`generationFor` uses `parserId: 'java'`, grammar version `0.23.5`, the source
+hash, and `fileCompleteness: diagnostics.length === 0 ? 'complete' : 'partial'`.
+The shown file is complete: it owns runtime loading types, result assembly,
+syntax filtering, byte/source hashing, and `parentSymbolId` materialization.
+A load or UTF-8 failure returns a failed structured result and is not converted
+into a successful empty result.
 
 `src/plugins/languages/java.ts`:
 
 ```typescript
+import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile } from '../../types/index.js';
+import type { StructuredLanguageParser, StructuredSource } from '../../structured/contracts.js';
+import { decodeUtf8 } from '../../structured/hash.js';
+import { JavaStructuredParser, type JavaTreeSitterRuntime } from './java-structured.js';
+
+const textEncoder = new TextEncoder();
+
+const sourceFor = (file: FileToChunk): StructuredSource => ({
+  filePath: file.filePath,
+  language: file.language,
+  bytes: file.bytes ?? textEncoder.encode(file.content),
+  text: file.content,
+});
+
+const loadTreeSitter = async (): Promise<JavaTreeSitterRuntime> => {
+  const [parser, java] = await Promise.all([import('tree-sitter'), import('tree-sitter-java')]);
+  return { Parser: parser.default, Java: java.default };
+};
+
+const projectLegacyResult = (
+  result: Awaited<ReturnType<StructuredLanguageParser['parseStructured']>>,
+  source: StructuredSource,
+): ParsedSourceFile => {
+  const declarations = result.declarations.map(({ kind, name, position, rawSource }): ParsedDeclaration => ({
+    type: kind,
+    name,
+    startLine: position.startLine,
+    endLine: position.endLine,
+    content: rawSource ?? '',
+  }));
+  const ranges = [...new Map(result.imports.map((item) => [`${item.startByte}:${item.endByte}`, item])).values()]
+    .toSorted((left, right) => left.startByte - right.startByte);
+  for (const item of ranges) {
+    declarations.push({
+      type: 'import',
+      name: 'imports',
+      startLine: item.position.startLine,
+      endLine: item.position.endLine,
+      content: decodeUtf8(source.bytes.subarray(item.startByte, item.endByte)),
+    });
+  }
+  return {
+    rootType: 'program',
+    declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
+  };
+};
+
 export class JavaLanguagePlugin implements LanguagePlugin {
   readonly languageId = 'java';
   readonly fileExtensions = ['.java'];
@@ -1241,32 +1513,30 @@ export class JavaLanguagePlugin implements LanguagePlugin {
   }
 
   async createStructuredParser(): Promise<StructuredLanguageParser> {
-    const [parser, java] = await Promise.all([import('tree-sitter'), import('tree-sitter-java')]);
-    return new JavaStructuredParser({ Parser: parser.default, Java: java.default });
+    return new JavaStructuredParser(await loadTreeSitter());
   }
 
   async createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
-    try {
-      const structured = await this.createStructuredParser();
-      return { parse: async (file) => {
+    const structured = await this.createStructuredParser();
+    return {
+      parse: async (file) => {
         const source = sourceFor(file);
         const result = await structured.parseStructured(source);
         if (result.status === 'ok' || result.status === 'degraded') return projectLegacyResult(result, source);
         throw new Error(result.failure.message);
-      } };
-    } catch {
-      return { parse: async () => ({ rootType: 'source_file', declarations: [] }) };
-    }
+      },
+    };
   }
 }
 ```
 
 `sourceFor` uses `file.bytes ?? new TextEncoder().encode(file.content)`. The
 local `projectLegacyResult` maps every structured declaration to a legacy
-declaration and maps each import range to one `import` declaration. A parser
-load or parse exception is allowed to reach `Chunker`, which supplies the
-existing fixed-line fallback; `createStructuredParser` itself must continue to
-throw so `readStructuredFile` can return `parse-failed`.
+declaration and maps each import range to one `import` declaration. Parser load
+or parse exceptions are allowed to reject `createParser()` or its returned
+`parse()` call so `Chunker` supplies the existing fixed-line fallback;
+`createStructuredParser()` itself continues to throw so `readStructuredFile`
+can return `parse-failed`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1295,7 +1565,7 @@ git commit -m "feat(structured): add Java structured parser"
 - Create: `src/plugins/languages/csharp-structured.ts`
 - Create: `src/plugins/languages/csharp.ts`
 - Test: `tests/unit/structured/csharp-parser.test.ts`
-- Test fixtures: `tests/fixtures/structured/csharp/Exactness.cs`, `tests/fixtures/structured/csharp/Partial.cs`
+- Test fixtures: `tests/fixtures/structured/csharp/Exactness.cs`, `tests/fixtures/structured/csharp/Partial.cs`, `tests/fixtures/structured/csharp/FileScoped.cs`
 
 **Interfaces:**
 - Consumes: 共通ヘルパーと同じ型群
@@ -1337,14 +1607,97 @@ namespace MyApp
 `tests/fixtures/structured/csharp/Partial.cs`:
 
 ```csharp
-namespace MyApp;
-public class Partial {
+namespace MyApp {
+public class Unaffected {}
+}
+
+namespace BrokenNamespace {
+public class Broken {
     public void Good() {}
-    public void Bad( {
+    public void Bad(
+}
 }
 ```
 
-C# testは以下の各descriptor、owner link、import completenessを個別に検証する。期待:
+`tests/fixtures/structured/csharp/FileScoped.cs`:
+
+```csharp
+namespace FileScoped;
+
+public class Container {
+    public void Method() {}
+}
+```
+
+`tests/unit/structured/csharp-parser.test.ts`:
+
+```typescript
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { CSharpLanguagePlugin } from '../../../src/plugins/languages/csharp.js';
+import { decodeUtf8, sha256Hex } from '../../../src/structured/hash.js';
+
+const parseCSharpFixture = async (name: string) => {
+  const filePath = path.join('tests', 'fixtures', 'structured', 'csharp', name);
+  const bytes = new Uint8Array(await readFile(filePath));
+  const text = decodeUtf8(bytes);
+  const parser = await new CSharpLanguagePlugin().createStructuredParser();
+  const result = await parser.parseStructured({ filePath, language: 'csharp', bytes, text });
+  return { bytes, result };
+};
+
+describe('C# structured parser', () => {
+  it('extracts declarations, direct owners, exact ranges, and imports', async () => {
+    const { bytes, result } = await parseCSharpFixture('Exactness.cs');
+    const byName = new Map(result.declarations.map((declaration) => [declaration.qualifiedName, declaration]));
+
+    expect(result.status).toBe('ok');
+    expect(byName.get('MyApp')?.kind).toBe('namespace');
+    expect(byName.get('MyApp.Exactness')?.kind).toBe('class');
+    expect(byName.get('MyApp.Exactness.Point')?.kind).toBe('struct');
+    expect(byName.get('MyApp.Exactness.IDrawable')?.kind).toBe('interface');
+    expect(byName.get('MyApp.Exactness.Color')?.kind).toBe('enum');
+    expect(byName.get('MyApp.Exactness.Person')?.kind).toBe('record');
+    expect(byName.get('MyApp.Exactness.Exactness')?.kind).toBe('constructor');
+    expect(byName.get('MyApp.Exactness.Method')?.kind).toBe('method');
+    expect(byName.get('MyApp.Exactness.Point.X')?.kind).toBe('property');
+    expect(byName.get('MyApp.Exactness.Method')?.parentSymbolId).toBe(byName.get('MyApp.Exactness')?.symbolId);
+    expect(byName.get('MyApp.Exactness.Point.X')?.parentSymbolId).toBe(byName.get('MyApp.Exactness.Point')?.symbolId);
+
+    const point = byName.get('MyApp.Exactness.Point');
+    expect(point?.rawSource).toBe(decodeUtf8(bytes.subarray(point?.startByte ?? 0, point?.endByte ?? 0)));
+    expect(point?.sourceHash).toBe(sha256Hex(bytes.subarray(point?.startByte ?? 0, point?.endByte ?? 0)));
+
+    const regular = result.imports.find((item) => item.moduleSpecifier === 'System');
+    const staticImport = result.imports.find((item) => item.moduleSpecifier === 'System.Math');
+    expect(regular?.completeness).toBe('complete');
+    expect(staticImport?.completeness).toBe('partial');
+  });
+
+  it('applies file-scoped namespace to following declarations', async () => {
+    const { result } = await parseCSharpFixture('FileScoped.cs');
+    const byName = new Map(result.declarations.map((declaration) => [declaration.qualifiedName, declaration]));
+    expect(byName.get('FileScoped')?.kind).toBe('namespace');
+    expect(byName.get('FileScoped.Container')?.kind).toBe('class');
+    expect(byName.get('FileScoped.Container.Method')?.parentSymbolId)
+      .toBe(byName.get('FileScoped.Container')?.symbolId);
+  });
+
+  it('does not flatten members from a broken class', async () => {
+    const { result } = await parseCSharpFixture('Partial.cs');
+    const names = new Set(result.declarations.map((declaration) => declaration.qualifiedName));
+    expect(result.status).toBe('degraded');
+    expect(names.has('MyApp.Unaffected')).toBe(true);
+    expect(names.has('BrokenNamespace.Broken')).toBe(false);
+    expect(names.has('BrokenNamespace.Broken.Good')).toBe(false);
+    expect(names.has('Good')).toBe(false);
+  });
+});
+```
+
+C# testは各descriptor、direct owner link、import completeness、exact range/hash、
+file-scoped namespace、broken container非flatteningを個別に検証する。期待:
 
 - `MyApp` → `namespace`
 - `MyApp.Exactness` → `class`
@@ -1370,23 +1723,60 @@ Expected: FAIL
 
 5つのproduction fileを作成し、次のC#固有の実装をそのままTaskの決定事項とする。
 
-`src/plugins/languages/csharp-structured-support.ts` は
-`hasSyntaxProblem(node)`, `diagnosticsFor(root)`, `positionFor(node)`,
-`signatureFor(source, node)`, `startByteFor(node, offsets)`をexportする。
-各関数はC#の`ERROR`/`MISSING`を再帰的に検出し、tree-sitterのnode rangeを
-UTF-8 byte rangeへ変換する。`signatureFor`は`body`または
-`declaration_list`の直前までを空白正規化し、propertyはproperty node全体を
-discriminatorにする。宣言自身、range、scope bodyのいずれかにsyntax problem
-がある場合はdescriptorを出力しない。
+`src/plugins/languages/csharp-structured-support.ts`:
+
+```typescript
+import type Parser from 'tree-sitter';
+import type { StructuredSource } from '../../structured/contracts.js';
+import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+
+export const hasSyntaxProblem = (node: Parser.SyntaxNode): boolean =>
+  node.isError || node.isMissing || node.children.some(hasSyntaxProblem);
+
+export const diagnosticsFor = (root: Parser.SyntaxNode): readonly string[] => {
+  const diagnostics: string[] = [];
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (node.isError || node.isMissing) {
+      diagnostics.push(`${node.type} at ${node.startPosition.row + 1}:${node.startPosition.column}`);
+    }
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return diagnostics;
+};
+
+export const positionFor = (node: Parser.SyntaxNode) => ({
+  startLine: node.startPosition.row + 1,
+  startColumn: node.startPosition.column,
+  endLine: node.endPosition.row + 1,
+  endColumn: node.endPosition.column,
+});
+
+export const signatureFor = (source: StructuredSource, node: Parser.SyntaxNode): string => {
+  if (node.type === 'property_declaration') return node.text.replace(/\s+/gu, ' ').trim();
+  const body = node.childForFieldName('body') ?? node.childForFieldName('declaration_list');
+  return source.text.slice(node.startIndex, body?.startIndex ?? node.endIndex).replace(/\s+/gu, ' ').trim();
+};
+
+export const startByteFor = (node: Parser.SyntaxNode, offsets: Utf8OffsetTable): number =>
+  offsets.byteOffsetAtUtf16(node.startIndex);
+```
+
+`hasSyntaxProblem`/`diagnosticsFor` recursively detect C# `ERROR`/`MISSING` nodes.
+The range helpers use the shared UTF-8 offset table. Declaration materialization
+checks the declaration node, range node, and owning scope node before emission.
 
 `src/plugins/languages/csharp-structured-declarations.ts` の型と走査は以下で固定する。
 
 ```typescript
 import type Parser from 'tree-sitter';
 import type { SymbolKind } from '../../types/index.js';
+import { hasSyntaxProblem } from './csharp-structured-support.js';
 
 export interface DeclarationDescriptor {
   readonly node: Parser.SyntaxNode;
+  readonly rangeNode: Parser.SyntaxNode;
+  readonly scopeNode?: Parser.SyntaxNode;
   readonly declarationKey: string;
   readonly ownerKey?: string;
   readonly kind: SymbolKind;
@@ -1396,16 +1786,18 @@ export interface DeclarationDescriptor {
 
 interface Scope {
   readonly qualifiedName: string;
-  readonly ownerQualifiedName?: string;
+  readonly ownerKey?: string;
+  readonly scopeNode?: Parser.SyntaxNode;
 }
 
-const declarationKeyFor = (node: Parser.SyntaxNode): string =>
-  `${node.startIndex}:${node.endIndex}:${node.type}`;
+const declarationKeyFor = (node: Parser.SyntaxNode, index = 0): string =>
+  `${node.startIndex}:${node.endIndex}:${node.type}:${index}`;
 
 const join = (scope: string, name: string): string => scope === '' ? name : `${scope}.${name}`;
 
 const bodyFor = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
-  node.childForFieldName('body') ?? node.namedChildren.find((child) =>
+  node.childForFieldName('body') ??
+  node.namedChildren.find((child) =>
     ['declaration_list', 'class_body', 'struct_body', 'enum_body', 'block'].includes(child.type));
 
 const kindFor = (node: Parser.SyntaxNode): SymbolKind | undefined => {
@@ -1426,90 +1818,333 @@ const kindFor = (node: Parser.SyntaxNode): SymbolKind | undefined => {
 
 const nameFor = (node: Parser.SyntaxNode): string | undefined =>
   node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
-    ['identifier', 'type_identifier'].includes(child.type))?.text;
+    ['identifier', 'type_identifier', 'qualified_name'].includes(child.type))?.text;
+
+const descriptorsForNode = (node: Parser.SyntaxNode, scope: Scope): readonly DeclarationDescriptor[] => {
+  const kind = kindFor(node);
+  if (kind === undefined) return [];
+  const name = nameFor(node);
+  return name === undefined ? [] : [{
+    node,
+    rangeNode: node,
+    scopeNode: scope.scopeNode,
+    declarationKey: declarationKeyFor(node),
+    ownerKey: scope.ownerKey,
+    kind,
+    name,
+    qualifiedName: join(scope.qualifiedName, name),
+  }];
+};
+
+const isContainer = (kind: SymbolKind): boolean =>
+  ['namespace', 'class', 'interface', 'struct', 'enum', 'record'].includes(kind);
 
 export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
-  const unresolved: Array<DeclarationDescriptor & { readonly ownerQualifiedName?: string }> = [];
+  const unresolved: DeclarationDescriptor[] = [];
   const walk = (node: Parser.SyntaxNode, scope: Scope): void => {
-    const kind = kindFor(node);
-    if (kind === undefined) return;
-    const name = nameFor(node);
-    if (name === undefined) return;
-    const qualifiedName = join(scope.qualifiedName, name);
-    const descriptor = {
-      node,
-      declarationKey: declarationKeyFor(node),
-      kind,
-      name,
-      qualifiedName,
-      ownerQualifiedName: scope.ownerQualifiedName,
-    };
-    unresolved.push(descriptor);
-    if (!['namespace', 'class', 'interface', 'struct', 'enum', 'record'].includes(kind)) return;
-    const body = bodyFor(node);
-    if (body === undefined) return;
-    const childScope = { qualifiedName, ownerQualifiedName: qualifiedName };
-    for (const child of body.namedChildren) walk(child, childScope);
+    const descriptors = descriptorsForNode(node, scope);
+    if (descriptors.length > 0) {
+      unresolved.push(...descriptors);
+      const container = descriptors[0];
+      if (container === undefined || !isContainer(container.kind)) return;
+      if (
+        hasSyntaxProblem(container.node) ||
+        hasSyntaxProblem(container.rangeNode) ||
+        (container.scopeNode !== undefined && hasSyntaxProblem(container.scopeNode))
+      ) return;
+      const body = bodyFor(node);
+      if (body === undefined) return;
+      const childScope: Scope = {
+        qualifiedName: container.qualifiedName,
+        ownerKey: container.declarationKey,
+        scopeNode: node,
+      };
+      for (const child of body.namedChildren) walk(child, childScope);
+      return;
+    }
+    for (const child of node.namedChildren) walk(child, scope);
   };
 
-  for (const child of root.namedChildren) walk(child, { qualifiedName: '' });
-  const keyByQualifiedName = new Map(unresolved.map((descriptor) => [descriptor.qualifiedName, descriptor.declarationKey]));
-  return unresolved.map(({ ownerQualifiedName, ...descriptor }) => ({
-    ...descriptor,
-    ...(ownerQualifiedName === undefined ? {} : { ownerKey: keyByQualifiedName.get(ownerQualifiedName) }),
-  }));
+  const walkSiblings = (children: readonly Parser.SyntaxNode[], scope: Scope): void => {
+    let currentScope = scope;
+    for (const child of children) {
+      if (child.type !== 'file_scoped_namespace_declaration') {
+        walk(child, currentScope);
+        continue;
+      }
+
+      const descriptor = descriptorsForNode(child, currentScope)[0];
+      if (descriptor === undefined) continue;
+      unresolved.push(descriptor);
+      if (
+        hasSyntaxProblem(descriptor.node) ||
+        hasSyntaxProblem(descriptor.rangeNode) ||
+        (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
+      ) return;
+      currentScope = {
+        qualifiedName: descriptor.qualifiedName,
+        ownerKey: descriptor.declarationKey,
+        scopeNode: descriptor.node,
+      };
+    }
+  };
+
+  walkSiblings(root.namedChildren, { qualifiedName: '' });
+  return unresolved;
 };
 ```
 
-`file_scoped_namespace_declaration` uses the same namespace scope as a block
-namespace. C# member variables are intentionally not selected. The descriptor
-owner is always the containing namespace/type descriptor; no bare class name is
-stored.
+`file_scoped_namespace_declaration` has no AST body in tree-sitter-c-sharp, so
+`walkSiblings` records it once and carries its logical scope to every following
+top-level declaration. If that namespace node is malformed, sibling traversal
+stops instead of flattening declarations into the root scope. C# member
+variables are intentionally not selected. The descriptor owner is always the
+containing namespace/type descriptor; no bare class name is stored.
 
-`src/plugins/languages/csharp-structured-imports.ts` selects `using_directive`.
-It removes the `using` keyword and optional `static` modifier from the path,
-sets `moduleSpecifier` to the remaining text, and emits:
+`src/plugins/languages/csharp-structured-imports.ts`:
 
 ```typescript
-const staticImport = node.text.trimStart().startsWith('using static ');
-const moduleSpecifier = pathNode.text;
-const bindingName = undefined;
-const completeness = staticImport ? 'partial' : 'complete';
+import { createHash } from 'node:crypto';
+import type Parser from 'tree-sitter';
+import type { StructuredImport, StructuredSource } from '../../structured/contracts.js';
+import { sha256Hex } from '../../structured/hash.js';
+import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+import { hasSyntaxProblem, positionFor } from './csharp-structured-support.js';
+
+const pathFor = (node: Parser.SyntaxNode): string | undefined => {
+  const pathNode = node.childForFieldName('name') ?? node.namedChildren.find((child) =>
+    ['identifier', 'qualified_name', 'alias_qualified_name'].includes(child.type));
+  return pathNode?.text;
+};
+
+export const importsFor = (
+  source: StructuredSource,
+  root: Parser.SyntaxNode,
+  offsets: Utf8OffsetTable,
+): readonly StructuredImport[] => {
+  const occurrences = new Map<string, number>();
+  const imports: StructuredImport[] = [];
+  for (const node of root.namedChildren) {
+    if (node.type !== 'using_directive' || hasSyntaxProblem(node)) continue;
+    const moduleSpecifier = pathFor(node);
+    if (moduleSpecifier === undefined) continue;
+    const staticImport = node.text.trimStart().startsWith('using static ');
+    const startByte = offsets.byteOffsetAtUtf16(node.startIndex);
+    const endByte = offsets.byteOffsetAtUtf16(node.endIndex);
+    const key = `${source.filePath}:${startByte}:${moduleSpecifier}`;
+    const occurrence = occurrences.get(key) ?? 0;
+    occurrences.set(key, occurrence + 1);
+    imports.push({
+      id: `import_v1_${createHash('sha256').update(`${key}:${occurrence}`, 'utf8').digest('base64url')}`,
+      moduleSpecifier,
+      bindingName: undefined,
+      startByte,
+      endByte,
+      sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+      completeness: staticImport ? 'partial' : 'complete',
+      position: positionFor(node),
+    });
+  }
+  return imports;
+};
 ```
 
 `using System;` must therefore be `complete`, while `using static System.Math;`
 must be `partial`. `id`, byte range, source hash, position, and syntax-diagnostic
 filtering use the complete `using_directive` node.
 
-`src/plugins/languages/csharp-structured.ts` must define
-`CSharpTreeSitterRuntime`, `generationFor`, `declarationsWithIds`, and
-`importsFor` locally. `declarationsWithIds` uses the descriptor's
-`declarationKey`/`ownerKey`, `createSymbolId`, normalized signature, and
-occurrence map; it then maps owner keys to symbol IDs. Its parser body is:
+`src/plugins/languages/csharp-structured.ts`:
 
 ```typescript
-const parser = new this.runtime.Parser();
-parser.setLanguage(this.runtime.CSharp);
-const root = parser.parse(source.text).rootNode;
-const offsets = createUtf8OffsetTable(source.text, source.bytes);
-const diagnostics = diagnosticsFor(root);
-const declarations = declarationsWithIds(source, declarationsFor(root), offsets);
-const imports = importsFor(source, root, offsets);
-const generation = generationFor(source, diagnostics);
-return diagnostics.length === 0
-  ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
-  : { status: 'degraded', retrievability: 'partial', declarations, imports, generation,
-      failure: { reasonCode: 'parse_error', message: 'C# parse diagnostics were reported.' } };
+import type Parser from 'tree-sitter';
+import type CSharp from 'tree-sitter-c-sharp';
+import type {
+  StructuredDeclaration,
+  StructuredGeneration,
+  StructuredLanguageParser,
+  StructuredParseResult,
+  StructuredSource,
+} from '../../structured/contracts.js';
+import { decodeUtf8, sha256Hex } from '../../structured/hash.js';
+import { createSymbolId } from '../../structured/identity.js';
+import {
+  createUtf8OffsetTable,
+  failedStructuredSource,
+  Utf8SourceError,
+} from '../../structured/utf8-offsets.js';
+import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+import { declarationsFor, type DeclarationDescriptor } from './csharp-structured-declarations.js';
+import { importsFor } from './csharp-structured-imports.js';
+import {
+  diagnosticsFor,
+  hasSyntaxProblem,
+  positionFor,
+  signatureFor,
+  startByteFor,
+} from './csharp-structured-support.js';
+
+export interface CSharpTreeSitterRuntime {
+  readonly Parser: typeof Parser;
+  readonly CSharp: typeof CSharp;
+}
+
+const generationFor = (
+  source: StructuredSource,
+  diagnostics: readonly string[],
+): StructuredGeneration => ({
+  generationId: sha256Hex(source.bytes),
+  schemaVersion: 1,
+  parserId: 'csharp',
+  parserVersion: '0.23.5',
+  fileHash: sha256Hex(source.bytes),
+  fileCompleteness: diagnostics.length === 0 ? 'complete' : 'partial',
+  fileDiagnostics: diagnostics,
+});
+
+const declarationsWithIds = (
+  source: StructuredSource,
+  descriptors: readonly DeclarationDescriptor[],
+  offsets: Utf8OffsetTable,
+): readonly StructuredDeclaration[] => {
+  const occurrences = new Map<string, number>();
+  const drafts = descriptors.flatMap((descriptor) => {
+    if (
+      hasSyntaxProblem(descriptor.node) ||
+      hasSyntaxProblem(descriptor.rangeNode) ||
+      (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
+    ) return [];
+    const signatureDiscriminator = signatureFor(source, descriptor.node);
+    const occurrenceKey = `${descriptor.qualifiedName}\u0000${descriptor.kind}\u0000${signatureDiscriminator}`;
+    const occurrence = occurrences.get(occurrenceKey) ?? 0;
+    occurrences.set(occurrenceKey, occurrence + 1);
+    const startByte = startByteFor(descriptor.rangeNode, offsets);
+    const endByte = offsets.byteOffsetAtUtf16(descriptor.rangeNode.endIndex);
+    const declaration: StructuredDeclaration = {
+      symbolId: createSymbolId({
+        filePath: source.filePath,
+        qualifiedName: descriptor.qualifiedName,
+        kind: descriptor.kind,
+        signatureDiscriminator,
+        occurrence,
+      }),
+      qualifiedName: descriptor.qualifiedName,
+      kind: descriptor.kind,
+      signatureDiscriminator,
+      position: positionFor(descriptor.rangeNode),
+      name: descriptor.name,
+      startByte,
+      endByte,
+      sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+      languageId: source.language,
+      isExact: true,
+      rawSource: decodeUtf8(source.bytes.subarray(startByte, endByte)),
+    };
+    return [{ descriptor, declaration }];
+  });
+  const symbolByKey = new Map(drafts.map(({ descriptor, declaration }) => [descriptor.declarationKey, declaration.symbolId]));
+  return drafts.map(({ descriptor, declaration }) => {
+    const parentSymbolId = descriptor.ownerKey === undefined ? undefined : symbolByKey.get(descriptor.ownerKey);
+    return parentSymbolId === undefined ? declaration : { ...declaration, parentSymbolId };
+  });
+};
+
+export class CSharpStructuredParser implements StructuredLanguageParser {
+  constructor(private readonly runtime: CSharpTreeSitterRuntime) {}
+
+  async parseStructured(source: StructuredSource): Promise<StructuredParseResult> {
+    if (!source.bytes) {
+      return {
+        status: 'degraded',
+        retrievability: 'partial',
+        declarations: [],
+        imports: [],
+        failure: { reasonCode: 'invariant_violation', message: 'C# structured parsing requires source bytes.' },
+      };
+    }
+    const parser = new this.runtime.Parser();
+    parser.setLanguage(this.runtime.CSharp);
+    const root = parser.parse(source.text).rootNode;
+    let offsets: Utf8OffsetTable;
+    try {
+      offsets = createUtf8OffsetTable(source.text, source.bytes);
+    } catch (error) {
+      if (error instanceof Utf8SourceError) return failedStructuredSource(error);
+      throw error;
+    }
+    const diagnostics = diagnosticsFor(root);
+    const declarations = declarationsWithIds(source, declarationsFor(root), offsets);
+    const imports = importsFor(source, root, offsets);
+    const generation = generationFor(source, diagnostics);
+    return diagnostics.length === 0
+      ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
+      : {
+          status: 'degraded',
+          retrievability: 'partial',
+          declarations,
+          imports,
+          generation,
+          failure: { reasonCode: 'parse_error', message: 'C# parse diagnostics were reported.' },
+        };
+  }
+}
 ```
 
 `generationFor` uses `parserId: 'csharp'`, grammar version `0.23.5`, source
-hash, and complete/partial file completeness. Missing bytes or invalid UTF-8
-returns a failed structured result. `createStructuredParser()` lets tree-sitter
-load errors reject so `readStructuredFile()` converts them to `parse-failed`.
+hash, and complete/partial file completeness. Missing bytes return a degraded
+invariant result; invalid UTF-8 returns a failed structured result.
+`createStructuredParser()` lets tree-sitter load errors reject so
+`readStructuredFile()` converts them to `parse-failed`.
 
 `src/plugins/languages/csharp.ts` must provide the following concrete contract:
 
 ```typescript
+import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile } from '../../types/index.js';
+import type { StructuredLanguageParser, StructuredSource } from '../../structured/contracts.js';
+import { decodeUtf8 } from '../../structured/hash.js';
+import { CSharpStructuredParser, type CSharpTreeSitterRuntime } from './csharp-structured.js';
+
+const textEncoder = new TextEncoder();
+
+const sourceFor = (file: FileToChunk): StructuredSource => ({
+  filePath: file.filePath,
+  language: file.language,
+  bytes: file.bytes ?? textEncoder.encode(file.content),
+  text: file.content,
+});
+
+const loadTreeSitter = async (): Promise<CSharpTreeSitterRuntime> => {
+  const [parser, csharp] = await Promise.all([import('tree-sitter'), import('tree-sitter-c-sharp')]);
+  return { Parser: parser.default, CSharp: csharp.default };
+};
+
+const projectLegacyResult = (
+  result: Extract<Awaited<ReturnType<StructuredLanguageParser['parseStructured']>>, { status: 'ok' | 'degraded' }>,
+  source: StructuredSource,
+): ParsedSourceFile => {
+  const declarations = result.declarations.map(({ kind, name, position, rawSource }): ParsedDeclaration => ({
+    type: kind,
+    name,
+    startLine: position.startLine,
+    endLine: position.endLine,
+    content: rawSource ?? '',
+  }));
+  const ranges = [...new Map(result.imports.map((item) => [`${item.startByte}:${item.endByte}`, item])).values()]
+    .toSorted((left, right) => left.startByte - right.startByte);
+  for (const item of ranges) {
+    declarations.push({
+      type: 'import',
+      name: 'imports',
+      startLine: item.position.startLine,
+      endLine: item.position.endLine,
+      content: decodeUtf8(source.bytes.subarray(item.startByte, item.endByte)),
+    });
+  }
+  return {
+    rootType: 'compilation_unit',
+    declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
+  };
+};
+
 export class CSharpLanguagePlugin implements LanguagePlugin {
   readonly languageId = 'csharp';
   readonly fileExtensions = ['.cs'];
@@ -1519,22 +2154,19 @@ export class CSharpLanguagePlugin implements LanguagePlugin {
   }
 
   async createStructuredParser(): Promise<StructuredLanguageParser> {
-    const [parser, csharp] = await Promise.all([import('tree-sitter'), import('tree-sitter-c-sharp')]);
-    return new CSharpStructuredParser({ Parser: parser.default, CSharp: csharp.default });
+    return new CSharpStructuredParser(await loadTreeSitter());
   }
 
   async createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
-    try {
-      const structured = await this.createStructuredParser();
-      return { parse: async (file) => {
+    const structured = await this.createStructuredParser();
+    return {
+      parse: async (file) => {
         const source = sourceFor(file);
         const result = await structured.parseStructured(source);
-        if (result.status === 'ok' || result.status === 'degraded') return projectLegacyResult(result, source);
-        throw new Error(result.failure.message);
-      } };
-    } catch {
-      return { parse: async () => ({ rootType: 'source_file', declarations: [] }) };
-    }
+        if (result.status !== 'ok' && result.status !== 'degraded') throw new Error(result.failure.message);
+        return projectLegacyResult(result, source);
+      },
+    };
   }
 }
 ```
@@ -1604,14 +2236,30 @@ void good(void) {}
 void bad( {
 ```
 
-`tests/unit/structured/c-parser.test.ts`（抜粋）:
+`tests/unit/structured/c-parser.test.ts`:
 
 ```typescript
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { CLanguagePlugin } from '../../../src/plugins/languages/c.js';
+import { decodeUtf8, sha256Hex } from '../../../src/structured/hash.js';
+
+const parseCFixture = async (name: string) => {
+  const filePath = path.join('tests', 'fixtures', 'structured', 'c', name);
+  const bytes = new Uint8Array(await readFile(filePath));
+  const text = decodeUtf8(bytes);
+  const parser = await new CLanguagePlugin().createStructuredParser();
+  const result = await parser.parseStructured({ filePath, language: 'c', bytes, text });
+  return { bytes, result };
+};
+
 describe('C structured parser', () => {
   it('extracts function, struct, enum, and include imports', async () => {
     const { result } = await parseCFixture('exactness.c');
-    const byName = new Map(result.declarations.map((d) => [d.qualifiedName, d]));
+    const byName = new Map(result.declarations.map((declaration) => [declaration.qualifiedName, declaration]));
 
+    expect(result.status).toBe('ok');
     expect(byName.get('Point')?.kind).toBe('struct');
     expect(byName.get('Color')?.kind).toBe('enum');
     expect(byName.get('top_level')?.kind).toBe('function');
@@ -1621,6 +2269,17 @@ describe('C structured parser', () => {
     expect(stdio).toBeDefined();
     expect(local).toBeDefined();
     expect(stdio?.completeness).toBe('complete');
+  });
+
+  it('keeps exact byte ranges and skips malformed declarations without flattening', async () => {
+    const { bytes, result } = await parseCFixture('partial.c');
+    const byName = new Map(result.declarations.map((declaration) => [declaration.qualifiedName, declaration]));
+    expect(result.status).toBe('degraded');
+    expect(byName.get('good')?.kind).toBe('function');
+    expect(byName.has('bad')).toBe(false);
+    const good = byName.get('good');
+    expect(good?.rawSource).toBe(decodeUtf8(bytes.subarray(good?.startByte ?? 0, good?.endByte ?? 0)));
+    expect(good?.sourceHash).toBe(sha256Hex(bytes.subarray(good?.startByte ?? 0, good?.endByte ?? 0)));
   });
 });
 ```
@@ -1682,6 +2341,8 @@ import { hasSyntaxProblem } from './c-structured-support.js';
 
 export interface DeclarationDescriptor {
   readonly node: Parser.SyntaxNode;
+  readonly rangeNode: Parser.SyntaxNode;
+  readonly scopeNode?: Parser.SyntaxNode;
   readonly declarationKey: string;
   readonly ownerKey?: string;
   readonly kind: 'function' | 'struct' | 'enum';
@@ -1703,7 +2364,7 @@ const descriptorFor = (node: Parser.SyntaxNode): DeclarationDescriptor | undefin
   if (node.type === 'function_definition') {
     const name = declaratorName(node);
     return name === undefined ? undefined : {
-      node, declarationKey: keyFor(node), kind: 'function', name, qualifiedName: name,
+      node, rangeNode: node, declarationKey: keyFor(node), kind: 'function', name, qualifiedName: name,
     };
   }
   if (node.type === 'struct_specifier' || node.type === 'enum_specifier') {
@@ -1711,6 +2372,7 @@ const descriptorFor = (node: Parser.SyntaxNode): DeclarationDescriptor | undefin
       child.type === 'type_identifier')?.text;
     return name === undefined ? undefined : {
       node,
+      rangeNode: node,
       declarationKey: keyFor(node),
       kind: node.type === 'struct_specifier' ? 'struct' : 'enum',
       name,
@@ -1724,7 +2386,10 @@ export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDe
   const result: DeclarationDescriptor[] = [];
   const walk = (node: Parser.SyntaxNode): void => {
     const descriptor = descriptorFor(node);
-    if (descriptor !== undefined && !hasSyntaxProblem(node)) result.push(descriptor);
+    if (descriptor !== undefined) {
+      if (!hasSyntaxProblem(descriptor.node) && !hasSyntaxProblem(descriptor.rangeNode)) result.push(descriptor);
+      return;
+    }
     for (const child of node.namedChildren) walk(child);
   };
   for (const child of root.namedChildren) walk(child);
@@ -1737,44 +2402,250 @@ The selector traverses through `declaration` nodes to reach tagged
 member variables. C has no container descriptor in this scope, so
 `ownerKey`/`parentSymbolId` remain absent.
 
-`src/plugins/languages/c-structured-imports.ts` selects `preproc_include`.
-For `system_lib_string` it removes `<`/`>`, and for `string_literal` it removes
-the surrounding quotes. It emits `moduleSpecifier` as the resulting path,
-`bindingName: undefined`, and `completeness: 'complete'`; no include resolver is
-introduced. The record range/hash/position covers the entire preprocessor node,
-and a node containing `ERROR`/`MISSING` is skipped.
-
-`src/plugins/languages/c-structured.ts` must define `CTreeSitterRuntime`,
-`generationFor`, `declarationsWithIds`, and `importsFor` in this file. The
-materialization algorithm is explicit: filter descriptors with
-`hasSyntaxProblem`, compute `signatureFor`, count occurrences by
-`qualifiedName\0kind\0signature`, call `createSymbolId`, compute byte range and
-`rawSource`, map any `ownerKey` through a descriptor-key map, then build the
-generation. Its parse body is:
+`src/plugins/languages/c-structured-imports.ts`:
 
 ```typescript
-const parser = new this.runtime.Parser();
-parser.setLanguage(this.runtime.C);
-const root = parser.parse(source.text).rootNode;
-const offsets = createUtf8OffsetTable(source.text, source.bytes);
-const diagnostics = diagnosticsFor(root);
-const declarations = declarationsWithIds(source, declarationsFor(root), offsets);
-const imports = importsFor(source, root, offsets);
-const generation = generationFor(source, diagnostics);
-return diagnostics.length === 0
-  ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
-  : { status: 'degraded', retrievability: 'partial', declarations, imports, generation,
-      failure: { reasonCode: 'parse_error', message: 'C parse diagnostics were reported.' } };
+import { createHash } from 'node:crypto';
+import type Parser from 'tree-sitter';
+import type { StructuredImport, StructuredSource } from '../../structured/contracts.js';
+import { sha256Hex } from '../../structured/hash.js';
+import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+import { hasSyntaxProblem, positionFor } from './c-structured-support.js';
+
+const pathFor = (node: Parser.SyntaxNode): string | undefined => {
+  const pathNode = node.namedChildren.find((child) =>
+    child.type === 'system_lib_string' || child.type === 'string_literal');
+  if (pathNode === undefined) return undefined;
+  return pathNode.text.slice(1, -1);
+};
+
+export const importsFor = (
+  source: StructuredSource,
+  root: Parser.SyntaxNode,
+  offsets: Utf8OffsetTable,
+): readonly StructuredImport[] => {
+  const occurrences = new Map<string, number>();
+  const imports: StructuredImport[] = [];
+  for (const node of root.namedChildren) {
+    if (node.type !== 'preproc_include' || hasSyntaxProblem(node)) continue;
+    const moduleSpecifier = pathFor(node);
+    if (moduleSpecifier === undefined) continue;
+    const startByte = offsets.byteOffsetAtUtf16(node.startIndex);
+    const endByte = offsets.byteOffsetAtUtf16(node.endIndex);
+    const key = `${source.filePath}:${startByte}:${moduleSpecifier}`;
+    const occurrence = occurrences.get(key) ?? 0;
+    occurrences.set(key, occurrence + 1);
+    imports.push({
+      id: `import_v1_${createHash('sha256').update(`${key}:${occurrence}`, 'utf8').digest('base64url')}`,
+      moduleSpecifier,
+      bindingName: undefined,
+      startByte,
+      endByte,
+      sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+      completeness: 'complete',
+      position: positionFor(node),
+    });
+  }
+  return imports;
+};
+```
+
+`preproc_include` is the complete record boundary. For `system_lib_string` the
+angle brackets are removed, and for `string_literal` the surrounding quotes
+are removed. No include resolver is introduced. A node containing
+`ERROR`/`MISSING` is skipped.
+
+`src/plugins/languages/c-structured.ts`:
+
+```typescript
+import type Parser from 'tree-sitter';
+import type C from 'tree-sitter-c';
+import type {
+  StructuredDeclaration,
+  StructuredGeneration,
+  StructuredLanguageParser,
+  StructuredParseResult,
+  StructuredSource,
+} from '../../structured/contracts.js';
+import { decodeUtf8, sha256Hex } from '../../structured/hash.js';
+import { createSymbolId } from '../../structured/identity.js';
+import {
+  createUtf8OffsetTable,
+  failedStructuredSource,
+  Utf8SourceError,
+} from '../../structured/utf8-offsets.js';
+import { declarationsFor, type DeclarationDescriptor } from './c-structured-declarations.js';
+import { importsFor } from './c-structured-imports.js';
+import {
+  diagnosticsFor,
+  hasSyntaxProblem,
+  positionFor,
+  signatureFor,
+  startByteFor,
+} from './c-structured-support.js';
+
+export interface CTreeSitterRuntime {
+  readonly Parser: typeof Parser;
+  readonly C: typeof C;
+}
+
+const generationFor = (
+  source: StructuredSource,
+  diagnostics: readonly string[],
+): StructuredGeneration => ({
+  generationId: sha256Hex(source.bytes),
+  schemaVersion: 1,
+  parserId: 'c',
+  parserVersion: '0.23.6',
+  fileHash: sha256Hex(source.bytes),
+  fileCompleteness: diagnostics.length === 0 ? 'complete' : 'partial',
+  fileDiagnostics: diagnostics,
+});
+
+const declarationsWithIds = (
+  source: StructuredSource,
+  descriptors: readonly DeclarationDescriptor[],
+  offsets: ReturnType<typeof createUtf8OffsetTable>,
+): readonly StructuredDeclaration[] => {
+  const occurrences = new Map<string, number>();
+  const drafts = descriptors.flatMap((descriptor) => {
+    if (
+      hasSyntaxProblem(descriptor.node) ||
+      hasSyntaxProblem(descriptor.rangeNode) ||
+      (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
+    ) return [];
+    const signatureDiscriminator = signatureFor(source, descriptor.node);
+    const occurrenceKey = `${descriptor.qualifiedName}\u0000${descriptor.kind}\u0000${signatureDiscriminator}`;
+    const occurrence = occurrences.get(occurrenceKey) ?? 0;
+    occurrences.set(occurrenceKey, occurrence + 1);
+    const startByte = startByteFor(descriptor.rangeNode, offsets);
+    const endByte = offsets.byteOffsetAtUtf16(descriptor.rangeNode.endIndex);
+    const declaration: StructuredDeclaration = {
+      symbolId: createSymbolId({
+        filePath: source.filePath,
+        qualifiedName: descriptor.qualifiedName,
+        kind: descriptor.kind,
+        signatureDiscriminator,
+        occurrence,
+      }),
+      qualifiedName: descriptor.qualifiedName,
+      kind: descriptor.kind,
+      signatureDiscriminator,
+      position: positionFor(descriptor.rangeNode),
+      name: descriptor.name,
+      startByte,
+      endByte,
+      sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+      languageId: source.language,
+      isExact: true,
+      rawSource: decodeUtf8(source.bytes.subarray(startByte, endByte)),
+    };
+    return [{ descriptor, declaration }];
+  });
+  const symbolByKey = new Map(drafts.map(({ descriptor, declaration }) => [descriptor.declarationKey, declaration.symbolId]));
+  return drafts.map(({ descriptor, declaration }) => {
+    const parentSymbolId = descriptor.ownerKey === undefined ? undefined : symbolByKey.get(descriptor.ownerKey);
+    return parentSymbolId === undefined ? declaration : { ...declaration, parentSymbolId };
+  });
+};
+
+export class CStructuredParser implements StructuredLanguageParser {
+  constructor(private readonly runtime: CTreeSitterRuntime) {}
+
+  async parseStructured(source: StructuredSource): Promise<StructuredParseResult> {
+    if (!source.bytes) {
+      return {
+        status: 'degraded',
+        retrievability: 'partial',
+        declarations: [],
+        imports: [],
+        failure: { reasonCode: 'invariant_violation', message: 'C structured parsing requires source bytes.' },
+      };
+    }
+    const parser = new this.runtime.Parser();
+    parser.setLanguage(this.runtime.C);
+    const root = parser.parse(source.text).rootNode;
+    let offsets: ReturnType<typeof createUtf8OffsetTable>;
+    try {
+      offsets = createUtf8OffsetTable(source.text, source.bytes);
+    } catch (error) {
+      if (error instanceof Utf8SourceError) return failedStructuredSource(error);
+      throw error;
+    }
+    const diagnostics = diagnosticsFor(root);
+    const declarations = declarationsWithIds(source, declarationsFor(root), offsets);
+    const imports = importsFor(source, root, offsets);
+    const generation = generationFor(source, diagnostics);
+    return diagnostics.length === 0
+      ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
+      : {
+          status: 'degraded',
+          retrievability: 'partial',
+          declarations,
+          imports,
+          generation,
+          failure: { reasonCode: 'parse_error', message: 'C parse diagnostics were reported.' },
+        };
+  }
+}
 ```
 
 `generationFor` uses `parserId: 'c'`, grammar version `0.23.6`, and the source
-hash. Invalid UTF-8 or missing source bytes returns a failed result. An
-import-only header with `status: 'ok'` and no declarations remains valid work;
-the pipeline, not this parser, decides persistence.
+hash. Missing source bytes return a degraded invariant result; invalid UTF-8
+returns a failed result. An import-only header with `status: 'ok'` and no
+declarations remains valid work; the pipeline, not this parser, decides
+persistence.
 
 `src/plugins/languages/c.ts` must provide the complete plugin boundary:
 
 ```typescript
+import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile } from '../../types/index.js';
+import type { StructuredLanguageParser, StructuredSource } from '../../structured/contracts.js';
+import { decodeUtf8 } from '../../structured/hash.js';
+import { CStructuredParser, type CTreeSitterRuntime } from './c-structured.js';
+
+const textEncoder = new TextEncoder();
+
+const sourceFor = (file: FileToChunk): StructuredSource => ({
+  filePath: file.filePath,
+  language: file.language,
+  bytes: file.bytes ?? textEncoder.encode(file.content),
+  text: file.content,
+});
+
+const loadTreeSitter = async (): Promise<CTreeSitterRuntime> => {
+  const [parser, c] = await Promise.all([import('tree-sitter'), import('tree-sitter-c')]);
+  return { Parser: parser.default, C: c.default };
+};
+
+const projectLegacyResult = (
+  result: Extract<Awaited<ReturnType<StructuredLanguageParser['parseStructured']>>, { status: 'ok' | 'degraded' }>,
+  source: StructuredSource,
+): ParsedSourceFile => {
+  const declarations = result.declarations.map(({ kind, name, position, rawSource }): ParsedDeclaration => ({
+    type: kind,
+    name,
+    startLine: position.startLine,
+    endLine: position.endLine,
+    content: rawSource ?? '',
+  }));
+  const ranges = [...new Map(result.imports.map((item) => [`${item.startByte}:${item.endByte}`, item])).values()]
+    .toSorted((left, right) => left.startByte - right.startByte);
+  for (const item of ranges) {
+    declarations.push({
+      type: 'import',
+      name: 'imports',
+      startLine: item.position.startLine,
+      endLine: item.position.endLine,
+      content: decodeUtf8(source.bytes.subarray(item.startByte, item.endByte)),
+    });
+  }
+  return {
+    rootType: 'translation_unit',
+    declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
+  };
+};
+
 export class CLanguagePlugin implements LanguagePlugin {
   readonly languageId = 'c';
   readonly fileExtensions = ['.c'];
@@ -1784,22 +2655,19 @@ export class CLanguagePlugin implements LanguagePlugin {
   }
 
   async createStructuredParser(): Promise<StructuredLanguageParser> {
-    const [parser, c] = await Promise.all([import('tree-sitter'), import('tree-sitter-c')]);
-    return new CStructuredParser({ Parser: parser.default, C: c.default });
+    return new CStructuredParser(await loadTreeSitter());
   }
 
   async createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
-    try {
-      const structured = await this.createStructuredParser();
-      return { parse: async (file) => {
+    const structured = await this.createStructuredParser();
+    return {
+      parse: async (file) => {
         const source = sourceFor(file);
         const result = await structured.parseStructured(source);
-        if (result.status === 'ok' || result.status === 'degraded') return projectLegacyResult(result, source);
-        throw new Error(result.failure.message);
-      } };
-    } catch {
-      return { parse: async () => ({ rootType: 'source_file', declarations: [] }) };
-    }
+        if (result.status !== 'ok' && result.status !== 'degraded') throw new Error(result.failure.message);
+        return projectLegacyResult(result, source);
+      },
+    };
   }
 }
 ```
@@ -1870,6 +2738,16 @@ namespace app {
 
     enum class Color { Red, Green };
 
+    class Duplicate {
+    public:
+        void first();
+    };
+
+    class Duplicate {
+    public:
+        void second();
+    };
+
     void freeFunction() {}
 }
 ```
@@ -1893,18 +2771,37 @@ namespace app {
 ```cpp
 namespace app {
     void good() {}
+}
+
+namespace broken {
     void bad( {
 }
 ```
 
-`tests/unit/structured/cpp-parser.test.ts`（抜粋）:
+`tests/unit/structured/cpp-parser.test.ts`:
 
 ```typescript
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { CppLanguagePlugin } from '../../../src/plugins/languages/cpp.js';
+import { decodeUtf8, sha256Hex } from '../../../src/structured/hash.js';
+
+const parseCppFixture = async (name: string) => {
+  const filePath = path.join('tests', 'fixtures', 'structured', 'cpp', name);
+  const bytes = new Uint8Array(await readFile(filePath));
+  const text = decodeUtf8(bytes);
+  const parser = await new CppLanguagePlugin().createStructuredParser();
+  const result = await parser.parseStructured({ filePath, language: 'cpp', bytes, text });
+  return { bytes, result };
+};
+
 describe('C++ structured parser', () => {
   it('extracts namespace, function, struct, class, enum, constructor, method', async () => {
     const { result } = await parseCppFixture('exactness.cpp');
-    const byName = new Map(result.declarations.map((d) => [d.qualifiedName, d]));
+    const byName = new Map(result.declarations.map((declaration) => [declaration.qualifiedName, declaration]));
 
+    expect(result.status).toBe('ok');
     expect(byName.get('app')?.kind).toBe('namespace');
     expect(byName.get('app.Point')?.kind).toBe('struct');
     expect(byName.get('app.Widget')?.kind).toBe('class');
@@ -1915,6 +2812,12 @@ describe('C++ structured parser', () => {
     expect(byName.get('app.Widget.render')?.parentSymbolId).toBe(byName.get('app.Widget')?.symbolId);
     expect(byName.get('app.Color')?.kind).toBe('enum');
     expect(byName.get('app.freeFunction')?.kind).toBe('function');
+    const duplicateClasses = result.declarations.filter((item) => item.qualifiedName === 'app.Duplicate');
+    const first = result.declarations.find((item) => item.qualifiedName === 'app.Duplicate.first');
+    const second = result.declarations.find((item) => item.qualifiedName === 'app.Duplicate.second');
+    expect(duplicateClasses).toHaveLength(2);
+    expect(first?.parentSymbolId).toBe(duplicateClasses[0]?.symbolId);
+    expect(second?.parentSymbolId).toBe(duplicateClasses[1]?.symbolId);
     expect(result.imports.find((item) => item.moduleSpecifier === 'vector')?.completeness).toBe('complete');
     expect(result.imports.find((item) => item.moduleSpecifier === 'exactness.h')?.completeness).toBe('complete');
   });
@@ -1925,6 +2828,23 @@ describe('C++ structured parser', () => {
     const { result } = await parseCppFixture('exactness.h');
     expect(result.declarations.find((d) => d.qualifiedName === 'app.HeaderOnly')).toBeDefined();
     expect(result.declarations.find((d) => d.qualifiedName === 'app.HeaderOnly.headerMethod')?.kind).toBe('method');
+  });
+
+  it('preserves valid sibling scopes and does not flatten a broken namespace', async () => {
+    const { result } = await parseCppFixture('partial.cpp');
+    const names = new Set(result.declarations.map((declaration) => declaration.qualifiedName));
+    expect(result.status).toBe('degraded');
+    expect(names.has('app.good')).toBe(true);
+    expect(names.has('broken')).toBe(false);
+    expect(names.has('broken.bad')).toBe(false);
+    expect(names.has('bad')).toBe(false);
+  });
+
+  it('keeps exact byte ranges and hashes', async () => {
+    const { bytes, result } = await parseCppFixture('exactness.cpp');
+    const declaration = result.declarations.find((item) => item.qualifiedName === 'app.Widget');
+    expect(declaration?.rawSource).toBe(decodeUtf8(bytes.subarray(declaration?.startByte ?? 0, declaration?.endByte ?? 0)));
+    expect(declaration?.sourceHash).toBe(sha256Hex(bytes.subarray(declaration?.startByte ?? 0, declaration?.endByte ?? 0)));
   });
 });
 ```
@@ -1941,11 +2861,48 @@ Expected: FAIL
 
 5つのproduction fileを作成する。C++のclass memberは定義だけでなく宣言も対象にし、fixtureの`Widget();`、`void render();`、inline member definitionを同じselectorから抽出する。
 
-`src/plugins/languages/cpp-structured-support.ts` はC++の`ERROR`/`MISSING`
-を再帰的に検出する`hasSyntaxProblem`/`diagnosticsFor`、node位置を返す
-`positionFor`、body直前をsignatureとする`signatureFor`、
-`Utf8OffsetTable`を使う`startByteFor`を実装する。declaration node、所属
-class body、range nodeのいずれかにsyntax problemがあるdescriptorは出力しない。
+`src/plugins/languages/cpp-structured-support.ts`:
+
+```typescript
+import type Parser from 'tree-sitter';
+import type { StructuredSource } from '../../structured/contracts.js';
+import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+
+export const hasSyntaxProblem = (node: Parser.SyntaxNode): boolean =>
+  node.isError || node.isMissing || node.children.some(hasSyntaxProblem);
+
+export const diagnosticsFor = (root: Parser.SyntaxNode): readonly string[] => {
+  const diagnostics: string[] = [];
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (node.isError || node.isMissing) {
+      diagnostics.push(`${node.type} at ${node.startPosition.row + 1}:${node.startPosition.column}`);
+    }
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return diagnostics;
+};
+
+export const positionFor = (node: Parser.SyntaxNode) => ({
+  startLine: node.startPosition.row + 1,
+  startColumn: node.startPosition.column,
+  endLine: node.endPosition.row + 1,
+  endColumn: node.endPosition.column,
+});
+
+export const signatureFor = (source: StructuredSource, node: Parser.SyntaxNode): string => {
+  const body = node.childForFieldName('body') ?? node.childForFieldName('declaration_list');
+  return source.text.slice(node.startIndex, body?.startIndex ?? node.endIndex).replace(/\s+/gu, ' ').trim();
+};
+
+export const startByteFor = (node: Parser.SyntaxNode, offsets: Utf8OffsetTable): number =>
+  offsets.byteOffsetAtUtf16(node.startIndex);
+```
+
+`hasSyntaxProblem`/`diagnosticsFor` recursively detect C++ `ERROR`/`MISSING`
+nodes. The range helpers use the shared UTF-8 offset table. Declaration
+materialization checks the declaration node, range node, and owning class or
+namespace node before emission.
 
 `src/plugins/languages/cpp-structured-declarations.ts` は以下のowner keyと
 member selectorを実装する。
@@ -1954,23 +2911,28 @@ member selectorを実装する。
 import type Parser from 'tree-sitter';
 import { hasSyntaxProblem } from './cpp-structured-support.js';
 
+type DeclarationKind = 'namespace' | 'function' | 'struct' | 'class' | 'enum' | 'method' | 'constructor';
+
 export interface DeclarationDescriptor {
   readonly node: Parser.SyntaxNode;
+  readonly rangeNode: Parser.SyntaxNode;
+  readonly scopeNode?: Parser.SyntaxNode;
   readonly declarationKey: string;
   readonly ownerKey?: string;
-  readonly kind: 'namespace' | 'function' | 'struct' | 'class' | 'enum' | 'method' | 'constructor';
+  readonly kind: DeclarationKind;
   readonly name: string;
   readonly qualifiedName: string;
 }
 
 interface Scope {
   readonly qualifiedName: string;
-  readonly ownerQualifiedName?: string;
+  readonly ownerKey?: string;
+  readonly scopeNode?: Parser.SyntaxNode;
   readonly className?: string;
 }
 
-const keyFor = (node: Parser.SyntaxNode): string =>
-  `${node.startIndex}:${node.endIndex}:${node.type}`;
+const keyFor = (node: Parser.SyntaxNode, index = 0): string =>
+  `${node.startIndex}:${node.endIndex}:${node.type}:${index}`;
 
 const join = (scope: string, name: string): string => scope === '' ? name : `${scope}.${name}`;
 
@@ -1998,16 +2960,17 @@ const memberDescriptorFor = (node: Parser.SyntaxNode, scope: Scope): Declaration
   const kind = name === scope.className ? 'constructor' : 'method';
   return {
     node,
+    rangeNode: node,
+    scopeNode: scope.scopeNode,
     declarationKey: keyFor(node),
+    ownerKey: scope.ownerKey,
     kind,
     name,
     qualifiedName: join(scope.qualifiedName, name),
-    ownerQualifiedName: scope.qualifiedName,
-  } as DeclarationDescriptor & { readonly ownerQualifiedName: string };
+  };
 };
 
-const descriptorFor = (node: Parser.SyntaxNode, scope: Scope):
-  (DeclarationDescriptor & { readonly ownerQualifiedName?: string }) | undefined => {
+const descriptorFor = (node: Parser.SyntaxNode, scope: Scope): DeclarationDescriptor | undefined => {
   if (scope.className !== undefined) {
     const member = memberDescriptorFor(node, scope);
     if (member !== undefined) return member;
@@ -2015,8 +2978,9 @@ const descriptorFor = (node: Parser.SyntaxNode, scope: Scope):
   if (node.type === 'namespace_definition') {
     const name = node.childForFieldName('name')?.text;
     return name === undefined ? undefined : {
-      node, declarationKey: keyFor(node), kind: 'namespace', name,
-      qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName,
+      node, rangeNode: node, scopeNode: scope.scopeNode, declarationKey: keyFor(node),
+      ownerKey: scope.ownerKey, kind: 'namespace', name,
+      qualifiedName: join(scope.qualifiedName, name),
     };
   }
   if (node.type === 'struct_specifier' || node.type === 'class_specifier' || node.type === 'enum_specifier') {
@@ -2024,13 +2988,29 @@ const descriptorFor = (node: Parser.SyntaxNode, scope: Scope):
       child.type === 'type_identifier')?.text;
     if (name === undefined) return undefined;
     const kind = node.type === 'struct_specifier' ? 'struct' : node.type === 'class_specifier' ? 'class' : 'enum';
-    return { node, declarationKey: keyFor(node), kind, name,
-      qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName };
+    return {
+      node,
+      rangeNode: node,
+      scopeNode: scope.scopeNode,
+      declarationKey: keyFor(node),
+      ownerKey: scope.ownerKey,
+      kind,
+      name,
+      qualifiedName: join(scope.qualifiedName, name),
+    };
   }
   if (node.type === 'function_definition') {
     const name = declaratorName(node);
-    return name === undefined ? undefined : { node, declarationKey: keyFor(node), kind: 'function', name,
-      qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName };
+    return name === undefined ? undefined : {
+      node,
+      rangeNode: node,
+      scopeNode: scope.scopeNode,
+      declarationKey: keyFor(node),
+      ownerKey: scope.ownerKey,
+      kind: 'function',
+      name,
+      qualifiedName: join(scope.qualifiedName, name),
+    };
   }
   return undefined;
 };
@@ -2040,33 +3020,33 @@ const bodyFor = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
     ['declaration_list', 'field_declaration_list', 'compound_statement'].includes(child.type));
 
 export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
-  const unresolved: Array<DeclarationDescriptor & { readonly ownerQualifiedName?: string }> = [];
+  const unresolved: DeclarationDescriptor[] = [];
   const walk = (node: Parser.SyntaxNode, scope: Scope): void => {
     const descriptor = descriptorFor(node, scope);
-    if (descriptor !== undefined && !hasSyntaxProblem(node)) {
+    if (descriptor !== undefined) {
       unresolved.push(descriptor);
-      if (['namespace', 'struct', 'class'].includes(descriptor.kind)) {
-        const body = bodyFor(node);
-        if (body !== undefined) {
-          const childScope = {
-            qualifiedName: descriptor.qualifiedName,
-            ownerQualifiedName: descriptor.qualifiedName,
-            ...(descriptor.kind === 'class' ? { className: descriptor.name } : {}),
-          };
-          for (const child of body.namedChildren) walk(child, childScope);
-        }
-        return;
-      }
+      if (!['namespace', 'struct', 'class'].includes(descriptor.kind)) return;
+      if (
+        hasSyntaxProblem(descriptor.node) ||
+        hasSyntaxProblem(descriptor.rangeNode) ||
+        (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
+      ) return;
+      const body = bodyFor(node);
+      if (body === undefined) return;
+      const childScope: Scope = {
+        qualifiedName: descriptor.qualifiedName,
+        ownerKey: descriptor.declarationKey,
+        scopeNode: node,
+        ...(descriptor.kind === 'class' ? { className: descriptor.name } : {}),
+      };
+      for (const child of body.namedChildren) walk(child, childScope);
+      return;
     }
     for (const child of node.namedChildren) walk(child, scope);
   };
 
   for (const child of root.namedChildren) walk(child, { qualifiedName: '' });
-  const keyByQualifiedName = new Map(unresolved.map((descriptor) => [descriptor.qualifiedName, descriptor.declarationKey]));
-  return unresolved.map(({ ownerQualifiedName, ...descriptor }) => ({
-    ...descriptor,
-    ...(ownerQualifiedName === undefined ? {} : { ownerKey: keyByQualifiedName.get(ownerQualifiedName) }),
-  }));
+  return unresolved;
 };
 ```
 
@@ -2077,41 +3057,247 @@ through those nodes and a nested `function_declarator` or
 the constructor name is compared with the containing class name. No out-of-class
 semantic association is attempted.
 
-`src/plugins/languages/cpp-structured-imports.ts` selects `preproc_include` and
-uses the `system_lib_string`/`string_literal` child to produce `stdio.h` or
-`local.h`, with `bindingName: undefined` and `completeness: 'complete'`. It
-uses the complete preprocessor node for the range, source hash, position, and
-stable import id, and skips syntax-problem nodes.
-
-`src/plugins/languages/cpp-structured.ts` defines `CppTreeSitterRuntime`,
-`generationFor`, `declarationsWithIds`, and `importsFor` locally. The parser
-materializes declarations with the descriptor `declarationKey`/`ownerKey`,
-`createSymbolId`, normalized signature, occurrence count, exact byte range and
-raw source. Its result assembly is:
+`src/plugins/languages/cpp-structured-imports.ts`:
 
 ```typescript
-const parser = new this.runtime.Parser();
-parser.setLanguage(this.runtime.Cpp);
-const root = parser.parse(source.text).rootNode;
-const offsets = createUtf8OffsetTable(source.text, source.bytes);
-const diagnostics = diagnosticsFor(root);
-const declarations = declarationsWithIds(source, declarationsFor(root), offsets);
-const imports = importsFor(source, root, offsets);
-const generation = generationFor(source, diagnostics);
-return diagnostics.length === 0
-  ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
-  : { status: 'degraded', retrievability: 'partial', declarations, imports, generation,
-      failure: { reasonCode: 'parse_error', message: 'C++ parse diagnostics were reported.' } };
+import { createHash } from 'node:crypto';
+import type Parser from 'tree-sitter';
+import type { StructuredImport, StructuredSource } from '../../structured/contracts.js';
+import { sha256Hex } from '../../structured/hash.js';
+import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+import { hasSyntaxProblem, positionFor } from './cpp-structured-support.js';
+
+const pathFor = (node: Parser.SyntaxNode): string | undefined => {
+  const pathNode = node.namedChildren.find((child) =>
+    child.type === 'system_lib_string' || child.type === 'string_literal');
+  if (pathNode === undefined) return undefined;
+  return pathNode.text.slice(1, -1);
+};
+
+export const importsFor = (
+  source: StructuredSource,
+  root: Parser.SyntaxNode,
+  offsets: Utf8OffsetTable,
+): readonly StructuredImport[] => {
+  const occurrences = new Map<string, number>();
+  const imports: StructuredImport[] = [];
+  for (const node of root.namedChildren) {
+    if (node.type !== 'preproc_include' || hasSyntaxProblem(node)) continue;
+    const moduleSpecifier = pathFor(node);
+    if (moduleSpecifier === undefined) continue;
+    const startByte = offsets.byteOffsetAtUtf16(node.startIndex);
+    const endByte = offsets.byteOffsetAtUtf16(node.endIndex);
+    const key = `${source.filePath}:${startByte}:${moduleSpecifier}`;
+    const occurrence = occurrences.get(key) ?? 0;
+    occurrences.set(key, occurrence + 1);
+    imports.push({
+      id: `import_v1_${createHash('sha256').update(`${key}:${occurrence}`, 'utf8').digest('base64url')}`,
+      moduleSpecifier,
+      bindingName: undefined,
+      startByte,
+      endByte,
+      sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+      completeness: 'complete',
+      position: positionFor(node),
+    });
+  }
+  return imports;
+};
+```
+
+`preproc_include` is the complete record boundary. The
+`system_lib_string`/`string_literal` child produces `vector`/`local.h` without
+an include resolver. A node containing `ERROR`/`MISSING` is skipped.
+
+`src/plugins/languages/cpp-structured.ts`:
+
+```typescript
+import type Parser from 'tree-sitter';
+import type Cpp from 'tree-sitter-cpp';
+import type {
+  StructuredDeclaration,
+  StructuredGeneration,
+  StructuredLanguageParser,
+  StructuredParseResult,
+  StructuredSource,
+} from '../../structured/contracts.js';
+import { decodeUtf8, sha256Hex } from '../../structured/hash.js';
+import { createSymbolId } from '../../structured/identity.js';
+import {
+  createUtf8OffsetTable,
+  failedStructuredSource,
+  Utf8SourceError,
+} from '../../structured/utf8-offsets.js';
+import { declarationsFor, type DeclarationDescriptor } from './cpp-structured-declarations.js';
+import { importsFor } from './cpp-structured-imports.js';
+import {
+  diagnosticsFor,
+  hasSyntaxProblem,
+  positionFor,
+  signatureFor,
+  startByteFor,
+} from './cpp-structured-support.js';
+
+export interface CppTreeSitterRuntime {
+  readonly Parser: typeof Parser;
+  readonly Cpp: typeof Cpp;
+}
+
+const generationFor = (
+  source: StructuredSource,
+  diagnostics: readonly string[],
+): StructuredGeneration => ({
+  generationId: sha256Hex(source.bytes),
+  schemaVersion: 1,
+  parserId: 'cpp',
+  parserVersion: '0.23.4',
+  fileHash: sha256Hex(source.bytes),
+  fileCompleteness: diagnostics.length === 0 ? 'complete' : 'partial',
+  fileDiagnostics: diagnostics,
+});
+
+const declarationsWithIds = (
+  source: StructuredSource,
+  descriptors: readonly DeclarationDescriptor[],
+  offsets: ReturnType<typeof createUtf8OffsetTable>,
+): readonly StructuredDeclaration[] => {
+  const occurrences = new Map<string, number>();
+  const drafts = descriptors.flatMap((descriptor) => {
+    if (
+      hasSyntaxProblem(descriptor.node) ||
+      hasSyntaxProblem(descriptor.rangeNode) ||
+      (descriptor.scopeNode !== undefined && hasSyntaxProblem(descriptor.scopeNode))
+    ) return [];
+    const signatureDiscriminator = signatureFor(source, descriptor.node);
+    const occurrenceKey = `${descriptor.qualifiedName}\u0000${descriptor.kind}\u0000${signatureDiscriminator}`;
+    const occurrence = occurrences.get(occurrenceKey) ?? 0;
+    occurrences.set(occurrenceKey, occurrence + 1);
+    const startByte = startByteFor(descriptor.rangeNode, offsets);
+    const endByte = offsets.byteOffsetAtUtf16(descriptor.rangeNode.endIndex);
+    const declaration: StructuredDeclaration = {
+      symbolId: createSymbolId({
+        filePath: source.filePath,
+        qualifiedName: descriptor.qualifiedName,
+        kind: descriptor.kind,
+        signatureDiscriminator,
+        occurrence,
+      }),
+      qualifiedName: descriptor.qualifiedName,
+      kind: descriptor.kind,
+      signatureDiscriminator,
+      position: positionFor(descriptor.rangeNode),
+      name: descriptor.name,
+      startByte,
+      endByte,
+      sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+      languageId: source.language,
+      isExact: true,
+      rawSource: decodeUtf8(source.bytes.subarray(startByte, endByte)),
+    };
+    return [{ descriptor, declaration }];
+  });
+  const symbolByKey = new Map(drafts.map(({ descriptor, declaration }) => [descriptor.declarationKey, declaration.symbolId]));
+  return drafts.map(({ descriptor, declaration }) => {
+    const parentSymbolId = descriptor.ownerKey === undefined ? undefined : symbolByKey.get(descriptor.ownerKey);
+    return parentSymbolId === undefined ? declaration : { ...declaration, parentSymbolId };
+  });
+};
+
+export class CppStructuredParser implements StructuredLanguageParser {
+  constructor(private readonly runtime: CppTreeSitterRuntime) {}
+
+  async parseStructured(source: StructuredSource): Promise<StructuredParseResult> {
+    if (!source.bytes) {
+      return {
+        status: 'degraded',
+        retrievability: 'partial',
+        declarations: [],
+        imports: [],
+        failure: { reasonCode: 'invariant_violation', message: 'C++ structured parsing requires source bytes.' },
+      };
+    }
+    const parser = new this.runtime.Parser();
+    parser.setLanguage(this.runtime.Cpp);
+    const root = parser.parse(source.text).rootNode;
+    let offsets: ReturnType<typeof createUtf8OffsetTable>;
+    try {
+      offsets = createUtf8OffsetTable(source.text, source.bytes);
+    } catch (error) {
+      if (error instanceof Utf8SourceError) return failedStructuredSource(error);
+      throw error;
+    }
+    const diagnostics = diagnosticsFor(root);
+    const declarations = declarationsWithIds(source, declarationsFor(root), offsets);
+    const imports = importsFor(source, root, offsets);
+    const generation = generationFor(source, diagnostics);
+    return diagnostics.length === 0
+      ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
+      : {
+          status: 'degraded',
+          retrievability: 'partial',
+          declarations,
+          imports,
+          generation,
+          failure: { reasonCode: 'parse_error', message: 'C++ parse diagnostics were reported.' },
+        };
+  }
+}
 ```
 
 `generationFor` uses `parserId: 'cpp'`, grammar version `0.23.4`, and source
-hash. Invalid UTF-8, missing bytes, or a tree-sitter load failure returns a
-failed result to the structured path.
+hash. Missing bytes return a degraded invariant result; invalid UTF-8 or a
+tree-sitter load failure returns a failed result to the structured path.
 
-`src/plugins/languages/cpp.ts` must register every required extension and keep
-the normal-parser fallback separate from the structured parser:
+`src/plugins/languages/cpp.ts`:
 
 ```typescript
+import type { FileToChunk, LanguagePlugin, ParsedDeclaration, ParsedSourceFile } from '../../types/index.js';
+import type { StructuredLanguageParser, StructuredSource } from '../../structured/contracts.js';
+import { decodeUtf8 } from '../../structured/hash.js';
+import { CppStructuredParser, type CppTreeSitterRuntime } from './cpp-structured.js';
+
+const textEncoder = new TextEncoder();
+
+const sourceFor = (file: FileToChunk): StructuredSource => ({
+  filePath: file.filePath,
+  language: file.language,
+  bytes: file.bytes ?? textEncoder.encode(file.content),
+  text: file.content,
+});
+
+const loadTreeSitter = async (): Promise<CppTreeSitterRuntime> => {
+  const [parser, cpp] = await Promise.all([import('tree-sitter'), import('tree-sitter-cpp')]);
+  return { Parser: parser.default, Cpp: cpp.default };
+};
+
+const projectLegacyResult = (
+  result: Extract<Awaited<ReturnType<StructuredLanguageParser['parseStructured']>>, { status: 'ok' | 'degraded' }>,
+  source: StructuredSource,
+): ParsedSourceFile => {
+  const declarations = result.declarations.map(({ kind, name, position, rawSource }): ParsedDeclaration => ({
+    type: kind,
+    name,
+    startLine: position.startLine,
+    endLine: position.endLine,
+    content: rawSource ?? '',
+  }));
+  const ranges = [...new Map(result.imports.map((item) => [`${item.startByte}:${item.endByte}`, item])).values()]
+    .toSorted((left, right) => left.startByte - right.startByte);
+  for (const item of ranges) {
+    declarations.push({
+      type: 'import',
+      name: 'imports',
+      startLine: item.position.startLine,
+      endLine: item.position.endLine,
+      content: decodeUtf8(source.bytes.subarray(item.startByte, item.endByte)),
+    });
+  }
+  return {
+    rootType: 'translation_unit',
+    declarations: declarations.toSorted((left, right) => left.startLine - right.startLine),
+  };
+};
+
 export class CppLanguagePlugin implements LanguagePlugin {
   readonly languageId = 'cpp';
   readonly fileExtensions = ['.h', '.cc', '.cpp', '.cxx', '.hh', '.hpp', '.hxx'];
@@ -2121,22 +3307,19 @@ export class CppLanguagePlugin implements LanguagePlugin {
   }
 
   async createStructuredParser(): Promise<StructuredLanguageParser> {
-    const [parser, cpp] = await Promise.all([import('tree-sitter'), import('tree-sitter-cpp')]);
-    return new CppStructuredParser({ Parser: parser.default, Cpp: cpp.default });
+    return new CppStructuredParser(await loadTreeSitter());
   }
 
   async createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
-    try {
-      const structured = await this.createStructuredParser();
-      return { parse: async (file) => {
+    const structured = await this.createStructuredParser();
+    return {
+      parse: async (file) => {
         const source = sourceFor(file);
         const result = await structured.parseStructured(source);
-        if (result.status === 'ok' || result.status === 'degraded') return projectLegacyResult(result, source);
-        throw new Error(result.failure.message);
-      } };
-    } catch {
-      return { parse: async () => ({ rootType: 'source_file', declarations: [] }) };
-    }
+        if (result.status !== 'ok' && result.status !== 'degraded') throw new Error(result.failure.message);
+        return projectLegacyResult(result, source);
+      },
+    };
   }
 }
 ```
@@ -2510,6 +3693,11 @@ The degraded parser fixture must keep a non-empty import list even though the
 pipeline treats `declarations.length === 0` as `parse-failed`. The assertions
 must cover the DLQ entry, unchanged active generation, and unchanged normal
 vector rows rather than only the private return kind.
+
+`getActiveImportsForFile` in this test is the existing concrete helper on
+`InMemoryMetadataStore`; it is not added to `IMetadataStore` or the production
+catalog interface. The test must not introduce a production storage API solely
+to observe the persisted import records.
 
 The existing `tests/unit/indexer/pipeline-structured-lifecycle.test.ts` is the
 fourth regression case. Keep its incremental failure/recovery and full-rebuild

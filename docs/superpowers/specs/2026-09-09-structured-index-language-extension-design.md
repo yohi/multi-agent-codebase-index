@@ -192,10 +192,17 @@ intentionally out of scope for this change.
 
 ### 6. Container and parent-child handling
 
-- Rust `mod`, C# `namespace`, C++ `namespace`, and Java `package` (when a
+- Rust `mod`, C# block `namespace`, C++ `namespace`, and Java `package` (when a
   `package` declaration is present) are represented as `namespace` declarations
   that own nested declarations. The Java `package` declaration itself is listed
-  in §5 as a `namespace` declaration.
+  in §5 as a `namespace` declaration. Java `package_declaration` is not an AST
+  body container: it establishes the logical file scope for following top-level
+  declarations, while the package node and the top-level declarations remain
+  siblings in the tree.
+- C# block namespaces are AST containers. A C#
+  `file_scoped_namespace_declaration` is not treated as a brace-delimited body
+  container; it establishes the logical file scope for following top-level
+  declarations. Both forms produce the same canonical `qualifiedName` shape.
 - Rust `impl` is represented as `impl` and acts as a container for its methods.
 - Java / C# / C++ nested classes, structs, and namespaces contribute to
   qualified names using `.` as the separator, matching the existing TypeScript
@@ -208,9 +215,12 @@ intentionally out of scope for this change.
 - Every declaration descriptor carries a file-local `declarationKey` and an
   `ownerKey`; neither key is a bare source name. `declarationKey` is derived
   from the source file and the node identity (`startIndex`, `endIndex`, and
-  node type), and `ownerKey` points directly to the owning descriptor. The
-  parser resolves `parentSymbolId` by mapping `ownerKey` to the generated
-  `symbolId` after all descriptors have been collected.
+  node type), and `ownerKey` is copied directly from the owning descriptor
+  during lexical traversal. The parser resolves `parentSymbolId` by mapping
+  these already-resolved descriptor keys to generated `symbolId` values after
+  all descriptors have been collected. A `qualifiedName`-to-key map must not be
+  used to reconstruct lexical ownership because repeated declarations can have
+  the same canonical name.
 - Rust `impl` blocks are declarations, but the `impl` segment is not part of
   an impl method's canonical name. For the fixture `mod outer { struct Point;
   impl Point { fn new() {} } }`, the required names are `outer`,
@@ -261,8 +271,13 @@ syntax-diagnostic imports are `partial`.
 ### 9. Partial parse and fallback
 
 - Tree-sitter produces partial trees for files with syntax errors.
-- Declarations whose own node, range node, or scope node contains an
-  `ERROR` / `MISSING` node are skipped.
+- A declaration is emitted only when its declaration node, range node, and
+  owning scope node (when present) are all free of `ERROR` / `MISSING` nodes.
+  Each language-local descriptor must retain those node identities, or an
+  equivalent language-local problem marker, until declaration materialization.
+- Rejecting a container must never cause its descendants to be reinterpreted
+  in the container's parent scope. A traversal skips the rejected container's
+  descendants rather than flattening them into the outer scope.
 - Remaining valid declarations are emitted with status `degraded` / `partial`.
 - Normal/search chunk generation is produced by `Chunker.chunkFiles()` calling
   `plugin.createParser()`. Existing plugins may project structured parse results into
@@ -412,8 +427,14 @@ Each new language parser test covers the record families separately.
 - `qualifiedName` reflects the logical nesting path.
 - `parentSymbolId` links child methods / constructors / fields to their owning
   type or namespace.
+- Repeated declarations with the same `qualifiedName` retain distinct
+  `symbolId` values, and each child remains linked to the descriptor encountered
+  in its own lexical traversal branch.
 - `rawSource`, `startByte`, `endByte`, and `sourceHash` match the original file
   bytes.
+- A declaration is omitted when its declaration, range, or owning scope node
+  contains `ERROR` / `MISSING`; descendants of a rejected container are never
+  emitted under the outer scope.
 - Files with intentional syntax errors keep their unaffected declarations and
   report `status: 'degraded'` / `retrievability: 'partial'`.
 
