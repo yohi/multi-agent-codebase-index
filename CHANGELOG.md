@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.3.0](https://github.com/yohi/nexus/compare/v2.2.2...v2.3.0) (2026-09-09)
+
+
+### Features
+
+* **structured-index:** TypeScript プラグインで .mjs/.cjs/.mts/.cts をサポート ([d2a2bee](https://github.com/yohi/nexus/commit/d2a2bee5c463e39ee1c3ddf1c2d1328dc31c2261))
+* **structured-index:** TypeScript プラグインで .mjs/.cjs/.mts/.cts をサポート ([39dbdb1](https://github.com/yohi/nexus/commit/39dbdb10c0bf6107d462a34f08963da4c1927fd2))
+
+
+### Bug Fixes
+
+* TypeScript fixture の依存値参照を修正 ([022a4a7](https://github.com/yohi/nexus/commit/022a4a716f3b5d62c6c0e8139280deb26b167c1b))
+* 埋め込み API キーの通信先を HTTPS に制限 ([02ee89f](https://github.com/yohi/nexus/commit/02ee89f549ca2dcf0023b1c3a5a5ead3599b1c49))
+
 ## [2.2.2](https://github.com/yohi/nexus/compare/v2.2.1...v2.2.2) (2026-09-07)
 
 
