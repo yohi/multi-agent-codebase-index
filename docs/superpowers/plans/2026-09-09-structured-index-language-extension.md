@@ -1191,7 +1191,7 @@ const kindFor = (node: Parser.SyntaxNode): SymbolKind | undefined => {
 
 const descriptorsForNode = (node: Parser.SyntaxNode, scope: Scope): UnresolvedDescriptor[] => {
   if (node.type === 'package_declaration') {
-    const name = node.childForFieldName('name')?.text;
+    const name = nameFor(node);
     return name === undefined ? [] : [{
       node, rangeNode: node, scopeNode: scope.scopeNode,
       declarationKey: keyFor(node), ownerKey: scope.ownerKey, kind: 'namespace', name,
@@ -2724,6 +2724,11 @@ namespace app {
         int y;
     };
 
+    struct StructWidget {
+        StructWidget();
+        void render();
+    };
+
     class Widget {
     public:
         Widget();
@@ -2804,6 +2809,11 @@ describe('C++ structured parser', () => {
     expect(result.status).toBe('ok');
     expect(byName.get('app')?.kind).toBe('namespace');
     expect(byName.get('app.Point')?.kind).toBe('struct');
+    expect(byName.get('app.StructWidget')?.kind).toBe('struct');
+    expect(byName.get('app.StructWidget.StructWidget')?.kind).toBe('constructor');
+    expect(byName.get('app.StructWidget.render')?.kind).toBe('method');
+    expect(byName.get('app.StructWidget.render')?.parentSymbolId)
+      .toBe(byName.get('app.StructWidget')?.symbolId);
     expect(byName.get('app.Widget')?.kind).toBe('class');
     expect(byName.get('app.Widget.Widget')?.kind).toBe('constructor');
     expect(byName.get('app.Widget.render')?.kind).toBe('method');
@@ -2859,7 +2869,7 @@ Expected: FAIL
 
 - [ ] **Step 3: Write minimal implementation**
 
-5つのproduction fileを作成する。C++のclass memberは定義だけでなく宣言も対象にし、fixtureの`Widget();`、`void render();`、inline member definitionを同じselectorから抽出する。
+5つのproduction fileを作成する。C++のclass/struct memberは定義だけでなく宣言も対象にし、fixtureの`Widget();`、`void render();`、inline member definitionを同じselectorから抽出する。
 
 `src/plugins/languages/cpp-structured-support.ts`:
 
@@ -2901,8 +2911,8 @@ export const startByteFor = (node: Parser.SyntaxNode, offsets: Utf8OffsetTable):
 
 `hasSyntaxProblem`/`diagnosticsFor` recursively detect C++ `ERROR`/`MISSING`
 nodes. The range helpers use the shared UTF-8 offset table. Declaration
-materialization checks the declaration node, range node, and owning class or
-namespace node before emission.
+materialization checks the declaration node, range node, and owning class,
+struct, or namespace node before emission.
 
 `src/plugins/languages/cpp-structured-declarations.ts` は以下のowner keyと
 member selectorを実装する。
@@ -2928,7 +2938,7 @@ interface Scope {
   readonly qualifiedName: string;
   readonly ownerKey?: string;
   readonly scopeNode?: Parser.SyntaxNode;
-  readonly className?: string;
+  readonly typeName?: string;
 }
 
 const keyFor = (node: Parser.SyntaxNode, index = 0): string =>
@@ -2956,8 +2966,8 @@ const memberDescriptorFor = (node: Parser.SyntaxNode, scope: Scope): Declaration
   if (node.type !== 'function_definition' && node.type !== 'declaration' && node.type !== 'field_declaration') return undefined;
   const declarator = functionDeclaratorFor(node);
   const name = declarator === undefined ? undefined : declaratorName(declarator);
-  if (name === undefined || scope.className === undefined) return undefined;
-  const kind = name === scope.className ? 'constructor' : 'method';
+  if (name === undefined || scope.typeName === undefined) return undefined;
+  const kind = name === scope.typeName ? 'constructor' : 'method';
   return {
     node,
     rangeNode: node,
@@ -2971,7 +2981,7 @@ const memberDescriptorFor = (node: Parser.SyntaxNode, scope: Scope): Declaration
 };
 
 const descriptorFor = (node: Parser.SyntaxNode, scope: Scope): DeclarationDescriptor | undefined => {
-  if (scope.className !== undefined) {
+  if (scope.typeName !== undefined) {
     const member = memberDescriptorFor(node, scope);
     if (member !== undefined) return member;
   }
@@ -3037,7 +3047,11 @@ export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDe
         qualifiedName: descriptor.qualifiedName,
         ownerKey: descriptor.declarationKey,
         scopeNode: node,
-        ...(descriptor.kind === 'class' ? { className: descriptor.name } : {}),
+        ...(
+          descriptor.kind === 'class' || descriptor.kind === 'struct'
+            ? { typeName: descriptor.name }
+            : {}
+        ),
       };
       for (const child of body.namedChildren) walk(child, childScope);
       return;
@@ -3051,10 +3065,10 @@ export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDe
 ```
 
 `declaration` and `field_declaration` are deliberately included because
-tree-sitter-cpp represents constructor/method declarations in the class body
-through those nodes and a nested `function_declarator` or
+tree-sitter-cpp represents constructor/method declarations in class and struct
+bodies through those nodes and a nested `function_declarator` or
 `function_field_declarator`. `function_definition` covers inline definitions;
-the constructor name is compared with the containing class name. No out-of-class
+the constructor name is compared with the containing type name. No out-of-class
 semantic association is attempted.
 
 `src/plugins/languages/cpp-structured-imports.ts`:
@@ -3934,8 +3948,8 @@ git commit -m "chore: address integration test findings"
 | §2 Language plugin registration | Task 8（factory.ts 登録） |
 | §3 Extension routing | Task 1（.pyi）、Task 2-6（各拡張子）、Task 8（factory-created registry） |
 | §4 SymbolKind extension | Task 1（src/types/index.ts） |
-| §5 Language-specific declaration mapping | Task 2-6（各言語の declarations モジュール） |
-| §6 Container and parent-child handling | Task 2-6（declarationKey / ownerKey / parentSymbolId リンク） |
+| §5 Language-specific declaration mapping | Task 2-6（各言語 declarations、Java package selector、C++ class/struct member scope） |
+| §6 Container and parent-child handling | Task 2-6（Java logical file scope、C++ typeName、declarationKey / ownerKey / parentSymbolId） |
 | §7 Stable symbol identity | Task 2-6（createSymbolId 使用、occurrence カウント） |
 | §8 Import / include / use / using | Task 2-6（各言語 imports モジュール） |
 | §9 Partial parse and fallback | Task 2-6（hasSyntaxProblem スキップ）、Task 9（import-only 修正） |
@@ -3956,6 +3970,12 @@ recursive traversal、owner key、import mapping、parse result、plugin fallbac
 - `qualifiedName` は全言語で `.` セパレタ（Rust も `module.Trait`, `Type.method`）。
 - Rust `impl` methodは`outer.Point.new`であり、`outer.Point.impl.new`ではない。
 - `declarationKey`/`ownerKey`はfile-local node identityで解決し、bare nameをowner lookupに使わない。
+- Java package は `nameFor()` の direct named child fallback で
+  `scoped_identifier` を取得し、package declaration と top-level declaration の
+  logical file scope を分離する。
+- C++ class/struct member scope は共通の `typeName` を使い、両方の
+  constructor/method を同じ selector で抽出する。member variable は
+  引き続き対象外とする。
 - `LanguagePlugin.languageId` は設計書 §3 と一致: `rust`, `java`, `csharp`, `c`, `cpp`。
 - `fileExtensions` は設計書 §3 と一致。
 - `import` レコードの `completeness` はdirect binding/concrete includeを`complete`、wildcard/static/unresolved/syntax-diagnosticを`partial`とする。Rust direct `use`は`bindingName`を抽出する。
@@ -3968,11 +3988,20 @@ recursive traversal、owner key、import mapping、parse result、plugin fallbac
 | `.pyi` routing/reuse | Task 1 + Task 7 |
 | Rust §5 declarations | Task 2 fixture/assertions/selector |
 | Java §5 declarations | Task 3 fixture/assertions/selector |
+| Java package → namespace | Task 3 package descriptor/test |
+| Java package logical file scope | Task 3 `baseScope` |
+| Java package-less file | Task 3 `PackageLess.java` test |
+| Java package `parentSymbolId` | Task 3 exactness assertion |
 | C# §5 declarations | Task 4 fixture/assertions/selector |
 | C §5 declarations | Task 5 fixture/assertions/selector |
-| C++ §5 declarations | Task 6 fixture/assertions/selector |
+| C++ struct | Task 6 `Point`/`StructWidget` tests |
+| C++ class | Task 6 `Widget`/`HeaderOnly` tests |
+| C++ class constructor/method | Task 6 `typeName` selector + tests |
+| C++ struct constructor/method | Task 6 `typeName` selector + tests |
 | canonical `qualifiedName` | Design §6 + Task 2-6 descriptor code/assertions |
 | `parentSymbolId` | Task 2-6 `declarationKey`/`ownerKey` materialization |
+| lexical `ownerKey` | Task 2-6 direct ownerKey propagation |
+| broken container non-flattening | Task 2-6 guards + partial tests |
 | stable identity | Task 2-6 `createSymbolId`/signature/occurrence |
 | StructuredImport mapping/completeness | Design §8 + Task 2-7 import assertions |
 | factory registration/routing | Task 8 `FactoryInternals` registry test |
@@ -3982,16 +4011,16 @@ recursive traversal、owner key、import mapping、parse result、plugin fallbac
 | active generation preservation | Task 9 state assertions + existing lifecycle test |
 | normal vectors unchanged on failure | Task 9 vector row assertions |
 | backfill and complete documentation | Task 11 |
-| `npm ci` plus five remaining quality gates | Task 12 Steps 1-5 |
+| all quality gates | Task 12 Steps 1-5 |
 
 | Implementation task | Requirements it must leave proven |
 | --- | --- |
 | Task 1 | grammar versions, additive `SymbolKind`, `.pyi` routing |
 | Task 2 | Rust declarations, recursive ownership, direct/wildcard `use`, fallback |
-| Task 3 | Java declarations, package ownership, direct/wildcard imports, fallback |
+| Task 3 | Java declarations, package selector/scope, imports, fallback |
 | Task 4 | C# declarations, block/file-scoped namespace, properties, using completeness, fallback |
 | Task 5 | C functions/structs/enums, include records, C grammar load/fallback |
-| Task 6 | C++ namespaces/types/free functions, member declarations/definitions, includes, all extensions |
+| Task 6 | C++ namespaces/types/functions, class/struct members, includes |
 | Task 7 | existing Python `.pyi` parser behavior |
 | Task 8 | factory-created production registry and extension routing |
 | Task 9 | catalog persistence and fail-closed incremental/full-rebuild lifecycle |

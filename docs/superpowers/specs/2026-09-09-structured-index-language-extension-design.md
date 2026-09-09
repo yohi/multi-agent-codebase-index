@@ -207,6 +207,8 @@ intentionally out of scope for this change.
 - Java / C# / C++ nested classes, structs, and namespaces contribute to
   qualified names using `.` as the separator, matching the existing TypeScript
   convention.
+- For C++, both `class` and `struct` containers may own constructor and method
+  declarations.
 - Rust modules and traits use `::` in source notation (e.g. `module::Trait`,
   `Type::method`). The canonical `qualifiedName` stored in the catalog uses
   `.` as the separator for consistency with the catalog contract
