@@ -6,13 +6,13 @@
 
 **Architecture:** すべての新言語は既存の Python / Go と同じ `tree-sitter` 基盤を使う。各言語は `LanguagePlugin` と `StructuredLanguageParser` を実装し、宣言・インポート・補助関数を分離した 2〜5 ファイルで構成する。`src/server/factory.ts` に登録し、`SymbolKind` を拡張、`src/indexer/pipeline.ts` の import-only ファイルの扱いを修正する。
 
-**Tech Stack:** TypeScript、Node.js >=24、tree-sitter 0.25.1、新規 grammars（`tree-sitter-rust@0.24.0`、`tree-sitter-java@0.23.5`、`tree-sitter-c-sharp@0.23.5`、`tree-sitter-cpp@0.23.4`、`tree-sitter-c@0.23.6`）、vitest。
+**Tech Stack:** TypeScript、Node.js >=24、tree-sitter 0.25.1、新規 grammars（`tree-sitter-rust@0.24.0`、`tree-sitter-java@0.23.5`、`tree-sitter-c-sharp@0.23.5`、`tree-sitter-cpp@0.23.4`、`tree-sitter-c@0.24.1`）、vitest。
 
 ## Global Constraints
 
 - Node.js >=24.0.0
 - `tree-sitter` 0.25.1 ベース
-- 新規 grammar package: `tree-sitter-rust@0.24.0`、`tree-sitter-java@0.23.5`、`tree-sitter-c-sharp@0.23.5`、`tree-sitter-cpp@0.23.4`、`tree-sitter-c@0.23.6`
+- 新規 grammar package: `tree-sitter-rust@0.24.0`、`tree-sitter-java@0.23.5`、`tree-sitter-c-sharp@0.23.5`、`tree-sitter-cpp@0.23.4`、`tree-sitter-c@0.24.1`
 - C / C++ は別プラグインとして実装する（`.h` は C++ として扱う）
 - `.h` は C++ として明示的に扱う
 - `.pyi` は既存 `tree-sitter-python` grammar を再利用する
@@ -20,7 +20,7 @@
 - `qualifiedName` はカタログ全体で `.` セパレータを使用する（Rust も `module.Trait`、`Type.method`）
 - Java `package_declaration` と C# `file_scoped_namespace_declaration` は AST body container ではなく、後続 top-level declaration に適用する logical file scope として扱う
 - 宣言の declaration node / range node / owning scope node のいずれかに `ERROR` / `MISSING` があれば出力せず、壊れた container の子を外側 scopeへ flatten しない
-- lexical `ownerKey` は traversal 中に owning descriptor の `declarationKey` を直接渡して確定する。`qualifiedName` の逆引きで復元しない
+- lexical `ownerKey` は traversal 中に logical owner descriptor の `declarationKey` を直接渡して確定する。`qualifiedName` の逆引きで復元しない。Rust `impl` は構文上の走査コンテナだが論理的な親ではなく、対象型が一意のときだけ method の owner とする
 - 構造化パース失敗は fail-closed: 増分更新では DLQ へ、フルリビルドでは中止
 - Task 3〜6 のproduction code blockは各対象ファイルの全内容を示し、未定義のhelperや省略記号に実装を委譲しない
 - `npm ci`、`npm run build`、`npm run lint`、`npx tsc --noEmit`、`npm run license:check`、`npm run test` がすべて通ること
@@ -245,6 +245,12 @@ mod outer {
         }
     }
 
+    impl Point {
+        pub fn new(x: f64, y: f64) -> Self {
+            Point { x, y }
+        }
+    }
+
     pub trait Drawable {
         fn draw(&self);
     }
@@ -323,6 +329,15 @@ describe('Rust structured parser', () => {
     expect(byName.get('top_level')?.kind).toBe('function');
     expect(byName.get('outer.Point.new')?.parentSymbolId).toBe(byName.get('outer.Point')?.symbolId);
     expect(byName.get('outer.Point')?.symbolId).toMatch(/^symbol_v1_/);
+
+    const pointMethods = result.declarations.filter((d) => d.qualifiedName === 'outer.Point.new');
+    expect(pointMethods).toHaveLength(2);
+    expect(new Set(pointMethods.map((d) => d.symbolId)).size).toBe(2);
+    expect(new Set(pointMethods.map((d) => d.parentSymbolId))).toEqual(new Set([byName.get('outer.Point')?.symbolId]));
+
+    const pointImpls = result.declarations.filter((d) => d.qualifiedName === 'outer.Point.impl');
+    expect(pointImpls).toHaveLength(2);
+    expect(new Set(pointImpls.map((d) => d.symbolId)).size).toBe(2);
   });
 
   it('keeps repeated canonical names distinct', async () => {

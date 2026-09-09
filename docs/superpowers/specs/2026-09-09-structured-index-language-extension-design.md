@@ -203,7 +203,9 @@ intentionally out of scope for this change.
   `file_scoped_namespace_declaration` is not treated as a brace-delimited body
   container; it establishes the logical file scope for following top-level
   declarations. Both forms produce the same canonical `qualifiedName` shape.
-- Rust `impl` is represented as `impl` and acts as a container for its methods.
+- Rust `impl` is represented as `impl` and is a syntactic traversal container,
+  but it is not the logical owner of its methods. Method ownership resolves to
+  the uniquely identified target type.
 - Java / C# / C++ nested classes, structs, and namespaces contribute to
   qualified names using `.` as the separator, matching the existing TypeScript
   convention.
@@ -217,19 +219,22 @@ intentionally out of scope for this change.
 - Every declaration descriptor carries a file-local `declarationKey` and an
   `ownerKey`; neither key is a bare source name. `declarationKey` is derived
   from the source file and the node identity (`startIndex`, `endIndex`, and
-  node type), and `ownerKey` is copied directly from the owning descriptor
-  during lexical traversal. The parser resolves `parentSymbolId` by mapping
-  these already-resolved descriptor keys to generated `symbolId` values after
-  all descriptors have been collected. A `qualifiedName`-to-key map must not be
-  used to reconstruct lexical ownership because repeated declarations can have
-  the same canonical name.
-- Rust `impl` blocks are declarations, but the `impl` segment is not part of
-  an impl method's canonical name. For the fixture `mod outer { struct Point;
-  impl Point { fn new() {} } }`, the required names are `outer`,
-  `outer.Point`, `outer.Point.impl`, and `outer.Point.new`. The method's
-  `ownerKey` resolves to `outer.Point`, not to the impl block and not to the
-  bare name `Point`. The `.impl` suffix only distinguishes the impl declaration
-  itself; its signature and occurrence keep multiple impl blocks distinct.
+  node type), and `ownerKey` is copied from the active logical owner during
+  traversal. The parser resolves `parentSymbolId` by mapping these already-
+  resolved descriptor keys to generated `symbolId` values after all descriptors
+  have been collected. A `qualifiedName`-to-key map must not be used to
+  reconstruct ownership because repeated declarations can have the same
+  canonical name.
+- Rust `impl` blocks are declarations and syntactic traversal containers, but
+  the `impl` segment is not part of an impl method's canonical name. For the
+  fixture `mod outer { struct Point; impl Point { fn new() {} } }`, the required
+  names are `outer`, `outer.Point`, `outer.Point.impl`, and `outer.Point.new`.
+  The method's `ownerKey` and `parentSymbolId` resolve to `outer.Point`, not to
+  the impl block and not to the bare name `Point`. The target type association
+  must be unique; when it is ambiguous, the parser leaves the method owner
+  unresolved rather than guessing. The `.impl` suffix only distinguishes the
+  impl declaration itself; its signature and occurrence keep multiple impl
+  blocks distinct.
 
 ### 7. Stable symbol identity
 
@@ -295,15 +300,18 @@ syntax-diagnostic imports are `partial`.
   routed to the dead-letter queue; neither the structured catalog nor the
   normal chunk vectors for that file are updated in that pass. This matches
   the existing fail-closed semantics.
-- In a full rebuild (`nexus --reindex --full`), any structured parse failure
-  aborts the entire rebuild, preserving the existing fail-closed semantics.
+- In a full rebuild (`nexus --reindex --full`), parsing is completed before the
+  legacy vector table is replaced and before the structured shadow table is
+  activated. Any structured parse failure aborts the entire rebuild, preserving
+  both the pre-rebuild legacy vectors and the active structured generation.
   If future requirements demand that unparseable files be ignored during a
   full rebuild, `src/indexer/pipeline.ts` and its full-rebuild integration
   tests must be changed explicitly.
 - Parser load failures in the structured path are not caught by the normal
   `createParser()` wrapper; `readStructuredFile` calls
   `plugin.createStructuredParser()` directly and converts exceptions into
-  `parse-failed`.
+  `parse-failed`. Each native grammar dependency must be exercised through its
+  lazy-load path by a Node.js >=24 native-load test.
 - A valid structured result with `status === 'ok'` that contains imports but no
   declarations is kept as structured work so that import-only files (e.g. a C/C++
   header with only `#include` directives) persist their imports in the structured
@@ -330,9 +338,12 @@ but successful index is not rebuilt solely because it is old (see `SPEC.md`
 
 1. `package.json` and `package-lock.json`
    - Add `tree-sitter-rust@0.24.0`, `tree-sitter-java@0.23.5`,
-     `tree-sitter-c-sharp@0.23.5`, `tree-sitter-cpp@0.23.4`, and `tree-sitter-c@0.23.6`
-     to `dependencies`. The lockfile must be regenerated by running
-     `npm install <packages>` during implementation and must not be edited by hand.
+     `tree-sitter-c-sharp@0.23.5`, `tree-sitter-cpp@0.23.4`, and `tree-sitter-c@0.24.1`
+     to `dependencies`. The lockfile must be regenerated by npm during
+     implementation and must not be edited by hand. The published grammar
+     packages retain older peer ranges, so native runtime compatibility with
+     `tree-sitter@0.25.1` is established by the dedicated Node.js >=24 load test
+     rather than by the peer range alone.
 2. `src/types/index.ts`
    - Extend `SymbolKind` with `struct`, `trait`, `impl`, `record`, `field`.
 3. New language plugin modules under `src/plugins/languages/`:
@@ -364,7 +375,8 @@ but successful index is not rebuilt solely because it is old (see `SPEC.md`
      fail-closed semantics for degraded results regardless of import count.
    - Do not change the fail-closed semantics: incremental structured parse
      failures still route to the DLQ, and full-rebuild structured parse failures
-     still abort the rebuild.
+     still abort the rebuild before any legacy vector replacement or structured
+     generation activation.
 
 ### Documentation
 
@@ -429,6 +441,9 @@ Each new language parser test covers the record families separately.
 - `qualifiedName` reflects the logical nesting path.
 - `parentSymbolId` links child methods / constructors / fields to their owning
   type or namespace.
+- Rust fixtures with multiple `impl` blocks for the same target and same-named
+  methods verify that method parents resolve to the target type and that every
+  method and impl declaration retains a distinct `symbolId`.
 - Repeated declarations with the same `qualifiedName` retain distinct
   `symbolId` values, and each child remains linked to the descriptor encountered
   in its own lexical traversal branch.
