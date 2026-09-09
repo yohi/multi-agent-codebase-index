@@ -60,8 +60,9 @@ and Go. The following grammar packages are added as dependencies:
 - `tree-sitter-cpp@0.23.4`
 - `tree-sitter-c@0.23.6`
 
-C and C++ use separate plugins. C uses `tree-sitter-c` and C++ uses `tree-sitter-cpp`.
-`.h` is treated as C++ explicitly per the requirements. `.pyi` reuses the existing `tree-sitter-python` grammar.
+C and C++ use separate plugins. C uses `tree-sitter-c` and C++ uses
+`tree-sitter-cpp`. `.h` is treated as C++ explicitly per the requirements.
+`.pyi` reuses the existing `tree-sitter-python` grammar.
 
 Each language plugin follows the established two-layer pattern:
 
@@ -204,6 +205,19 @@ intentionally out of scope for this change.
   `.` as the separator for consistency with the catalog contract
   (e.g. `module.Trait`, `Type.method`). Source-language semantics are captured
   by `languageId`.
+- Every declaration descriptor carries a file-local `declarationKey` and an
+  `ownerKey`; neither key is a bare source name. `declarationKey` is derived
+  from the source file and the node identity (`startIndex`, `endIndex`, and
+  node type), and `ownerKey` points directly to the owning descriptor. The
+  parser resolves `parentSymbolId` by mapping `ownerKey` to the generated
+  `symbolId` after all descriptors have been collected.
+- Rust `impl` blocks are declarations, but the `impl` segment is not part of
+  an impl method's canonical name. For the fixture `mod outer { struct Point;
+  impl Point { fn new() {} } }`, the required names are `outer`,
+  `outer.Point`, `outer.Point.impl`, and `outer.Point.new`. The method's
+  `ownerKey` resolves to `outer.Point`, not to the impl block and not to the
+  bare name `Point`. The `.impl` suffix only distinguishes the impl declaration
+  itself; its signature and occurrence keep multiple impl blocks distinct.
 
 ### 7. Stable symbol identity
 
@@ -227,19 +241,22 @@ The table below is the authoritative mapping from source construct to
 `StructuredImport` for all new languages. Import-like constructs are not
 represented as `StructuredDeclaration` records and do not receive a
 `symbolId` or `parentSymbolId`.
-| Language | Syntax | `moduleSpecifier` | `bindingName` |
-| -------- | ------ | ----------------- | ------------- |
-| Rust | `use std::fs::File;` | `std::fs::File` | `File` |
-|      | `use std::fs::*;` | `std::fs` | `undefined` (partial) |
-| Java | `import java.util.List;` | `java.util.List` | `List` |
-|      | `import java.util.*;` | `java.util` | `undefined` (partial) |
-| C# | `using System;` | `System` | `undefined` |
-|    | `using static System.Math;` | `System.Math` | `undefined` (partial) |
-| C/C++ | `#include <stdio.h>` | `stdio.h` | `undefined` |
-|       | `#include "local.h"` | `local.h` | `undefined` |
-| Python `.pyi` | same as `.py` | same as `.py` | same as `.py` |
+| Language | Syntax | `moduleSpecifier` | `bindingName` | `completeness` |
+| -------- | ------ | ----------------- | ------------- | -------------- |
+| Rust | `use std::fs::File;` | `std::fs::File` | `File` | `complete` |
+|      | `use std::fs::*;` | `std::fs` | `undefined` | `partial` |
+| Java | `import java.util.List;` | `java.util.List` | `List` | `complete` |
+|      | `import java.util.*;` | `java.util` | `undefined` | `partial` |
+| C# | `using System;` | `System` | `undefined` | `complete` |
+|    | `using static System.Math;` | `System.Math` | `undefined` | `partial` |
+| C/C++ | `#include <stdio.h>` | `stdio.h` | `undefined` | `complete` |
+|       | `#include "local.h"` | `local.h` | `undefined` | `complete` |
+| Python `.pyi` | same as `.py` | same as `.py` | same as `.py` | same as `.py` parser |
 
-Bindings with unresolved or wildcard imports are marked `completeness: 'partial'`.
+`complete` means that the parser captured the complete syntactic import record;
+it does not imply compiler-level module or include resolution. Direct bindings
+and concrete include paths are `complete`. Wildcard, static, unresolved, or
+syntax-diagnostic imports are `partial`.
 
 ### 9. Partial parse and fallback
 
@@ -360,8 +377,11 @@ but successful index is not rebuilt solely because it is old (see `SPEC.md`
    - `c/exactness.c`, `c/partial.c`
    - `cpp/exactness.cpp`, `cpp/exactness.h`, `cpp/partial.cpp`
    - `python/exactness.pyi`, `python/partial.pyi`
-3. Plugin routing tests in existing language test files or a new
-   `tests/unit/plugins/registry.test.ts` cases for the new extensions.
+3. Plugin routing tests in `tests/unit/server/factory.test.ts` must obtain the
+   registry through the existing `FactoryInternals` seam and verify every new
+   extension. Per-plugin `supports()` tests may remain alongside the language
+   tests, but a manually assembled registry is not evidence of factory
+   registration.
 4. Regression: run the full existing TypeScript, Python, and Go structured
    parser suites and verify no `symbolId`, kind, or source-range regressions.
 5. Pipeline integration tests
@@ -374,6 +394,10 @@ but successful index is not rebuilt solely because it is old (see `SPEC.md`
      as parse-failed: it is routed to the DLQ in an incremental update, aborts a
      full rebuild, leaves the existing active structured generation in place, and
      does not update normal chunk vectors.
+   - These cases must exercise `processEvents()` / `reindex()` and the
+     `StructuredIndexCoordinator` plus metadata/vector stores; a direct call to
+     the private `readStructuredFile()` method is not sufficient evidence of
+     persistence, activation, DLQ routing, rebuild abort, or vector preservation.
 
 ## Test Strategy
 
@@ -398,7 +422,9 @@ Each new language parser test covers the record families separately.
 - The import-like statements listed in §8 Import / include / use / using
   representation are extracted as `StructuredImport` records.
 - `moduleSpecifier` and `bindingName` match the source construct.
-- Wildcard / unresolved imports are marked `completeness: 'partial'`.
+- Direct bindings and concrete include paths are marked `completeness: 'complete'`;
+  wildcard, static, unresolved, or syntax-diagnostic imports are marked
+  `completeness: 'partial'`.
 - `startByte`, `endByte`, and `sourceHash` match the original file bytes.
 - Files that contain imports but no declarations still return valid imports.
 

@@ -30,10 +30,10 @@
 
 | ファイル | 責務 |
 | --- | --- |
-| `package.json` / `package-lock.json` | 4 つの新 tree-sitter grammar dependency を追加 |
+| `package.json` / `package-lock.json` | 5 つの新 tree-sitter grammar dependency を追加 |
 | `src/types/index.ts` | `SymbolKind` に `struct`, `trait`, `impl`, `record`, `field` を追加 |
 | `src/plugins/languages/python.ts` | `.pyi` を `fileExtensions` に追加 |
-| `src/server/factory.ts` | 新しい 7 言語プラグインを `setupPluginRegistry` に登録 |
+| `src/server/factory.ts` | 新しい 5 言語プラグインを `setupPluginRegistry` に登録 |
 | `src/indexer/pipeline.ts` | `status === 'ok' && declarations.length === 0 && imports.length > 0` を `retire` ではなく structured work として維持 |
 | `docs/mcp-tools.md` | `SymbolKind` 一覧を更新 |
 | `docs/structured-index.md` | 対応言語テーブル、`.h` は C++、バックフィル手順を追加 |
@@ -60,7 +60,7 @@
 | `tests/unit/structured/c-parser.test.ts` | C 構造化パーサの単体テスト |
 | `tests/unit/structured/cpp-parser.test.ts` | C++ 構造化パーサの単体テスト |
 | `tests/unit/structured/python-pyi-parser.test.ts` | `.pyi` 構造化パーサの単体テスト |
-| `tests/unit/plugins/registry.test.ts` | 新拡張子のルーティングテスト（既存ファイルに追加） |
+| `tests/unit/server/factory.test.ts` | factory-created registryによる新拡張子のルーティングテスト |
 | `tests/unit/indexer/pipeline-structured-imports.test.ts` | import-only ファイル・degraded import-only ファイルのパイプライン挙動テスト |
 | `tests/fixtures/structured/rust/exactness.rs` | Rust 正常 fixture |
 | `tests/fixtures/structured/rust/partial.rs` | Rust 部分破損 fixture |
@@ -228,6 +228,11 @@ mod outer {
         y: f64,
     }
 
+    pub enum Color {
+        Red,
+        Green,
+    }
+
     impl Point {
         pub fn new(x: f64, y: f64) -> Self {
             Point { x, y }
@@ -236,6 +241,10 @@ mod outer {
 
     pub trait Drawable {
         fn draw(&self);
+    }
+
+    mod nested {
+        pub struct Marker;
     }
 }
 
@@ -278,16 +287,21 @@ const parseRustFixture = async (name: string) => {
 };
 
 describe('Rust structured parser', () => {
-  it('extracts module, struct, impl, trait, function, and method with stable symbolIds', async () => {
+  it('extracts nested declarations and impl methods with stable symbolIds', async () => {
     const { result } = await parseRustFixture('exactness.rs');
     const byName = new Map(result.declarations.map((d) => [d.qualifiedName, d]));
 
     expect(byName.get('outer')?.kind).toBe('namespace');
     expect(byName.get('outer.Point')?.kind).toBe('struct');
-    expect(byName.get('outer.Point.impl.new')?.kind).toBe('method');
+    expect(byName.get('outer.Color')?.kind).toBe('enum');
+    expect(byName.get('outer.Point.impl')?.kind).toBe('impl');
+    expect(byName.get('outer.Point.new')?.kind).toBe('method');
     expect(byName.get('outer.Drawable')?.kind).toBe('trait');
+    expect(byName.get('outer.Drawable.draw')?.kind).toBe('function');
+    expect(byName.get('outer.nested')?.kind).toBe('namespace');
+    expect(byName.get('outer.nested.Marker')?.kind).toBe('struct');
     expect(byName.get('top_level')?.kind).toBe('function');
-    expect(byName.get('outer.Point.impl.new')?.parentSymbolId).toBe(byName.get('outer.Point')?.symbolId);
+    expect(byName.get('outer.Point.new')?.parentSymbolId).toBe(byName.get('outer.Point')?.symbolId);
     expect(byName.get('outer.Point')?.symbolId).toMatch(/^symbol_v1_/);
   });
 
@@ -295,8 +309,9 @@ describe('Rust structured parser', () => {
     const { result } = await parseRustFixture('exactness.rs');
     const names = result.declarations.map((d) => d.qualifiedName);
     expect(names).toContain('outer.Point');
-    expect(names).toContain('outer.Point.impl.new');
+    expect(names).toContain('outer.Point.new');
     expect(names).toContain('outer.Drawable');
+    expect(names).toContain('outer.nested.Marker');
   });
 
   it('extracts use imports and marks wildcard imports partial', async () => {
@@ -305,7 +320,7 @@ describe('Rust structured parser', () => {
     const wildcard = result.imports.find((i) => i.moduleSpecifier === 'std::io' && i.bindingName === undefined);
 
     expect(fileImport?.bindingName).toBe('File');
-    expect(fileImport?.completeness).toBe('partial');
+    expect(fileImport?.completeness).toBe('complete');
     expect(wildcard?.completeness).toBe('partial');
   });
 
@@ -402,11 +417,28 @@ import type { SymbolKind } from '../../types/index.js';
 
 export interface DeclarationDescriptor {
   readonly node: Parser.SyntaxNode;
+  readonly declarationKey: string;
   readonly kind: SymbolKind;
   readonly name: string;
   readonly qualifiedName: string;
-  readonly ownerName?: string;
+  readonly ownerKey?: string;
 }
+
+interface UnresolvedDescriptor extends DeclarationDescriptor {
+  readonly ownerQualifiedName?: string;
+  readonly targetQualifiedName?: string;
+}
+
+interface Scope {
+  readonly qualifiedName: string;
+  readonly ownerQualifiedName?: string;
+}
+
+const declarationKeyFor = (node: Parser.SyntaxNode): string =>
+  `${node.startIndex}:${node.endIndex}:${node.type}`;
+
+const joinQualifiedName = (scope: string, name: string): string =>
+  scope === '' ? name : `${scope}.${name}`;
 
 const nameNodeText = (node: Parser.SyntaxNode): string | undefined => {
   const name = node.childForFieldName('name');
@@ -417,73 +449,112 @@ const bodyNode = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
   node.children.find((child) => child.type === 'declaration_list' || child.type === 'block');
 
 const kindForType = (node: Parser.SyntaxNode): SymbolKind => {
-  if (node.type === 'enum') return 'enum';
+  if (node.type === 'enum_item') return 'enum';
   if (node.type === 'trait_item') return 'trait';
   return 'struct';
 };
 
-const scopedChildDeclarations = (
-  parentNode: Parser.SyntaxNode,
-  parentQualifiedName: string,
-  parentName: string,
-): readonly DeclarationDescriptor[] => {
-  const body = bodyNode(parentNode);
-  if (!body) return [];
-  const descriptors: DeclarationDescriptor[] = [];
-  for (const child of body.namedChildren) {
-    const descriptor = declarationFor(child);
-    if (!descriptor) continue;
-    descriptors.push({
-      ...descriptor,
-      qualifiedName: `${parentQualifiedName}.${descriptor.name}`,
-      ownerName: parentName,
-    });
-  }
-  return descriptors;
-};
-
-const declarationFor = (node: Parser.SyntaxNode): DeclarationDescriptor | undefined => {
+const declarationFor = (
+  node: Parser.SyntaxNode,
+  scope: Scope,
+): UnresolvedDescriptor | undefined => {
+  const declarationKey = declarationKeyFor(node);
+  const ownerQualifiedName = scope.ownerQualifiedName;
   if (node.type === 'mod_item') {
     const name = nameNodeText(node);
     if (!name) return undefined;
-    return { node, kind: 'namespace', name, qualifiedName: name };
+    return {
+      node,
+      declarationKey,
+      kind: 'namespace',
+      name,
+      qualifiedName: joinQualifiedName(scope.qualifiedName, name),
+      ownerQualifiedName,
+    };
   }
   if (node.type === 'struct_item' || node.type === 'enum_item' || node.type === 'trait_item') {
     const name = nameNodeText(node);
     if (!name) return undefined;
-    return { node, kind: kindForType(node), name, qualifiedName: name };
+    return {
+      node,
+      declarationKey,
+      kind: kindForType(node),
+      name,
+      qualifiedName: joinQualifiedName(scope.qualifiedName, name),
+      ownerQualifiedName,
+    };
   }
   if (node.type === 'impl_item') {
     const typeNode = node.childForFieldName('type') ?? node.children.find((c) => c.type === 'type');
     const traitNode = node.childForFieldName('trait');
     const name = typeNode?.text;
     if (!name) return undefined;
-    const qualifiedName = traitNode ? `${traitNode.text}.${name}` : `${name}.impl`;
-    return { node, kind: 'impl', name, qualifiedName };
+    const targetQualifiedName = joinQualifiedName(scope.qualifiedName, name);
+    const qualifiedName = traitNode
+      ? `${joinQualifiedName(scope.qualifiedName, traitNode.text)}.${name}.impl`
+      : `${targetQualifiedName}.impl`;
+    return {
+      node,
+      declarationKey,
+      kind: 'impl',
+      name,
+      qualifiedName,
+      ownerQualifiedName,
+      targetQualifiedName,
+    };
   }
-  if (node.type === 'function_item') {
+  if (node.type === 'function_item' || node.type === 'function_signature_item') {
     const name = nameNodeText(node);
     if (!name) return undefined;
-    return { node, kind: 'function', name, qualifiedName: name };
+    return {
+      node,
+      declarationKey,
+      kind: 'function',
+      name,
+      qualifiedName: joinQualifiedName(scope.qualifiedName, name),
+      ownerQualifiedName,
+    };
   }
   return undefined;
 };
 
-const withNested = (descriptor: DeclarationDescriptor): readonly DeclarationDescriptor[] => {
-  if (descriptor.kind === 'namespace' || descriptor.kind === 'impl') {
-    return [descriptor, ...scopedChildDeclarations(descriptor.node, descriptor.qualifiedName, descriptor.name)];
+const isContainer = (descriptor: UnresolvedDescriptor): boolean =>
+  descriptor.kind === 'namespace' || descriptor.kind === 'impl' || descriptor.kind === 'trait';
+
+const childrenScopeFor = (descriptor: UnresolvedDescriptor): Scope => {
+  if (descriptor.kind === 'impl') {
+    const targetQualifiedName = descriptor.targetQualifiedName ?? descriptor.qualifiedName;
+    return { qualifiedName: targetQualifiedName, ownerQualifiedName: targetQualifiedName };
   }
-  return [descriptor];
+  return { qualifiedName: descriptor.qualifiedName, ownerQualifiedName: descriptor.qualifiedName };
 };
 
 export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
-  const result: DeclarationDescriptor[] = [];
+  const unresolved: UnresolvedDescriptor[] = [];
+  const walk = (node: Parser.SyntaxNode, scope: Scope): void => {
+    const descriptor = declarationFor(node, scope);
+    if (descriptor === undefined) return;
+    unresolved.push(descriptor);
+    if (!isContainer(descriptor)) return;
+    const body = bodyNode(node);
+    if (body === undefined) return;
+    const childScope = childrenScopeFor(descriptor);
+    for (const child of body.namedChildren) walk(child, childScope);
+  };
+
   for (const child of root.namedChildren) {
-    const descriptor = declarationFor(child);
-    if (!descriptor) continue;
-    result.push(...withNested(descriptor));
+    walk(child, { qualifiedName: '' });
   }
-  return result;
+
+  const keyByQualifiedName = new Map(
+    unresolved.map((descriptor) => [descriptor.qualifiedName, descriptor.declarationKey]),
+  );
+  return unresolved.map(({ ownerQualifiedName, targetQualifiedName: _target, ...descriptor }) => ({
+    ...descriptor,
+    ...(ownerQualifiedName === undefined
+      ? {}
+      : { ownerKey: keyByQualifiedName.get(ownerQualifiedName) }),
+  }));
 };
 ```
 
@@ -497,18 +568,32 @@ import { sha256Hex } from '../../structured/hash.js';
 import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
 import { hasSyntaxProblem, positionFor } from './rust-structured-support.js';
 
-const moduleSpecifiersFor = (node: Parser.SyntaxNode): readonly { specifier: string; bindingName?: string }[] => {
+interface ModuleSpecifier {
+  readonly specifier: string;
+  readonly bindingName?: string;
+  readonly completeness: 'complete' | 'partial';
+}
+
+const moduleSpecifiersFor = (node: Parser.SyntaxNode): readonly ModuleSpecifier[] => {
   if (node.type !== 'use_declaration') return [];
   const argument = node.childForFieldName('argument');
   if (!argument) return [];
 
-  const recursive = (n: Parser.SyntaxNode, prefix: string): readonly { specifier: string; bindingName?: string }[] => {
+  const recursive = (n: Parser.SyntaxNode, prefix: string): readonly ModuleSpecifier[] => {
     if (n.type === 'scoped_identifier' || n.type === 'identifier') {
-      return [{ specifier: `${prefix}${n.text}`.replace(/^::/, '') }];
+      const specifier = `${prefix}${n.text}`.replace(/^::/, '');
+      const bindingName = n.type === 'identifier'
+        ? n.text
+        : (n.childForFieldName('name')?.text ?? n.text.split('::').at(-1));
+      return [{ specifier, bindingName, completeness: 'complete' }];
     }
     if (n.type === 'use_wildcard') {
-      const scoped = n.children.find((c) => c.type === 'scoped_identifier' || c.type === 'identifier');
-      return [{ specifier: `${prefix}${scoped?.text ?? ''}`.replace(/^::/, ''), bindingName: undefined }];
+      const path = n.childForFieldName('path') ?? n.children.find((c) => c.type === 'scoped_identifier' || c.type === 'identifier');
+      return [{
+        specifier: `${prefix}${path?.text ?? ''}`.replace(/^::/, ''),
+        bindingName: undefined,
+        completeness: 'partial',
+      }];
     }
     if (n.type === 'use_list') {
       return n.namedChildren.flatMap((child) => recursive(child, prefix));
@@ -520,6 +605,7 @@ const moduleSpecifiersFor = (node: Parser.SyntaxNode): readonly { specifier: str
   return bindings.map((b) => ({
     specifier: b.specifier,
     bindingName: b.bindingName,
+    completeness: b.completeness,
   }));
 };
 
@@ -540,14 +626,15 @@ export const importsFor = (
       const importKey = `${source.filePath}:${startByte}:${binding.specifier}:${binding.bindingName ?? ''}`;
       const occurrence = occurrences.get(importKey) ?? 0;
       occurrences.set(importKey, occurrence + 1);
+      const stableImportKey = `${importKey}:${occurrence}`;
       imports.push({
-        id: `import_v1_${createHash('sha256').update(importKey, 'utf8').digest('base64url')}`,
+        id: `import_v1_${createHash('sha256').update(stableImportKey, 'utf8').digest('base64url')}`,
         moduleSpecifier: binding.specifier,
         bindingName: binding.bindingName,
         startByte,
         endByte,
         sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
-        completeness: 'partial',
+        completeness: binding.completeness,
         position: positionFor(node),
       });
     }
@@ -595,7 +682,7 @@ const generationFor = (source: StructuredSource, diagnostics: readonly string[])
   generationId: sha256Hex(source.bytes),
   schemaVersion: 1,
   parserId: 'rust',
-  parserVersion: '0.25.0',
+  parserVersion: '0.24.0',
   fileHash: sha256Hex(source.bytes),
   fileCompleteness: diagnostics.length === 0 ? 'complete' : 'partial',
   fileDiagnostics: diagnostics,
@@ -627,7 +714,7 @@ export class RustStructuredParser implements StructuredLanguageParser {
     const textLines = source.text.split('\n');
     const diagnostics = diagnosticsFor(root);
     const occurrences = new Map<string, number>();
-    const drafts: { declaration: StructuredDeclaration; ownerName?: string }[] = [];
+    const drafts: { declaration: StructuredDeclaration; ownerKey?: string; declarationKey: string }[] = [];
 
     for (const descriptor of declarationsFor(root)) {
       if (hasSyntaxProblem(descriptor.node)) continue;
@@ -638,6 +725,7 @@ export class RustStructuredParser implements StructuredLanguageParser {
       const startByte = findDeclarationStartByte(textLines, descriptor.node.startPosition.row + 1, offsets);
       const endByte = offsets.byteOffsetAtUtf16(descriptor.node.endIndex);
       drafts.push({
+        declarationKey: descriptor.declarationKey,
         declaration: {
           symbolId: createSymbolId({
             filePath: source.filePath,
@@ -658,17 +746,16 @@ export class RustStructuredParser implements StructuredLanguageParser {
           isExact: true,
           rawSource: decodeUtf8(source.bytes.subarray(startByte, endByte)),
         },
-        ownerName: descriptor.ownerName,
+        ownerKey: descriptor.ownerKey,
       });
     }
 
     const ownerSymbols = new Map(
       drafts
-        .filter(({ declaration }) => ['struct', 'trait', 'impl', 'namespace'].includes(declaration.kind))
-        .map(({ declaration }) => [declaration.qualifiedName, declaration.symbolId]),
+        .map(({ declarationKey, declaration }) => [declarationKey, declaration.symbolId]),
     );
-    const declarations = drafts.map(({ declaration, ownerName }) => {
-      const parentSymbolId = ownerName === undefined ? undefined : ownerSymbols.get(ownerName);
+    const declarations = drafts.map(({ declaration, ownerKey }) => {
+      const parentSymbolId = ownerKey === undefined ? undefined : ownerSymbols.get(ownerKey);
       return parentSymbolId ? { ...declaration, parentSymbolId } : declaration;
     });
     const imports = importsFor(source, root, offsets);
@@ -889,6 +976,7 @@ describe('Java structured parser', () => {
     const listImport = result.imports.find((i) => i.moduleSpecifier === 'java.util.List');
     const wildcard = result.imports.find((i) => i.moduleSpecifier === 'java.util');
     expect(listImport?.bindingName).toBe('List');
+    expect(listImport?.completeness).toBe('complete');
     expect(wildcard?.completeness).toBe('partial');
   });
 });
@@ -904,9 +992,281 @@ Expected: FAIL
 
 - [ ] **Step 3: Write minimal implementation**
 
-Java 用の 5 ファイルを作成。Rust と同じパターンで、`DeclarationDescriptor`、tree-sitter-java AST selector、imports を実装。`package_declaration` を `namespace`、クラス内入れ子は `.` separator、`record_declaration` は `record`、`field_declaration` は `field`、メソッドは `method`、コンストラクタは `constructor`。実装時には fixture を tree-sitter で parse して node 名を確認し、`class_declaration`, `interface_declaration`, `enum_declaration`, `record_declaration`, `method_declaration`, `constructor_declaration`, `field_declaration`, `package_declaration` を使用する。
+5つのproduction fileを次の内容で作成する。`Rust`のコードを暗黙にコピーせず、Java grammarのnode type、Javaのowner規則、Javaのimport規則をこのTask内で固定する。
 
-`src/plugins/languages/java.ts` は Rust と同じ構成で `languageId='java'`、`fileExtensions=['.java']` とする。
+`src/plugins/languages/java-structured-support.ts`:
+
+```typescript
+import type Parser from 'tree-sitter';
+import type { StructuredSource } from '../../structured/contracts.js';
+import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+
+export const hasSyntaxProblem = (node: Parser.SyntaxNode): boolean =>
+  node.isError || node.isMissing || node.children.some(hasSyntaxProblem);
+
+export const diagnosticsFor = (root: Parser.SyntaxNode): readonly string[] => {
+  const diagnostics: string[] = [];
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (node.isError || node.isMissing) {
+      diagnostics.push(`${node.type} at ${node.startPosition.row + 1}:${node.startPosition.column}`);
+    }
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return diagnostics;
+};
+
+export const positionFor = (node: Parser.SyntaxNode) => ({
+  startLine: node.startPosition.row + 1,
+  startColumn: node.startPosition.column,
+  endLine: node.endPosition.row + 1,
+  endColumn: node.endPosition.column,
+});
+
+export const signatureFor = (source: StructuredSource, node: Parser.SyntaxNode): string => {
+  const body = node.childForFieldName('body');
+  return source.text.slice(node.startIndex, body?.startIndex ?? node.endIndex).replace(/\s+/gu, ' ').trim();
+};
+
+export const startByteFor = (node: Parser.SyntaxNode, offsets: Utf8OffsetTable): number =>
+  offsets.byteOffsetAtUtf16(node.startIndex);
+```
+
+`src/plugins/languages/java-structured-declarations.ts`:
+
+```typescript
+import type Parser from 'tree-sitter';
+import type { SymbolKind } from '../../types/index.js';
+
+export interface DeclarationDescriptor {
+  readonly node: Parser.SyntaxNode;
+  readonly declarationKey: string;
+  readonly ownerKey?: string;
+  readonly kind: SymbolKind;
+  readonly name: string;
+  readonly qualifiedName: string;
+}
+
+interface UnresolvedDescriptor extends DeclarationDescriptor {
+  readonly ownerQualifiedName?: string;
+}
+
+interface Scope {
+  readonly qualifiedName: string;
+  readonly ownerQualifiedName?: string;
+}
+
+const keyFor = (node: Parser.SyntaxNode, index = 0): string =>
+  `${node.startIndex}:${node.endIndex}:${node.type}:${index}`;
+
+const join = (scope: string, name: string): string => scope === '' ? name : `${scope}.${name}`;
+
+const nameFor = (node: Parser.SyntaxNode): string | undefined =>
+  node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
+    ['identifier', 'type_identifier', 'scoped_identifier'].includes(child.type))?.text;
+
+const bodyFor = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
+  node.childForFieldName('body') ?? node.namedChildren.find((child) =>
+    ['class_body', 'interface_body', 'enum_body', 'record_body', 'block'].includes(child.type));
+
+const kindFor = (node: Parser.SyntaxNode): SymbolKind | undefined => ({
+  class_declaration: 'class',
+  interface_declaration: 'interface',
+  enum_declaration: 'enum',
+  record_declaration: 'record',
+  method_declaration: 'method',
+  constructor_declaration: 'constructor',
+  field_declaration: 'field',
+}[node.type] as SymbolKind | undefined);
+
+const descriptorsForNode = (node: Parser.SyntaxNode, scope: Scope): UnresolvedDescriptor[] => {
+  if (node.type === 'package_declaration') {
+    const name = node.childForFieldName('name')?.text;
+    return name === undefined ? [] : [{
+      node, declarationKey: keyFor(node), kind: 'namespace', name,
+      qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName,
+    }];
+  }
+
+  const kind = kindFor(node);
+  if (kind === undefined) return [];
+  if (kind === 'field') {
+    return node.namedChildren
+      .filter((child) => child.type === 'variable_declarator')
+      .map((child, index) => {
+        const name = child.childForFieldName('name')?.text;
+        return name === undefined ? undefined : {
+          node, declarationKey: keyFor(child, index), kind, name,
+          qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName,
+        };
+      })
+      .filter((descriptor): descriptor is UnresolvedDescriptor => descriptor !== undefined);
+  }
+
+  const name = nameFor(node);
+  return name === undefined ? [] : [{
+    node, declarationKey: keyFor(node), kind, name,
+    qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName,
+  }];
+};
+
+const isContainer = (descriptor: UnresolvedDescriptor): boolean =>
+  ['namespace', 'class', 'interface', 'enum', 'record'].includes(descriptor.kind);
+
+export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
+  const unresolved: UnresolvedDescriptor[] = [];
+  const walk = (node: Parser.SyntaxNode, scope: Scope): void => {
+    const descriptors = descriptorsForNode(node, scope);
+    for (const descriptor of descriptors) {
+      unresolved.push(descriptor);
+      if (isContainer(descriptor)) {
+        const body = bodyFor(node);
+        if (body !== undefined) {
+          const childScope = { qualifiedName: descriptor.qualifiedName, ownerQualifiedName: descriptor.qualifiedName };
+          for (const child of body.namedChildren) walk(child, childScope);
+        }
+      }
+    }
+  };
+
+  for (const child of root.namedChildren) walk(child, { qualifiedName: '' });
+  const keyByQualifiedName = new Map(unresolved.map((descriptor) => [descriptor.qualifiedName, descriptor.declarationKey]));
+  return unresolved.map(({ ownerQualifiedName, ...descriptor }) => ({
+    ...descriptor,
+    ...(ownerQualifiedName === undefined ? {} : { ownerKey: keyByQualifiedName.get(ownerQualifiedName) }),
+  }));
+};
+```
+
+`src/plugins/languages/java-structured-imports.ts` は `import_declaration`だけを対象にし、path nodeのtextからspecifierを取得する。末尾が`.*`なら`moduleSpecifier`から`.*`を除去し、`bindingName`を`undefined`、`completeness`を`'partial'`とする。それ以外は最後の`.`以降を`bindingName`、`completeness`を`'complete'`とする。各recordの`id`は`filePath:startByte:moduleSpecifier:bindingName`のSHA-256、range/hash/positionはimport node全体から生成する。構文エラーを含むimport nodeは除外する。
+
+`src/plugins/languages/java-structured.ts` は次の順序を固定する。
+
+```typescript
+const declarationsWithIds = (
+  source: StructuredSource,
+  descriptors: readonly DeclarationDescriptor[],
+  offsets: Utf8OffsetTable,
+): readonly StructuredDeclaration[] => {
+  const occurrences = new Map<string, number>();
+  const drafts = descriptors.filter(({ node }) => !hasSyntaxProblem(node)).map((descriptor) => {
+    const signatureDiscriminator = signatureFor(source, descriptor.node);
+    const occurrenceKey = `${descriptor.qualifiedName}\u0000${descriptor.kind}\u0000${signatureDiscriminator}`;
+    const occurrence = occurrences.get(occurrenceKey) ?? 0;
+    occurrences.set(occurrenceKey, occurrence + 1);
+    const startByte = startByteFor(descriptor.node, offsets);
+    const endByte = offsets.byteOffsetAtUtf16(descriptor.node.endIndex);
+    return {
+      descriptor,
+      declaration: {
+        symbolId: createSymbolId({
+          filePath: source.filePath,
+          qualifiedName: descriptor.qualifiedName,
+          kind: descriptor.kind,
+          signatureDiscriminator,
+          occurrence,
+        }),
+        qualifiedName: descriptor.qualifiedName,
+        kind: descriptor.kind,
+        signatureDiscriminator,
+        position: positionFor(descriptor.node),
+        name: descriptor.name,
+        startByte,
+        endByte,
+        sourceHash: sha256Hex(source.bytes.subarray(startByte, endByte)),
+        languageId: source.language,
+        isExact: true,
+        rawSource: decodeUtf8(source.bytes.subarray(startByte, endByte)),
+      },
+    };
+  });
+  const symbolByKey = new Map(drafts.map(({ descriptor, declaration }) => [descriptor.declarationKey, declaration.symbolId]));
+  return drafts.map(({ descriptor, declaration }) => {
+    const parentSymbolId = descriptor.ownerKey === undefined ? undefined : symbolByKey.get(descriptor.ownerKey);
+    return parentSymbolId === undefined ? declaration : { ...declaration, parentSymbolId };
+  });
+};
+
+export class JavaStructuredParser implements StructuredLanguageParser {
+  constructor(private readonly runtime: JavaTreeSitterRuntime) {}
+
+  async parseStructured(source: StructuredSource): Promise<StructuredParseResult> {
+    if (source.bytes.length === 0) {
+      return {
+        status: 'failed',
+        retrievability: 'none',
+        declarations: [],
+        imports: [],
+        failure: { reasonCode: 'invariant_violation', message: 'Java structured parsing requires source bytes.' },
+      };
+    }
+    const parser = new this.runtime.Parser();
+    parser.setLanguage(this.runtime.Java);
+    const root = parser.parse(source.text).rootNode;
+    let offsets: Utf8OffsetTable;
+    try {
+      offsets = createUtf8OffsetTable(source.text, source.bytes);
+    } catch (error) {
+      if (error instanceof Utf8SourceError) return failedStructuredSource(error);
+      throw error;
+    }
+    const diagnostics = diagnosticsFor(root);
+    const declarations = declarationsWithIds(source, declarationsFor(root), offsets);
+    const imports = importsFor(source, root, offsets);
+    const generation = generationFor(source, diagnostics);
+    return diagnostics.length === 0
+      ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
+      : { status: 'degraded', retrievability: 'partial', declarations, imports, generation,
+          failure: { reasonCode: 'parse_error', message: 'Java parse diagnostics were reported.' } };
+  }
+}
+```
+
+The file must define `JavaTreeSitterRuntime`, `generationFor`, `importsFor`,
+`createUtf8OffsetTable`, `failedStructuredSource`, and the imports used by the
+shown function. `generationFor` uses `parserId: 'java'`, grammar version
+`0.23.5`, the source hash, and `fileCompleteness: diagnostics.length === 0 ?
+'complete' : 'partial'`. A load or UTF-8 failure returns a failed structured
+result and is not converted into a successful empty result.
+
+`src/plugins/languages/java.ts`:
+
+```typescript
+export class JavaLanguagePlugin implements LanguagePlugin {
+  readonly languageId = 'java';
+  readonly fileExtensions = ['.java'];
+
+  supports(filePath: string): boolean {
+    return this.fileExtensions.some((extension) => filePath.endsWith(extension));
+  }
+
+  async createStructuredParser(): Promise<StructuredLanguageParser> {
+    const [parser, java] = await Promise.all([import('tree-sitter'), import('tree-sitter-java')]);
+    return new JavaStructuredParser({ Parser: parser.default, Java: java.default });
+  }
+
+  async createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
+    try {
+      const structured = await this.createStructuredParser();
+      return { parse: async (file) => {
+        const source = sourceFor(file);
+        const result = await structured.parseStructured(source);
+        if (result.status === 'ok' || result.status === 'degraded') return projectLegacyResult(result, source);
+        throw new Error(result.failure.message);
+      } };
+    } catch {
+      return { parse: async () => ({ rootType: 'source_file', declarations: [] }) };
+    }
+  }
+}
+```
+
+`sourceFor` uses `file.bytes ?? new TextEncoder().encode(file.content)`. The
+local `projectLegacyResult` maps every structured declaration to a legacy
+declaration and maps each import range to one `import` declaration. A parser
+load or parse exception is allowed to reach `Chunker`, which supplies the
+existing fixed-line fallback; `createStructuredParser` itself must continue to
+throw so `readStructuredFile` can return `parse-failed`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -984,7 +1344,7 @@ public class Partial {
 }
 ```
 
-テストは Java パーサーと同じ構成とする。期待:
+C# testは以下の各descriptor、owner link、import completenessを個別に検証する。期待:
 
 - `MyApp` → `namespace`
 - `MyApp.Exactness` → `class`
@@ -995,7 +1355,7 @@ public class Partial {
 - `MyApp.Exactness.Exactness` → `constructor`
 - `MyApp.Exactness.Method` → `method`
 - `MyApp.Exactness.Point.X` → `property`
-- `System` import → `moduleSpecifier: 'System', bindingName: undefined, completeness: partial`
+- `System` import → `moduleSpecifier: 'System', bindingName: undefined, completeness: complete`
 - `System.Math` static import → `moduleSpecifier: 'System.Math', bindingName: undefined, completeness: partial`
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1008,9 +1368,181 @@ Expected: FAIL
 
 - [ ] **Step 3: Write minimal implementation**
 
-C# 用 5 ファイルを作成。tree-sitter-c-sharp grammar の node 名に合わせて selector を実装する。使用する node 名は `namespace_declaration`, `class_declaration`, `struct_declaration`, `interface_declaration`, `enum_declaration`, `record_declaration`, `method_declaration`, `constructor_declaration`, `property_declaration`, `using_directive` である。C# 名前空間なしトップレベル文には `file_scoped_namespace_declaration` も対応させる。
+5つのproduction fileを作成し、次のC#固有の実装をそのままTaskの決定事項とする。
 
-`src/plugins/languages/csharp.ts` は Rust と同じ構成で `languageId='csharp'`、`fileExtensions=['.cs']` とする。
+`src/plugins/languages/csharp-structured-support.ts` は
+`hasSyntaxProblem(node)`, `diagnosticsFor(root)`, `positionFor(node)`,
+`signatureFor(source, node)`, `startByteFor(node, offsets)`をexportする。
+各関数はC#の`ERROR`/`MISSING`を再帰的に検出し、tree-sitterのnode rangeを
+UTF-8 byte rangeへ変換する。`signatureFor`は`body`または
+`declaration_list`の直前までを空白正規化し、propertyはproperty node全体を
+discriminatorにする。宣言自身、range、scope bodyのいずれかにsyntax problem
+がある場合はdescriptorを出力しない。
+
+`src/plugins/languages/csharp-structured-declarations.ts` の型と走査は以下で固定する。
+
+```typescript
+import type Parser from 'tree-sitter';
+import type { SymbolKind } from '../../types/index.js';
+
+export interface DeclarationDescriptor {
+  readonly node: Parser.SyntaxNode;
+  readonly declarationKey: string;
+  readonly ownerKey?: string;
+  readonly kind: SymbolKind;
+  readonly name: string;
+  readonly qualifiedName: string;
+}
+
+interface Scope {
+  readonly qualifiedName: string;
+  readonly ownerQualifiedName?: string;
+}
+
+const declarationKeyFor = (node: Parser.SyntaxNode): string =>
+  `${node.startIndex}:${node.endIndex}:${node.type}`;
+
+const join = (scope: string, name: string): string => scope === '' ? name : `${scope}.${name}`;
+
+const bodyFor = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
+  node.childForFieldName('body') ?? node.namedChildren.find((child) =>
+    ['declaration_list', 'class_body', 'struct_body', 'enum_body', 'block'].includes(child.type));
+
+const kindFor = (node: Parser.SyntaxNode): SymbolKind | undefined => {
+  switch (node.type) {
+    case 'namespace_declaration':
+    case 'file_scoped_namespace_declaration': return 'namespace';
+    case 'class_declaration': return 'class';
+    case 'interface_declaration': return 'interface';
+    case 'struct_declaration': return 'struct';
+    case 'enum_declaration': return 'enum';
+    case 'record_declaration': return 'record';
+    case 'method_declaration': return 'method';
+    case 'constructor_declaration': return 'constructor';
+    case 'property_declaration': return 'property';
+    default: return undefined;
+  }
+};
+
+const nameFor = (node: Parser.SyntaxNode): string | undefined =>
+  node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
+    ['identifier', 'type_identifier'].includes(child.type))?.text;
+
+export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
+  const unresolved: Array<DeclarationDescriptor & { readonly ownerQualifiedName?: string }> = [];
+  const walk = (node: Parser.SyntaxNode, scope: Scope): void => {
+    const kind = kindFor(node);
+    if (kind === undefined) return;
+    const name = nameFor(node);
+    if (name === undefined) return;
+    const qualifiedName = join(scope.qualifiedName, name);
+    const descriptor = {
+      node,
+      declarationKey: declarationKeyFor(node),
+      kind,
+      name,
+      qualifiedName,
+      ownerQualifiedName: scope.ownerQualifiedName,
+    };
+    unresolved.push(descriptor);
+    if (!['namespace', 'class', 'interface', 'struct', 'enum', 'record'].includes(kind)) return;
+    const body = bodyFor(node);
+    if (body === undefined) return;
+    const childScope = { qualifiedName, ownerQualifiedName: qualifiedName };
+    for (const child of body.namedChildren) walk(child, childScope);
+  };
+
+  for (const child of root.namedChildren) walk(child, { qualifiedName: '' });
+  const keyByQualifiedName = new Map(unresolved.map((descriptor) => [descriptor.qualifiedName, descriptor.declarationKey]));
+  return unresolved.map(({ ownerQualifiedName, ...descriptor }) => ({
+    ...descriptor,
+    ...(ownerQualifiedName === undefined ? {} : { ownerKey: keyByQualifiedName.get(ownerQualifiedName) }),
+  }));
+};
+```
+
+`file_scoped_namespace_declaration` uses the same namespace scope as a block
+namespace. C# member variables are intentionally not selected. The descriptor
+owner is always the containing namespace/type descriptor; no bare class name is
+stored.
+
+`src/plugins/languages/csharp-structured-imports.ts` selects `using_directive`.
+It removes the `using` keyword and optional `static` modifier from the path,
+sets `moduleSpecifier` to the remaining text, and emits:
+
+```typescript
+const staticImport = node.text.trimStart().startsWith('using static ');
+const moduleSpecifier = pathNode.text;
+const bindingName = undefined;
+const completeness = staticImport ? 'partial' : 'complete';
+```
+
+`using System;` must therefore be `complete`, while `using static System.Math;`
+must be `partial`. `id`, byte range, source hash, position, and syntax-diagnostic
+filtering use the complete `using_directive` node.
+
+`src/plugins/languages/csharp-structured.ts` must define
+`CSharpTreeSitterRuntime`, `generationFor`, `declarationsWithIds`, and
+`importsFor` locally. `declarationsWithIds` uses the descriptor's
+`declarationKey`/`ownerKey`, `createSymbolId`, normalized signature, and
+occurrence map; it then maps owner keys to symbol IDs. Its parser body is:
+
+```typescript
+const parser = new this.runtime.Parser();
+parser.setLanguage(this.runtime.CSharp);
+const root = parser.parse(source.text).rootNode;
+const offsets = createUtf8OffsetTable(source.text, source.bytes);
+const diagnostics = diagnosticsFor(root);
+const declarations = declarationsWithIds(source, declarationsFor(root), offsets);
+const imports = importsFor(source, root, offsets);
+const generation = generationFor(source, diagnostics);
+return diagnostics.length === 0
+  ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
+  : { status: 'degraded', retrievability: 'partial', declarations, imports, generation,
+      failure: { reasonCode: 'parse_error', message: 'C# parse diagnostics were reported.' } };
+```
+
+`generationFor` uses `parserId: 'csharp'`, grammar version `0.23.5`, source
+hash, and complete/partial file completeness. Missing bytes or invalid UTF-8
+returns a failed structured result. `createStructuredParser()` lets tree-sitter
+load errors reject so `readStructuredFile()` converts them to `parse-failed`.
+
+`src/plugins/languages/csharp.ts` must provide the following concrete contract:
+
+```typescript
+export class CSharpLanguagePlugin implements LanguagePlugin {
+  readonly languageId = 'csharp';
+  readonly fileExtensions = ['.cs'];
+
+  supports(filePath: string): boolean {
+    return this.fileExtensions.some((extension) => filePath.endsWith(extension));
+  }
+
+  async createStructuredParser(): Promise<StructuredLanguageParser> {
+    const [parser, csharp] = await Promise.all([import('tree-sitter'), import('tree-sitter-c-sharp')]);
+    return new CSharpStructuredParser({ Parser: parser.default, CSharp: csharp.default });
+  }
+
+  async createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
+    try {
+      const structured = await this.createStructuredParser();
+      return { parse: async (file) => {
+        const source = sourceFor(file);
+        const result = await structured.parseStructured(source);
+        if (result.status === 'ok' || result.status === 'degraded') return projectLegacyResult(result, source);
+        throw new Error(result.failure.message);
+      } };
+    } catch {
+      return { parse: async () => ({ rootType: 'source_file', declarations: [] }) };
+    }
+  }
+}
+```
+
+`projectLegacyResult` must throw for `failed`/`unsupported` results so the
+normal chunker uses its fixed-line fallback, while `createStructuredParser`
+load failures remain visible to the structured path. `sourceFor` uses original
+bytes when present and otherwise encodes `file.content` with `TextEncoder`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1088,7 +1620,7 @@ describe('C structured parser', () => {
     const local = result.imports.find((i) => i.moduleSpecifier === 'local.h');
     expect(stdio).toBeDefined();
     expect(local).toBeDefined();
-    expect(stdio?.completeness).toBe('partial');
+    expect(stdio?.completeness).toBe('complete');
   });
 });
 ```
@@ -1103,9 +1635,179 @@ Expected: FAIL
 
 - [ ] **Step 3: Write minimal implementation**
 
-C 用 5 ファイルを作成。`tree-sitter-c` grammar を `language: 'c'` としてセットする。`function_definition` → `function`、`struct_specifier` → `struct`、`enum_specifier` → `enum`、`preproc_include` → import。struct/enum のタグ名は `type_identifier`、フィールド名は `field_identifier` から取得する。
+5つのproduction fileを作成する。Cはnamespace/type ownershipを推測せず、名前付きtop-levelのfunction/struct/enumだけをcatalogへ出力する。
 
-`src/plugins/languages/c.ts` は Rust と同じ構成で `languageId='c'`、`fileExtensions=['.c']` とする。
+`src/plugins/languages/c-structured-support.ts` は次を実装する。
+
+```typescript
+import type Parser from 'tree-sitter';
+import type { StructuredSource } from '../../structured/contracts.js';
+import type { Utf8OffsetTable } from '../../structured/utf8-offsets.js';
+
+export const hasSyntaxProblem = (node: Parser.SyntaxNode): boolean =>
+  node.isError || node.isMissing || node.children.some(hasSyntaxProblem);
+
+export const diagnosticsFor = (root: Parser.SyntaxNode): readonly string[] => {
+  const result: string[] = [];
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (node.isError || node.isMissing) result.push(`${node.type}@${node.startIndex}`);
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return result;
+};
+
+export const positionFor = (node: Parser.SyntaxNode) => ({
+  startLine: node.startPosition.row + 1,
+  startColumn: node.startPosition.column,
+  endLine: node.endPosition.row + 1,
+  endColumn: node.endPosition.column,
+});
+
+export const signatureFor = (source: StructuredSource, node: Parser.SyntaxNode): string => {
+  const body = node.childForFieldName('body');
+  return source.text.slice(node.startIndex, body?.startIndex ?? node.endIndex).replace(/\s+/gu, ' ').trim();
+};
+
+export const startByteFor = (node: Parser.SyntaxNode, offsets: Utf8OffsetTable): number =>
+  offsets.byteOffsetAtUtf16(node.startIndex);
+```
+
+`src/plugins/languages/c-structured-declarations.ts` は次のdescriptorと
+recursive selectorを使う。
+
+```typescript
+import type Parser from 'tree-sitter';
+import { hasSyntaxProblem } from './c-structured-support.js';
+
+export interface DeclarationDescriptor {
+  readonly node: Parser.SyntaxNode;
+  readonly declarationKey: string;
+  readonly ownerKey?: string;
+  readonly kind: 'function' | 'struct' | 'enum';
+  readonly name: string;
+  readonly qualifiedName: string;
+}
+
+const keyFor = (node: Parser.SyntaxNode): string =>
+  `${node.startIndex}:${node.endIndex}:${node.type}`;
+
+const declaratorName = (node: Parser.SyntaxNode): string | undefined => {
+  const named = node.childForFieldName('declarator');
+  if (named !== undefined) return declaratorName(named) ?? named.text;
+  return node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
+    ['identifier', 'type_identifier'].includes(child.type))?.text;
+};
+
+const descriptorFor = (node: Parser.SyntaxNode): DeclarationDescriptor | undefined => {
+  if (node.type === 'function_definition') {
+    const name = declaratorName(node);
+    return name === undefined ? undefined : {
+      node, declarationKey: keyFor(node), kind: 'function', name, qualifiedName: name,
+    };
+  }
+  if (node.type === 'struct_specifier' || node.type === 'enum_specifier') {
+    const name = node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
+      child.type === 'type_identifier')?.text;
+    return name === undefined ? undefined : {
+      node,
+      declarationKey: keyFor(node),
+      kind: node.type === 'struct_specifier' ? 'struct' : 'enum',
+      name,
+      qualifiedName: name,
+    };
+  }
+  return undefined;
+};
+
+export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
+  const result: DeclarationDescriptor[] = [];
+  const walk = (node: Parser.SyntaxNode): void => {
+    const descriptor = descriptorFor(node);
+    if (descriptor !== undefined && !hasSyntaxProblem(node)) result.push(descriptor);
+    for (const child of node.namedChildren) walk(child);
+  };
+  for (const child of root.namedChildren) walk(child);
+  return result;
+};
+```
+
+The selector traverses through `declaration` nodes to reach tagged
+`struct_specifier`/`enum_specifier`, but it does not emit anonymous types or
+member variables. C has no container descriptor in this scope, so
+`ownerKey`/`parentSymbolId` remain absent.
+
+`src/plugins/languages/c-structured-imports.ts` selects `preproc_include`.
+For `system_lib_string` it removes `<`/`>`, and for `string_literal` it removes
+the surrounding quotes. It emits `moduleSpecifier` as the resulting path,
+`bindingName: undefined`, and `completeness: 'complete'`; no include resolver is
+introduced. The record range/hash/position covers the entire preprocessor node,
+and a node containing `ERROR`/`MISSING` is skipped.
+
+`src/plugins/languages/c-structured.ts` must define `CTreeSitterRuntime`,
+`generationFor`, `declarationsWithIds`, and `importsFor` in this file. The
+materialization algorithm is explicit: filter descriptors with
+`hasSyntaxProblem`, compute `signatureFor`, count occurrences by
+`qualifiedName\0kind\0signature`, call `createSymbolId`, compute byte range and
+`rawSource`, map any `ownerKey` through a descriptor-key map, then build the
+generation. Its parse body is:
+
+```typescript
+const parser = new this.runtime.Parser();
+parser.setLanguage(this.runtime.C);
+const root = parser.parse(source.text).rootNode;
+const offsets = createUtf8OffsetTable(source.text, source.bytes);
+const diagnostics = diagnosticsFor(root);
+const declarations = declarationsWithIds(source, declarationsFor(root), offsets);
+const imports = importsFor(source, root, offsets);
+const generation = generationFor(source, diagnostics);
+return diagnostics.length === 0
+  ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
+  : { status: 'degraded', retrievability: 'partial', declarations, imports, generation,
+      failure: { reasonCode: 'parse_error', message: 'C parse diagnostics were reported.' } };
+```
+
+`generationFor` uses `parserId: 'c'`, grammar version `0.23.6`, and the source
+hash. Invalid UTF-8 or missing source bytes returns a failed result. An
+import-only header with `status: 'ok'` and no declarations remains valid work;
+the pipeline, not this parser, decides persistence.
+
+`src/plugins/languages/c.ts` must provide the complete plugin boundary:
+
+```typescript
+export class CLanguagePlugin implements LanguagePlugin {
+  readonly languageId = 'c';
+  readonly fileExtensions = ['.c'];
+
+  supports(filePath: string): boolean {
+    return this.fileExtensions.some((extension) => filePath.endsWith(extension));
+  }
+
+  async createStructuredParser(): Promise<StructuredLanguageParser> {
+    const [parser, c] = await Promise.all([import('tree-sitter'), import('tree-sitter-c')]);
+    return new CStructuredParser({ Parser: parser.default, C: c.default });
+  }
+
+  async createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
+    try {
+      const structured = await this.createStructuredParser();
+      return { parse: async (file) => {
+        const source = sourceFor(file);
+        const result = await structured.parseStructured(source);
+        if (result.status === 'ok' || result.status === 'degraded') return projectLegacyResult(result, source);
+        throw new Error(result.failure.message);
+      } };
+    } catch {
+      return { parse: async () => ({ rootType: 'source_file', declarations: [] }) };
+    }
+  }
+}
+```
+
+`projectLegacyResult` maps successful/degraded structured declarations and import
+ranges to legacy declarations and throws for failed/unsupported results. The
+normal chunker then applies its existing fixed-line fallback, while structured
+load failures remain `parse-failed` in `readStructuredFile`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1160,6 +1862,12 @@ namespace app {
         void render();
     };
 
+    class InlineWidget {
+    public:
+        InlineWidget() {}
+        void inlineRender() {}
+    };
+
     enum class Color { Red, Green };
 
     void freeFunction() {}
@@ -1202,8 +1910,13 @@ describe('C++ structured parser', () => {
     expect(byName.get('app.Widget')?.kind).toBe('class');
     expect(byName.get('app.Widget.Widget')?.kind).toBe('constructor');
     expect(byName.get('app.Widget.render')?.kind).toBe('method');
+    expect(byName.get('app.InlineWidget.InlineWidget')?.kind).toBe('constructor');
+    expect(byName.get('app.InlineWidget.inlineRender')?.kind).toBe('method');
+    expect(byName.get('app.Widget.render')?.parentSymbolId).toBe(byName.get('app.Widget')?.symbolId);
     expect(byName.get('app.Color')?.kind).toBe('enum');
     expect(byName.get('app.freeFunction')?.kind).toBe('function');
+    expect(result.imports.find((item) => item.moduleSpecifier === 'vector')?.completeness).toBe('complete');
+    expect(result.imports.find((item) => item.moduleSpecifier === 'exactness.h')?.completeness).toBe('complete');
   });
 
   it('treats .h as C++', async () => {
@@ -1211,6 +1924,7 @@ describe('C++ structured parser', () => {
     expect(plugin.supports('src/example.h')).toBe(true);
     const { result } = await parseCppFixture('exactness.h');
     expect(result.declarations.find((d) => d.qualifiedName === 'app.HeaderOnly')).toBeDefined();
+    expect(result.declarations.find((d) => d.qualifiedName === 'app.HeaderOnly.headerMethod')?.kind).toBe('method');
   });
 });
 ```
@@ -1225,9 +1939,211 @@ Expected: FAIL
 
 - [ ] **Step 3: Write minimal implementation**
 
-C++ 用 5 ファイルを作成。`tree-sitter-cpp` grammar を使用する。`namespace_definition` → `namespace`、`function_definition` → `function`、`struct_specifier`/`class_specifier` → `struct`/`class`、`enum_specifier` → `enum`、クラス内の `function_definition`（デストラクタを含む）→ `method`/`constructor`。`preproc_include` → import（`#include <...>` と `"..."`）。
+5つのproduction fileを作成する。C++のclass memberは定義だけでなく宣言も対象にし、fixtureの`Widget();`、`void render();`、inline member definitionを同じselectorから抽出する。
 
-`src/plugins/languages/cpp.ts` は Rust と同じ構成で `languageId='cpp'`、`fileExtensions=['.h', '.cc', '.cpp', '.cxx', '.hh', '.hpp', '.hxx']` とする。
+`src/plugins/languages/cpp-structured-support.ts` はC++の`ERROR`/`MISSING`
+を再帰的に検出する`hasSyntaxProblem`/`diagnosticsFor`、node位置を返す
+`positionFor`、body直前をsignatureとする`signatureFor`、
+`Utf8OffsetTable`を使う`startByteFor`を実装する。declaration node、所属
+class body、range nodeのいずれかにsyntax problemがあるdescriptorは出力しない。
+
+`src/plugins/languages/cpp-structured-declarations.ts` は以下のowner keyと
+member selectorを実装する。
+
+```typescript
+import type Parser from 'tree-sitter';
+import { hasSyntaxProblem } from './cpp-structured-support.js';
+
+export interface DeclarationDescriptor {
+  readonly node: Parser.SyntaxNode;
+  readonly declarationKey: string;
+  readonly ownerKey?: string;
+  readonly kind: 'namespace' | 'function' | 'struct' | 'class' | 'enum' | 'method' | 'constructor';
+  readonly name: string;
+  readonly qualifiedName: string;
+}
+
+interface Scope {
+  readonly qualifiedName: string;
+  readonly ownerQualifiedName?: string;
+  readonly className?: string;
+}
+
+const keyFor = (node: Parser.SyntaxNode): string =>
+  `${node.startIndex}:${node.endIndex}:${node.type}`;
+
+const join = (scope: string, name: string): string => scope === '' ? name : `${scope}.${name}`;
+
+const declaratorName = (node: Parser.SyntaxNode): string | undefined => {
+  const nested = node.childForFieldName('declarator');
+  if (nested !== undefined) return declaratorName(nested) ?? nested.text;
+  return node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
+    ['identifier', 'field_identifier', 'type_identifier'].includes(child.type))?.text;
+};
+
+const functionDeclaratorFor = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined => {
+  if (node.type === 'function_declarator' || node.type === 'function_field_declarator') return node;
+  for (const child of node.namedChildren) {
+    const result = functionDeclaratorFor(child);
+    if (result !== undefined) return result;
+  }
+  return undefined;
+};
+
+const memberDescriptorFor = (node: Parser.SyntaxNode, scope: Scope): DeclarationDescriptor | undefined => {
+  if (node.type !== 'function_definition' && node.type !== 'declaration' && node.type !== 'field_declaration') return undefined;
+  const declarator = functionDeclaratorFor(node);
+  const name = declarator === undefined ? undefined : declaratorName(declarator);
+  if (name === undefined || scope.className === undefined) return undefined;
+  const kind = name === scope.className ? 'constructor' : 'method';
+  return {
+    node,
+    declarationKey: keyFor(node),
+    kind,
+    name,
+    qualifiedName: join(scope.qualifiedName, name),
+    ownerQualifiedName: scope.qualifiedName,
+  } as DeclarationDescriptor & { readonly ownerQualifiedName: string };
+};
+
+const descriptorFor = (node: Parser.SyntaxNode, scope: Scope):
+  (DeclarationDescriptor & { readonly ownerQualifiedName?: string }) | undefined => {
+  if (scope.className !== undefined) {
+    const member = memberDescriptorFor(node, scope);
+    if (member !== undefined) return member;
+  }
+  if (node.type === 'namespace_definition') {
+    const name = node.childForFieldName('name')?.text;
+    return name === undefined ? undefined : {
+      node, declarationKey: keyFor(node), kind: 'namespace', name,
+      qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName,
+    };
+  }
+  if (node.type === 'struct_specifier' || node.type === 'class_specifier' || node.type === 'enum_specifier') {
+    const name = node.childForFieldName('name')?.text ?? node.namedChildren.find((child) =>
+      child.type === 'type_identifier')?.text;
+    if (name === undefined) return undefined;
+    const kind = node.type === 'struct_specifier' ? 'struct' : node.type === 'class_specifier' ? 'class' : 'enum';
+    return { node, declarationKey: keyFor(node), kind, name,
+      qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName };
+  }
+  if (node.type === 'function_definition') {
+    const name = declaratorName(node);
+    return name === undefined ? undefined : { node, declarationKey: keyFor(node), kind: 'function', name,
+      qualifiedName: join(scope.qualifiedName, name), ownerQualifiedName: scope.ownerQualifiedName };
+  }
+  return undefined;
+};
+
+const bodyFor = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
+  node.childForFieldName('body') ?? node.namedChildren.find((child) =>
+    ['declaration_list', 'field_declaration_list', 'compound_statement'].includes(child.type));
+
+export const declarationsFor = (root: Parser.SyntaxNode): readonly DeclarationDescriptor[] => {
+  const unresolved: Array<DeclarationDescriptor & { readonly ownerQualifiedName?: string }> = [];
+  const walk = (node: Parser.SyntaxNode, scope: Scope): void => {
+    const descriptor = descriptorFor(node, scope);
+    if (descriptor !== undefined && !hasSyntaxProblem(node)) {
+      unresolved.push(descriptor);
+      if (['namespace', 'struct', 'class'].includes(descriptor.kind)) {
+        const body = bodyFor(node);
+        if (body !== undefined) {
+          const childScope = {
+            qualifiedName: descriptor.qualifiedName,
+            ownerQualifiedName: descriptor.qualifiedName,
+            ...(descriptor.kind === 'class' ? { className: descriptor.name } : {}),
+          };
+          for (const child of body.namedChildren) walk(child, childScope);
+        }
+        return;
+      }
+    }
+    for (const child of node.namedChildren) walk(child, scope);
+  };
+
+  for (const child of root.namedChildren) walk(child, { qualifiedName: '' });
+  const keyByQualifiedName = new Map(unresolved.map((descriptor) => [descriptor.qualifiedName, descriptor.declarationKey]));
+  return unresolved.map(({ ownerQualifiedName, ...descriptor }) => ({
+    ...descriptor,
+    ...(ownerQualifiedName === undefined ? {} : { ownerKey: keyByQualifiedName.get(ownerQualifiedName) }),
+  }));
+};
+```
+
+`declaration` and `field_declaration` are deliberately included because
+tree-sitter-cpp represents constructor/method declarations in the class body
+through those nodes and a nested `function_declarator` or
+`function_field_declarator`. `function_definition` covers inline definitions;
+the constructor name is compared with the containing class name. No out-of-class
+semantic association is attempted.
+
+`src/plugins/languages/cpp-structured-imports.ts` selects `preproc_include` and
+uses the `system_lib_string`/`string_literal` child to produce `stdio.h` or
+`local.h`, with `bindingName: undefined` and `completeness: 'complete'`. It
+uses the complete preprocessor node for the range, source hash, position, and
+stable import id, and skips syntax-problem nodes.
+
+`src/plugins/languages/cpp-structured.ts` defines `CppTreeSitterRuntime`,
+`generationFor`, `declarationsWithIds`, and `importsFor` locally. The parser
+materializes declarations with the descriptor `declarationKey`/`ownerKey`,
+`createSymbolId`, normalized signature, occurrence count, exact byte range and
+raw source. Its result assembly is:
+
+```typescript
+const parser = new this.runtime.Parser();
+parser.setLanguage(this.runtime.Cpp);
+const root = parser.parse(source.text).rootNode;
+const offsets = createUtf8OffsetTable(source.text, source.bytes);
+const diagnostics = diagnosticsFor(root);
+const declarations = declarationsWithIds(source, declarationsFor(root), offsets);
+const imports = importsFor(source, root, offsets);
+const generation = generationFor(source, diagnostics);
+return diagnostics.length === 0
+  ? { status: 'ok', retrievability: 'exact', declarations, imports, generation }
+  : { status: 'degraded', retrievability: 'partial', declarations, imports, generation,
+      failure: { reasonCode: 'parse_error', message: 'C++ parse diagnostics were reported.' } };
+```
+
+`generationFor` uses `parserId: 'cpp'`, grammar version `0.23.4`, and source
+hash. Invalid UTF-8, missing bytes, or a tree-sitter load failure returns a
+failed result to the structured path.
+
+`src/plugins/languages/cpp.ts` must register every required extension and keep
+the normal-parser fallback separate from the structured parser:
+
+```typescript
+export class CppLanguagePlugin implements LanguagePlugin {
+  readonly languageId = 'cpp';
+  readonly fileExtensions = ['.h', '.cc', '.cpp', '.cxx', '.hh', '.hpp', '.hxx'];
+
+  supports(filePath: string): boolean {
+    return this.fileExtensions.some((extension) => filePath.endsWith(extension));
+  }
+
+  async createStructuredParser(): Promise<StructuredLanguageParser> {
+    const [parser, cpp] = await Promise.all([import('tree-sitter'), import('tree-sitter-cpp')]);
+    return new CppStructuredParser({ Parser: parser.default, Cpp: cpp.default });
+  }
+
+  async createParser(): Promise<{ parse(file: FileToChunk): Promise<ParsedSourceFile> }> {
+    try {
+      const structured = await this.createStructuredParser();
+      return { parse: async (file) => {
+        const source = sourceFor(file);
+        const result = await structured.parseStructured(source);
+        if (result.status === 'ok' || result.status === 'degraded') return projectLegacyResult(result, source);
+        throw new Error(result.failure.message);
+      } };
+    } catch {
+      return { parse: async () => ({ rootType: 'source_file', declarations: [] }) };
+    }
+  }
+}
+```
+
+`projectLegacyResult` throws on failed/unsupported structured results so the
+existing chunker fixed-line fallback remains responsible for normal vectors.
+The structured path still receives the load failure as `parse-failed`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1258,7 +2174,7 @@ git commit -m "feat(structured): add C++ structured parser"
 - Consumes: 既存 `PythonLanguagePlugin` / `PythonStructuredParser`
 - Produces: `.pyi` ファイルが `.py` と同じパーサで構造化されることのテスト証拠
 
-- [ ] **Step 1: Write failing fixtures and test**
+- [ ] **Step 1: Add characterization fixtures and regression test**
 
 `tests/fixtures/structured/python/exactness.pyi`:
 
@@ -1316,13 +2232,18 @@ describe('Python stub structured parser', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run the characterization test**
 
 ```bash
 npx vitest run tests/unit/structured/python-pyi-parser.test.ts -v
 ```
 
-Expected: PASS（Task 1 で `.pyi` ルーティングは追加済み、既存パーサが動作するため）
+Expected: PASS（Task 1で`.pyi`ルーティングを追加済みで、既存parserの挙動を確認する）
+
+このTaskは既存Python parserの互換性を固定するcharacterization/regression
+testであり、production変更前のREDを要求しない。意図的にproduction codeを
+壊してREDを作ってはならない。
+
 
 - [ ] **Step 3: Commit**
 
@@ -1337,7 +2258,7 @@ git commit -m "test(structured): add Python .pyi structured parser coverage"
 
 **Files:**
 - Modify: `src/server/factory.ts:604-606`
-- Modify: `tests/unit/plugins/registry.test.ts`（既存ファイルまたは新規）
+- Modify: `tests/unit/server/factory.test.ts`
 - Create: `tests/unit/plugins/languages/rust.test.ts`
 - Create: `tests/unit/plugins/languages/java.test.ts`
 - Create: `tests/unit/plugins/languages/csharp.test.ts`
@@ -1350,57 +2271,79 @@ git commit -m "test(structured): add Python .pyi structured parser coverage"
 
 - [ ] **Step 1: Write failing tests**
 
-`tests/unit/plugins/registry.test.ts` に追加（または新規作成）。既存の `PluginRegistry` を使って各言語が期待する拡張子にマッチすることを検証：
+`tests/unit/server/factory.test.ts` の既存 `FactoryInternals` seam を使い、
+production factoryが生成したregistryを直接検証する。テストでpluginを手動登録してはならない。
 
 ```typescript
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CppLanguagePlugin } from '../../../src/plugins/languages/cpp.js';
-import { CLanguagePlugin } from '../../../src/plugins/languages/c.js';
-import { CSharpLanguagePlugin } from '../../../src/plugins/languages/csharp.js';
-import { JavaLanguagePlugin } from '../../../src/plugins/languages/java.js';
-import { RustLanguagePlugin } from '../../../src/plugins/languages/rust.js';
-import { PluginRegistry } from '../../../src/plugins/registry.js';
-import { PythonLanguagePlugin } from '../../../src/plugins/languages/python.js';
-import { GoLanguagePlugin } from '../../../src/plugins/languages/go.js';
-import { TypeScriptLanguagePlugin } from '../../../src/plugins/languages/typescript.js';
+import { loadConfig } from '../../../src/config/index.js';
+import { NexusServerFactory } from '../../../src/server/factory.js';
+import type { Config } from '../../../src/types/index.js';
+import type { PluginRegistry } from '../../../src/plugins/registry.js';
 
-describe('PluginRegistry language routing', () => {
-  it('routes all supported extensions', () => {
-    const registry = new PluginRegistry();
-    registry.registerLanguage(new TypeScriptLanguagePlugin());
-    registry.registerLanguage(new PythonLanguagePlugin());
-    registry.registerLanguage(new GoLanguagePlugin());
-    registry.registerLanguage(new RustLanguagePlugin());
-    registry.registerLanguage(new JavaLanguagePlugin());
-    registry.registerLanguage(new CSharpLanguagePlugin());
-    registry.registerLanguage(new CLanguagePlugin());
-    registry.registerLanguage(new CppLanguagePlugin());
+interface FactoryInternals {
+  setupPluginRegistry(config: Config): PluginRegistry;
+}
 
-    expect(registry.getLanguagePlugin('src/a.rs')?.languageId).toBe('rust');
-    expect(registry.getLanguagePlugin('src/a.java')?.languageId).toBe('java');
-    expect(registry.getLanguagePlugin('src/a.cs')?.languageId).toBe('csharp');
-    expect(registry.getLanguagePlugin('src/a.c')?.languageId).toBe('c');
-    expect(registry.getLanguagePlugin('src/a.cpp')?.languageId).toBe('cpp');
-    expect(registry.getLanguagePlugin('src/a.h')?.languageId).toBe('cpp');
-    expect(registry.getLanguagePlugin('src/a.pyi')?.languageId).toBe('python');
-    expect(registry.getLanguagePlugin('src/a.txt')?.languageId).toBeUndefined();
+const internals = NexusServerFactory as unknown as FactoryInternals;
+
+describe('NexusServerFactory language registration', () => {
+  it('routes every supported extension through the factory-created registry', async () => {
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'nexus-factory-routing-'));
+    try {
+      const config = await loadConfig({
+        projectRoot,
+        env: {
+          NEXUS_EMBEDDING_PROVIDER: 'bedrock',
+          NEXUS_EMBEDDING_DIMENSIONS: '1024',
+          NEXUS_EMBEDDING_REGION: 'us-east-1',
+        },
+      });
+      const registry = internals.setupPluginRegistry(config);
+      const routes: ReadonlyArray<readonly [string, string]> = [
+        ['.pyi', 'python'],
+        ['.rs', 'rust'],
+        ['.java', 'java'],
+        ['.cs', 'csharp'],
+        ['.c', 'c'],
+        ['.h', 'cpp'],
+        ['.cc', 'cpp'],
+        ['.cpp', 'cpp'],
+        ['.cxx', 'cpp'],
+        ['.hh', 'cpp'],
+        ['.hpp', 'cpp'],
+        ['.hxx', 'cpp'],
+      ];
+      for (const [extension, languageId] of routes) {
+        expect(registry.getLanguagePlugin(`src/example${extension}`)?.languageId).toBe(languageId);
+      }
+      expect(registry.getLanguagePlugin('src/example.txt')).toBeUndefined();
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
   });
 });
 ```
 
-各言語プラグインの `supports` テストも新規作成（例: `tests/unit/plugins/languages/rust.test.ts`）。
+各言語pluginの`supports()`単体テストは新規ファイルで行うが、factory登録の
+証拠は上記の`tests/unit/server/factory.test.ts`だけで満たす。ルーティング
+テストで全pluginを手動登録する実装は禁止する。
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-npx vitest run tests/unit/plugins/registry.test.ts tests/unit/plugins/languages/rust.test.ts -v
+npx vitest run tests/unit/server/factory.test.ts tests/unit/plugins/languages/rust.test.ts -v
 ```
 
-Expected: FAIL（未登録・未定義）
+Expected: FAIL（factoryが新pluginを未登録、または新plugin moduleが未定義）
 
 - [ ] **Step 3: Modify factory registration**
 
-`src/server/factory.ts` の `setupPluginRegistry` を編集：
+`src/server/factory.ts` の `setupPluginRegistry` を編集する。既存の3つの
+`registerLanguage`呼び出しの直後に、以下の5つを追加する。
 
 ```typescript
 import { RustLanguagePlugin } from '../plugins/languages/rust.js';
@@ -1409,10 +2352,6 @@ import { CSharpLanguagePlugin } from '../plugins/languages/csharp.js';
 import { CLanguagePlugin } from '../plugins/languages/c.js';
 import { CppLanguagePlugin } from '../plugins/languages/cpp.js';
 
-// ... inside setupPluginRegistry:
-    registry.registerLanguage(new TypeScriptLanguagePlugin());
-    registry.registerLanguage(new PythonLanguagePlugin());
-    registry.registerLanguage(new GoLanguagePlugin());
     registry.registerLanguage(new RustLanguagePlugin());
     registry.registerLanguage(new JavaLanguagePlugin());
     registry.registerLanguage(new CSharpLanguagePlugin());
@@ -1423,7 +2362,7 @@ import { CppLanguagePlugin } from '../plugins/languages/cpp.js';
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-npx vitest run tests/unit/plugins/registry.test.ts tests/unit/plugins/languages/rust.test.ts tests/unit/plugins/languages/java.test.ts tests/unit/plugins/languages/csharp.test.ts tests/unit/plugins/languages/c.test.ts tests/unit/plugins/languages/cpp.test.ts -v
+npx vitest run tests/unit/server/factory.test.ts tests/unit/plugins/languages/rust.test.ts tests/unit/plugins/languages/java.test.ts tests/unit/plugins/languages/csharp.test.ts tests/unit/plugins/languages/c.test.ts tests/unit/plugins/languages/cpp.test.ts -v
 npx tsc --noEmit
 ```
 
@@ -1432,7 +2371,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/server/factory.ts tests/unit/plugins/registry.test.ts tests/unit/plugins/languages/rust.test.ts tests/unit/plugins/languages/java.test.ts tests/unit/plugins/languages/csharp.test.ts tests/unit/plugins/languages/c.test.ts tests/unit/plugins/languages/cpp.test.ts
+git add src/server/factory.ts tests/unit/server/factory.test.ts tests/unit/plugins/languages/rust.test.ts tests/unit/plugins/languages/java.test.ts tests/unit/plugins/languages/csharp.test.ts tests/unit/plugins/languages/c.test.ts tests/unit/plugins/languages/cpp.test.ts
 git commit -m "feat(plugins): register new language plugins and add routing tests"
 ```
 
@@ -1443,6 +2382,7 @@ git commit -m "feat(plugins): register new language plugins and add routing test
 **Files:**
 - Modify: `src/indexer/pipeline.ts:465-467`
 - Test: `tests/unit/indexer/pipeline-structured-imports.test.ts`
+- Extend: `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
 
 **Interfaces:**
 - Consumes: `readStructuredFile` からの `StructuredParseResult`
@@ -1450,53 +2390,131 @@ git commit -m "feat(plugins): register new language plugins and add routing test
 
 - [ ] **Step 1: Write failing test**
 
-`tests/unit/indexer/pipeline-structured-imports.test.ts`:
+`tests/unit/indexer/pipeline-structured-imports.test.ts` must exercise the
+public pipeline event/rebuild paths. The test may use the existing
+`createStructuredCoordinatorFixture` and `TestEmbeddingProvider` helpers, but
+must not add a new storage or pipeline test framework.
 
 ```typescript
 import { describe, expect, it } from 'vitest';
 import { IndexPipeline } from '../../../src/indexer/pipeline.js';
-import { PluginRegistry } from '../../../src/plugins/registry.js';
 import { CppLanguagePlugin } from '../../../src/plugins/languages/cpp.js';
-import { InMemoryMetadataStore } from '../storage/in-memory-metadata-store.js';
-import { InMemoryVectorStore } from '../storage/in-memory-vector-store.js';
 import { TestEmbeddingProvider } from '../plugins/embeddings/test-embedding-provider.js';
 import { Chunker } from '../../../src/indexer/chunker.js';
+import { sha256Hex } from '../../../src/structured/hash.js';
+import { createStructuredCoordinatorFixture } from '../../shared/structured-test-helpers.js';
+
+const eventFor = (type: 'added' | 'modified', filePath: string, content: string) => ({
+  type,
+  filePath,
+  contentHash: sha256Hex(new TextEncoder().encode(content)),
+  detectedAt: new Date().toISOString(),
+} as const);
+
+const createCppPipeline = async () => {
+  const fixture = await createStructuredCoordinatorFixture({ bootstrapStructuredSchema: true });
+  fixture.pluginRegistry.registerLanguage(new CppLanguagePlugin());
+  const pipeline = new IndexPipeline({
+    metadataStore: fixture.metadataStore,
+    vectorStore: fixture.vectorStore,
+    chunker: new Chunker(fixture.pluginRegistry),
+    embeddingProvider: new TestEmbeddingProvider(),
+    pluginRegistry: fixture.pluginRegistry,
+    structuredIndexCoordinator: fixture.coordinator,
+  });
+  return { ...fixture, pipeline };
+};
+
+const importFor = (content: string) => ({
+  id: 'import_v1_test_stdio',
+  moduleSpecifier: 'stdio.h',
+  startByte: 0,
+  endByte: Buffer.byteLength(content, 'utf8'),
+  sourceHash: sha256Hex(new TextEncoder().encode(content)),
+  completeness: 'complete' as const,
+  position: { startLine: 1, startColumn: 0, endLine: 1, endColumn: content.length },
+});
 
 describe('IndexPipeline structured import-only handling', () => {
-  it('keeps an ok import-only file as structured work', async () => {
-    const metadataStore = new InMemoryMetadataStore();
-    const vectorStore = new InMemoryVectorStore({ dimensions: 3 });
-    await metadataStore.initialize();
-    await vectorStore.initialize();
+  it('persists an ok import-only file through incremental processing', async () => {
+    const { metadataStore, pipeline } = await createCppPipeline();
+    const content = '#include <stdio.h>\n';
+    await pipeline.processEvents([eventFor('added', 'header.h', content)], async () => content);
 
-    const pluginRegistry = new PluginRegistry();
-    pluginRegistry.registerLanguage(new CppLanguagePlugin());
-    pluginRegistry.registerEmbeddingProvider('test', new TestEmbeddingProvider({ dimensions: 3 }));
-    pluginRegistry.setActiveEmbeddingProvider('test');
+    await expect(metadataStore.resolveFile('header.h')).resolves.toMatchObject({ kind: 'active' });
+    expect(metadataStore.getActiveImportsForFile('header.h')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ moduleSpecifier: 'stdio.h', completeness: 'complete' })]),
+    );
+  });
 
-    const pipeline = new IndexPipeline({
-      metadataStore,
-      vectorStore,
-      chunker: new Chunker(pluginRegistry),
-      embeddingProvider: pluginRegistry.getEmbeddingProvider()!,
-      pluginRegistry,
+  it('routes degraded import-only incremental updates to DLQ without replacing active state', async () => {
+    const { metadataStore, vectorStore, pipeline, pluginRegistry } = await createCppPipeline();
+    const filePath = 'header.h';
+    const initial = '#include <stdio.h>\n';
+    const broken = '#include <stdio.h>\n// degraded\n';
+    await pipeline.processEvents([eventFor('added', filePath, initial)], async () => initial);
+    const activeBefore = await metadataStore.resolveFile(filePath);
+    const vectorsBefore = await vectorStore.search(new Array(64).fill(0), 100, { filePathPrefix: filePath });
+    const plugin = pluginRegistry.getLanguagePlugin(filePath);
+    if (plugin?.createStructuredParser === undefined) throw new Error('C++ structured parser is unavailable');
+    plugin.createStructuredParser = async () => ({
+      parseStructured: async () => ({
+        status: 'degraded',
+        retrievability: 'partial',
+        declarations: [],
+        imports: [importFor(broken)],
+        failure: { reasonCode: 'parse_error', message: 'degraded import-only fixture' },
+      }),
     });
 
-    const content = '#include <stdio.h>\n';
-    const bytes = Buffer.from(content, 'utf8');
-    const result = await (pipeline as any).readStructuredFile(
-      'header.h',
-      'cpp',
-      content,
-      bytes,
-    );
+    await pipeline.processEvents([eventFor('modified', filePath, broken)], async () => broken);
+    await expect(metadataStore.getDeadLetterEntries()).resolves.toHaveLength(1);
+    await expect(metadataStore.resolveFile(filePath)).resolves.toEqual(activeBefore);
+    const vectorsAfter = await vectorStore.search(new Array(64).fill(0), 100, { filePathPrefix: filePath });
+    expect(vectorsAfter.map((result) => result.chunk.id)).toEqual(vectorsBefore.map((result) => result.chunk.id));
+  });
 
-    expect(result?.kind).toBe('work');
-    expect(result?.work?.imports.length).toBeGreaterThan(0);
-    expect(result?.work?.declarations.length).toBe(0);
+  it('aborts a degraded import-only full rebuild and preserves active state', async () => {
+    const { metadataStore, vectorStore, pipeline, pluginRegistry } = await createCppPipeline();
+    const filePath = 'header.h';
+    const initial = '#include <stdio.h>\n';
+    const broken = '#include <stdio.h>\n// degraded rebuild\n';
+    await pipeline.processEvents([eventFor('added', filePath, initial)], async () => initial);
+    const activeBefore = await metadataStore.resolveFile(filePath);
+    const vectorsBefore = await vectorStore.search(new Array(64).fill(0), 100, { filePathPrefix: filePath });
+    const plugin = pluginRegistry.getLanguagePlugin(filePath);
+    if (plugin?.createStructuredParser === undefined) throw new Error('C++ structured parser is unavailable');
+    plugin.createStructuredParser = async () => ({
+      parseStructured: async () => ({
+        status: 'degraded',
+        retrievability: 'partial',
+        declarations: [],
+        imports: [importFor(broken)],
+        failure: { reasonCode: 'parse_error', message: 'degraded import-only rebuild fixture' },
+      }),
+    });
+
+    await expect(pipeline.reindex(
+      async () => [eventFor('modified', filePath, broken)],
+      async () => broken,
+      true,
+    )).rejects.toThrow(/Structured full rebuild aborted/);
+    await expect(metadataStore.resolveFile(filePath)).resolves.toEqual(activeBefore);
+    const vectorsAfter = await vectorStore.search(new Array(64).fill(0), 100, { filePathPrefix: filePath });
+    expect(vectorsAfter.map((result) => result.chunk.id)).toEqual(vectorsBefore.map((result) => result.chunk.id));
   });
 });
 ```
+
+The degraded parser fixture must keep a non-empty import list even though the
+pipeline treats `declarations.length === 0` as `parse-failed`. The assertions
+must cover the DLQ entry, unchanged active generation, and unchanged normal
+vector rows rather than only the private return kind.
+
+The existing `tests/unit/indexer/pipeline-structured-lifecycle.test.ts` is the
+fourth regression case. Keep its incremental failure/recovery and full-rebuild
+abort coverage, and explicitly retain the active generation and old vector row
+after a structured failure. Do not introduce a new mock storage framework.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1504,7 +2522,7 @@ describe('IndexPipeline structured import-only handling', () => {
 npx vitest run tests/unit/indexer/pipeline-structured-imports.test.ts -v
 ```
 
-Expected: FAIL（`retire` になる）
+Expected: FAIL（現行条件ではimport-only結果が`retire`になり、統合assertionも満たされない）
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1528,6 +2546,7 @@ Expected: FAIL（`retire` になる）
 
 ```bash
 npx vitest run tests/unit/indexer/pipeline-structured-imports.test.ts -v
+npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -v
 npx tsc --noEmit
 ```
 
@@ -1536,100 +2555,22 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/indexer/pipeline.ts tests/unit/indexer/pipeline-structured-imports.test.ts
+git add src/indexer/pipeline.ts tests/unit/indexer/pipeline-structured-imports.test.ts tests/unit/indexer/pipeline-structured-lifecycle.test.ts
 git commit -m "fix(pipeline): keep ok import-only structured files as work"
 ```
 
 ---
 
-## Task 10: パイプラインファイル取得テスト
+## Task 10: 言語ルーティング確認（Task 8に統合）
 
-**Files:**
-- Modify: `src/indexer/pipeline.ts`（`detectLanguage` ルーティングを確認するだけ）
-- Test: `tests/unit/indexer/pipeline-language-routing.test.ts`
+独立したpipeline routing testは作成しない。`IndexPipeline.detectLanguage()`
+は既存の`PluginRegistry.getLanguagePlugin(filePath)?.languageId`委譲であり、
+拡張子とfactory登録の責務はTask 8のproduction factory-created registry testで
+同時に検証する。Task 8のroute tableには`.pyi`、`.rs`、`.java`、`.cs`、`.c`、
+`.h`、`.cc`、`.cpp`、`.cxx`、`.hh`、`.hpp`、`.hxx`と未知の`.txt`を含める。
 
-**Interfaces:**
-- Consumes: 登録済み `PluginRegistry`
-- Produces: 各拡張子が正しい `languageId` を返す
-
-- [ ] **Step 1: Write failing test**
-
-`tests/unit/indexer/pipeline-language-routing.test.ts`:
-
-```typescript
-import { describe, expect, it } from 'vitest';
-import { IndexPipeline } from '../../../src/indexer/pipeline.js';
-import { PluginRegistry } from '../../../src/plugins/registry.js';
-import { TypeScriptLanguagePlugin } from '../../../src/plugins/languages/typescript.js';
-import { PythonLanguagePlugin } from '../../../src/plugins/languages/python.js';
-import { GoLanguagePlugin } from '../../../src/plugins/languages/go.js';
-import { RustLanguagePlugin } from '../../../src/plugins/languages/rust.js';
-import { JavaLanguagePlugin } from '../../../src/plugins/languages/java.js';
-import { CSharpLanguagePlugin } from '../../../src/plugins/languages/csharp.js';
-import { CLanguagePlugin } from '../../../src/plugins/languages/c.js';
-import { CppLanguagePlugin } from '../../../src/plugins/languages/cpp.js';
-
-describe('IndexPipeline language detection', () => {
-  const makePipeline = () => {
-    const registry = new PluginRegistry();
-    registry.registerLanguage(new TypeScriptLanguagePlugin());
-    registry.registerLanguage(new PythonLanguagePlugin());
-    registry.registerLanguage(new GoLanguagePlugin());
-    registry.registerLanguage(new RustLanguagePlugin());
-    registry.registerLanguage(new JavaLanguagePlugin());
-    registry.registerLanguage(new CSharpLanguagePlugin());
-    registry.registerLanguage(new CLanguagePlugin());
-    registry.registerLanguage(new CppLanguagePlugin());
-    return new IndexPipeline({
-      metadataStore: {} as any,
-      vectorStore: {} as any,
-      chunker: {} as any,
-      embeddingProvider: {} as any,
-      pluginRegistry: registry,
-    });
-  };
-
-  it('detects new language ids', () => {
-    const pipeline = makePipeline();
-    expect((pipeline as any).detectLanguage('src/main.rs')).toBe('rust');
-    expect((pipeline as any).detectLanguage('src/Main.java')).toBe('java');
-    expect((pipeline as any).detectLanguage('src/Main.cs')).toBe('csharp');
-    expect((pipeline as any).detectLanguage('src/main.c')).toBe('c');
-    expect((pipeline as any).detectLanguage('src/main.cpp')).toBe('cpp');
-    expect((pipeline as any).detectLanguage('src/main.h')).toBe('cpp');
-    expect((pipeline as any).detectLanguage('src/main.pyi')).toBe('python');
-    expect((pipeline as any).detectLanguage('readme.txt')).toBe('text');
-  });
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-```bash
-npx vitest run tests/unit/indexer/pipeline-language-routing.test.ts -v
-```
-
-Expected: FAIL（`.pyi` や新拡張子が `text` になる）
-
-- [ ] **Step 3: Verify and adjust detectLanguage**
-
-`src/indexer/pipeline.ts` の `detectLanguage` メソッドは既存で `plugin.languageId` を返す実装のはず。Task 1 と Task 8 で `.pyi` 拡張子追加と新プラグイン登録が済んでいれば、このテストは追加変更なしで通る。もし `detectLanguage` が `.endsWith('.py')` のようなハードコードを含む場合のみ修正する。
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-```bash
-npx vitest run tests/unit/indexer/pipeline-language-routing.test.ts -v
-npx tsc --noEmit
-```
-
-Expected: PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add tests/unit/indexer/pipeline-language-routing.test.ts
-git commit -m "test(pipeline): verify language detection for new extensions"
-```
+このTaskにはproduction変更、個別fixture、failing test、RED期待、commitを
+追加しない。`detectLanguage`へ拡張子のhard-codeを追加してはならない。
 
 ---
 
@@ -1654,7 +2595,7 @@ import { readFile } from 'node:fs/promises';
 describe('structured-index documentation', () => {
   it('lists all new supported extensions', async () => {
     const content = await readFile('docs/structured-index.md', 'utf8');
-    for (const ext of ['.rs', '.java', '.cs', '.c', '.cpp', '.cxx', '.hpp', '.h', '.pyi']) {
+    for (const ext of ['.rs', '.java', '.cs', '.c', '.h', '.cc', '.cpp', '.cxx', '.hh', '.hpp', '.hxx', '.pyi']) {
       expect(content).toContain(ext);
     }
     expect(content).toContain('C++');
@@ -1740,7 +2681,16 @@ git commit -m "docs: document new structured languages, extensions, and backfill
 - Consumes: 実装済み全コンポーネント
 - Produces: グリーンパイプライン
 
-- [ ] **Step 1: Run full test suite**
+- [ ] **Step 1: Validate the clean dependency install**
+
+```bash
+npm ci
+```
+
+Expected: PASS; `package-lock.json` satisfies `package.json` without modifying
+the lockfile.
+
+- [ ] **Step 2: Run full test suite**
 
 ```bash
 npm run test
@@ -1748,7 +2698,7 @@ npm run test
 
 Expected: PASS（全テスト）
 
-- [ ] **Step 2: Run lint and type check**
+- [ ] **Step 3: Run lint and type check**
 
 ```bash
 npm run lint
@@ -1757,7 +2707,7 @@ npx tsc --noEmit
 
 Expected: PASS / no errors
 
-- [ ] **Step 3: Run build**
+- [ ] **Step 4: Run build**
 
 ```bash
 npm run build
@@ -1765,7 +2715,7 @@ npm run build
 
 Expected: PASS
 
-- [ ] **Step 4: Run license check**
+- [ ] **Step 5: Run license check**
 
 ```bash
 npm run license:check
@@ -1773,10 +2723,14 @@ npm run license:check
 
 Expected: PASS
 
-- [ ] **Step 5: Commit any final fixes**
+完了条件は次の6コマンドすべてが終了コード0で完了すること：
+`npm ci`、`npm run test`、`npm run lint`、`npx tsc --noEmit`、
+`npm run build`、`npm run license:check`。
+
+- [ ] **Step 6: Commit any final fixes**
 
 ```bash
-git add -A
+git add package.json package-lock.json src/types/index.ts src/plugins/languages src/server/factory.ts src/indexer/pipeline.ts docs/mcp-tools.md docs/structured-index.md tests/unit tests/fixtures
 git commit -m "chore: address integration test findings"
 ```
 
@@ -1790,28 +2744,72 @@ git commit -m "chore: address integration test findings"
 | --- | --- |
 | §1 Parser framework: Tree-sitter | Task 1, 2, 3, 4, 5, 6（依存関係追加 + 各言語パーサ） |
 | §2 Language plugin registration | Task 8（factory.ts 登録） |
-| §3 Extension routing | Task 1（.pyi）、Task 2-6（各拡張子）、Task 10（detectLanguage 確認） |
+| §3 Extension routing | Task 1（.pyi）、Task 2-6（各拡張子）、Task 8（factory-created registry） |
 | §4 SymbolKind extension | Task 1（src/types/index.ts） |
 | §5 Language-specific declaration mapping | Task 2-6（各言語の declarations モジュール） |
-| §6 Container and parent-child handling | Task 2-6（ownerName / parentSymbolId リンク） |
+| §6 Container and parent-child handling | Task 2-6（declarationKey / ownerKey / parentSymbolId リンク） |
 | §7 Stable symbol identity | Task 2-6（createSymbolId 使用、occurrence カウント） |
 | §8 Import / include / use / using | Task 2-6（各言語 imports モジュール） |
 | §9 Partial parse and fallback | Task 2-6（hasSyntaxProblem スキップ）、Task 9（import-only 修正） |
-| §10 Incremental integration | Task 11（バックフィル手順ドキュメント） |
-| テスト戦略 | Task 2-7, 9-12 |
+| §10 Incremental integration | Task 9（incremental/full-rebuild lifecycle）、Task 11（バックフィル手順ドキュメント） |
+| テスト戦略 | Task 2-9, 11-12（Task 10はTask 8へ統合） |
 | Acceptance Criteria | Task 1-12 |
 
 ### 2. Placeholder scan
 
-計画内に以下の禁止パターンは出現しないことを確認済み：TBD, TODO, implement later, fill in details, "Add appropriate error handling", "Write tests for the above", "Similar to Task N" など。各 Task の Step 4 で fixture を実際に parse し、tree-sitter grammar node 名を確認すること。
+計画内に曖昧なTODOや未定義のproduction implementation委譲を残さない。
+Task 3〜6は5つのproduction fileごとにdescriptor型、
+recursive traversal、owner key、import mapping、parse result、plugin fallbackを
+明記し、Step 4で指定fixtureをparseしてnode typeを確認する。
 
 ### 3. Type consistency
 
 - `SymbolKind` 追加値は Task 1 で一括定義。各言語パーサはそれらの値のみを返す。
 - `qualifiedName` は全言語で `.` セパレタ（Rust も `module.Trait`, `Type.method`）。
+- Rust `impl` methodは`outer.Point.new`であり、`outer.Point.impl.new`ではない。
+- `declarationKey`/`ownerKey`はfile-local node identityで解決し、bare nameをowner lookupに使わない。
 - `LanguagePlugin.languageId` は設計書 §3 と一致: `rust`, `java`, `csharp`, `c`, `cpp`。
 - `fileExtensions` は設計書 §3 と一致。
-- `import` レコードの `completeness` は wildcard / unresolved を `partial`、C/C++ / C# / Java wildcard は `bindingName: undefined`。
+- `import` レコードの `completeness` はdirect binding/concrete includeを`complete`、wildcard/static/unresolved/syntax-diagnosticを`partial`とする。Rust direct `use`は`bindingName`を抽出する。
+
+### 4. Bidirectional traceability
+
+| Design requirement | Plan evidence |
+| --- | --- |
+| grammar dependencies 5件 | Task 1 package/lockfile + Task 12 `npm ci` |
+| `.pyi` routing/reuse | Task 1 + Task 7 |
+| Rust §5 declarations | Task 2 fixture/assertions/selector |
+| Java §5 declarations | Task 3 fixture/assertions/selector |
+| C# §5 declarations | Task 4 fixture/assertions/selector |
+| C §5 declarations | Task 5 fixture/assertions/selector |
+| C++ §5 declarations | Task 6 fixture/assertions/selector |
+| canonical `qualifiedName` | Design §6 + Task 2-6 descriptor code/assertions |
+| `parentSymbolId` | Task 2-6 `declarationKey`/`ownerKey` materialization |
+| stable identity | Task 2-6 `createSymbolId`/signature/occurrence |
+| StructuredImport mapping/completeness | Design §8 + Task 2-7 import assertions |
+| factory registration/routing | Task 8 `FactoryInternals` registry test |
+| ok import-only persistence | Task 9 incremental `processEvents` test |
+| degraded incremental DLQ | Task 9 degraded incremental test + lifecycle regression |
+| degraded full rebuild abort | Task 9 degraded rebuild test + lifecycle regression |
+| active generation preservation | Task 9 state assertions + existing lifecycle test |
+| normal vectors unchanged on failure | Task 9 vector row assertions |
+| backfill and complete documentation | Task 11 |
+| `npm ci` plus five remaining quality gates | Task 12 Steps 1-5 |
+
+| Implementation task | Requirements it must leave proven |
+| --- | --- |
+| Task 1 | grammar versions, additive `SymbolKind`, `.pyi` routing |
+| Task 2 | Rust declarations, recursive ownership, direct/wildcard `use`, fallback |
+| Task 3 | Java declarations, package ownership, direct/wildcard imports, fallback |
+| Task 4 | C# declarations, block/file-scoped namespace, properties, using completeness, fallback |
+| Task 5 | C functions/structs/enums, include records, C grammar load/fallback |
+| Task 6 | C++ namespaces/types/free functions, member declarations/definitions, includes, all extensions |
+| Task 7 | existing Python `.pyi` parser behavior |
+| Task 8 | factory-created production registry and extension routing |
+| Task 9 | catalog persistence and fail-closed incremental/full-rebuild lifecycle |
+| Task 10 | no independent implementation; routing remains owned by Task 8 |
+| Task 11 | supported-extension and backfill documentation |
+| Task 12 | clean install, tests, lint/typecheck, build, license gate |
 
 ---
 
