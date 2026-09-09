@@ -35,6 +35,7 @@
 | ファイル | 責務 |
 | --- | --- |
 | `package.json` / `package-lock.json` | 5 つの新 tree-sitter grammar dependency を追加 |
+| `src/storage/interfaces/vector-store.ts` / `src/storage/vector-store.ts` | full rebuild 用 legacy vector shadow table の staging、swap、abort |
 | `src/types/index.ts` | `SymbolKind` に `struct`, `trait`, `impl`, `record`, `field` を追加 |
 | `src/plugins/languages/python.ts` | `.pyi` を `fileExtensions` に追加 |
 | `src/server/factory.ts` | 新しい 5 言語プラグインを `setupPluginRegistry` に登録 |
@@ -64,6 +65,7 @@
 | `tests/unit/structured/c-parser.test.ts` | C 構造化パーサの単体テスト |
 | `tests/unit/structured/cpp-parser.test.ts` | C++ 構造化パーサの単体テスト |
 | `tests/unit/structured/python-pyi-parser.test.ts` | `.pyi` 構造化パーサの単体テスト |
+| `tests/integration/structured/native-load.test.ts` | Node.js >=24 の全 native grammar lazy-load と pipeline 経路の検証 |
 | `tests/unit/server/factory.test.ts` | factory-created registryによる新拡張子のルーティングテスト |
 | `tests/unit/indexer/pipeline-structured-imports.test.ts` | import-only ファイル・degraded import-only ファイルのパイプライン挙動テスト |
 | `tests/fixtures/structured/rust/exactness.rs` | Rust 正常 fixture |
@@ -142,7 +144,7 @@ Expected: FAIL（`.pyi` unsupported または `SymbolKind` 型エラー）
 `package.json` の `dependencies` に追加：
 
 ```json
-    "tree-sitter-c": "0.23.6",
+    "tree-sitter-c": "0.24.1",
     "tree-sitter-cpp": "0.23.4",
     "tree-sitter-c-sharp": "0.23.5",
     "tree-sitter-java": "0.23.5",
@@ -150,6 +152,11 @@ Expected: FAIL（`.pyi` unsupported または `SymbolKind` 型エラー）
 ```
 
 既存 `tree-sitter-python` / `tree-sitter-go` の近くに配置。
+これは既存 grammar の更新ではなく、5 packages の追加である。`tree-sitter-c`
+は本計画全体で `0.24.1` に統一する。各 grammar の公開 peer range が
+`tree-sitter@0.25.1` より古い場合があるため、peer range だけを理由に root
+runtime を下げたり、別の grammar version を選んだりしてはならない。実際の
+Node.js >=24 native load を完了条件とする。
 
 `src/types/index.ts` を編集：
 
@@ -189,6 +196,12 @@ export type SymbolKind =
 ```bash
 npm install
 ```
+
+`package-lock.json` の root dependency と各 `node_modules/tree-sitter-*` エントリに
+5 packages が記録されていることを確認する。lockfile は npm の出力を採用し、
+手編集しない。npm が optional peer の扱いについて追加オプションを要求する場合は、
+同じ install 条件を `npm ci` でも再現できるように、その条件をリポジトリの実行手順
+として明記する。
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -2511,7 +2524,7 @@ const generationFor = (
   generationId: sha256Hex(source.bytes),
   schemaVersion: 1,
   parserId: 'c',
-  parserVersion: '0.23.6',
+  parserVersion: '0.24.1',
   fileHash: sha256Hex(source.bytes),
   fileCompleteness: diagnostics.length === 0 ? 'complete' : 'partial',
   fileDiagnostics: diagnostics,
@@ -2605,7 +2618,7 @@ export class CStructuredParser implements StructuredLanguageParser {
 }
 ```
 
-`generationFor` uses `parserId: 'c'`, grammar version `0.23.6`, and the source
+`generationFor` uses `parserId: 'c'`, grammar version `0.24.1`, and the source
 hash. Missing source bytes return a degraded invariant result; invalid UTF-8
 returns a failed result. An import-only header with `status: 'ok'` and no
 declarations remains valid work; the pipeline, not this parser, decides
@@ -3589,16 +3602,89 @@ git commit -m "feat(plugins): register new language plugins and add routing test
 
 ---
 
-## Task 9: Pipeline の import-only ファイル修正
+## Task 9: Pipeline の import-only と full-rebuild atomicity
 
 **Files:**
-- Modify: `src/indexer/pipeline.ts:465-467`
+- Modify: `src/indexer/pipeline.ts:341-346, 686-765, 775-876`
+- Modify: `src/indexer/structured-index-coordinator.ts:151-267`
+- Modify: `src/storage/interfaces/vector-store.ts`
+- Modify: `src/storage/vector-store.ts`
 - Test: `tests/unit/indexer/pipeline-structured-imports.test.ts`
 - Extend: `tests/unit/indexer/pipeline-structured-lifecycle.test.ts`
 
 **Interfaces:**
 - Consumes: `readStructuredFile` からの `StructuredParseResult`
 - Produces: `status === 'ok' && declarations.length === 0 && imports.length > 0` の場合 `kind: 'work'` を返す
+
+### Full-rebuild atomicity contract
+
+Full rebuild は structured catalog だけでなく、通常 vector index と Merkle
+state を含む一つの prepare/commit 単位として扱う。次の回帰ケースを
+`tests/unit/indexer/pipeline-structured-lifecycle.test.ts` に追加する。
+
+- 既存の active structured generation と通常 vector rows を複数ファイル分
+  seed し、通常 vector rows、store counters、対象 Merkle nodes、active
+  generation map を snapshot する。
+- `embedBatchWindowSize: 1`（または同等の逐次化）で、同じ
+  `reindex(..., true)` 呼び出しに成功する upsert と削除を含め、最後の
+  pending window で structured parse failure が発生するようにする。失敗 parser
+  以外は実際の plugin と metadata/vector store を使用する。
+- `reindex()` が structured full-rebuild abort error を返し、
+  `runFullRebuild()` の commit が呼ばれないことを確認する。
+- 成功 upsert の対象、削除対象、失敗対象の通常 vector rows と store
+  counters が snapshot と一致し、Merkle state と active structured
+  generation map も一致することを確認する。失敗診断の `lastError` は更新を
+  許容するが、index data の部分更新は許容しない。
+
+このテストは単一の失敗ファイルを別 run で処理するだけでは不十分であり、
+成功した書き込み・削除の後に同一 full rebuild が中止される順序を実際に
+検証する。
+
+### Full-rebuild implementation steps
+
+- [ ] **Step A: Add legacy vector shadow operations**
+
+`IVectorStore` と `LanceVectorStore` に、現行 legacy table を基にした
+`LegacyShadowTable` の開始、通常 chunks の upsert staging、ファイルおよび
+path prefix の削除 staging、atomic swap、abort を追加する。shadow は rebuild
+入力に含まれない既存 rows を保持し、swap と abort の両方で row counts と
+store counters を整合させる。既存の structured shadow API と混同しない名前を
+使用する。
+
+- [ ] **Step B: Stage pipeline writes until parse validation**
+
+`processEvents()` の full-rebuild path では、`upsertChunks()`、
+`deleteByFilePath()`、`deleteByPathPrefix()`、empty-file removal を active
+legacy table へ直接呼び出さず、legacy shadow に向ける。Merkle 更新も commit
+まで遅延または同じ transaction handle に staging する。
+
+全 window の構造化解析後に parse failure が一つでもあれば、legacy shadow と
+Merkle staging を破棄してから abort error を投げ、`runFullRebuild()` を呼ば
+ない。これにより、成功ファイルが先に処理されても active index は変更され
+ない。
+
+- [ ] **Step C: Coordinate the commit boundary**
+
+`runFullRebuild()` は成功時に legacy shadow と既存の structured shadow を
+同じ full-rebuild commit protocol の中で確定し、失敗時は未確定の shadow を
+破棄する。少なくとも parse-abort path では、どちらの active table も parse
+validation 前に swap してはならない。
+
+`reindex()` は commit 完了後にだけ completion、compaction、`lastIndexedAt`
+更新へ進む。abort path では既存の failure diagnostics を保存するが、成功
+completion は記録しない。
+
+- [ ] **Step D: Run the focused regression**
+
+```bash
+npx vitest run tests/unit/indexer/pipeline-structured-lifecycle.test.ts -v
+```
+
+Expected: PASS。特に、成功 upsert と削除の後に structured parse failure が
+発生した場合も、通常 vector rows、counters、Merkle state、active generation
+が変化しないこと。
+
+### Import-only implementation steps
 
 - [ ] **Step 1: Write failing test**
 
@@ -3898,6 +3984,33 @@ git commit -m "docs: document new structured languages, extensions, and backfill
 - Consumes: 実装済み全コンポーネント
 - Produces: グリーンパイプライン
 
+### Node.js 24 native-load verification
+
+以下は Task 2〜6、Task 8、Task 9 の実装後に実行する専用 smoke test とする。
+対象ファイルは `tests/integration/structured/native-load.test.ts` とし、grammar
+module の mock は使用しない。
+
+- [ ] **Step 0: Verify every native grammar and the public pipeline path**
+
+  - `Number(process.versions.node.split('.')[0]) >= 24` を最初に検証し、Node.js
+    24 未満では明示的に失敗させる。
+  - Rust、Java、C#、C、C++ の実 plugin それぞれについて
+    `createStructuredParser()` を呼び出し、最小の valid source を
+    `parseStructured()` に渡す。結果が native load failure / `status: 'failed'`
+    にならないことを確認する。
+  - 実際の plugin registry と `IndexPipeline` を使い、各 grammar の代表ファイルを
+    `processEvents()` または `reindex()` で処理する。active structured generation
+    が保存されることを確認し、`readStructuredFile()` 経由の lazy-load と persistence
+    を検証する。parser 実装クラスを直接 instantiate するだけのテストにはしない。
+
+```bash
+node --version
+npx vitest run tests/integration/structured/native-load.test.ts -v
+```
+
+CI の `node-version: 24.x` をこの検証の基準とする。ローカル実行時も
+`node --version` の結果を記録し、Node.js 24 未満での成功を受け入れない。
+
 - [ ] **Step 1: Validate the clean dependency install**
 
 ```bash
@@ -3940,7 +4053,8 @@ npm run license:check
 
 Expected: PASS
 
-完了条件は次の6コマンドすべてが終了コード0で完了すること：
+完了条件は Task 12 Step 0 の Node.js >=24 native-load smoke test に加え、次の6コマンド
+すべてが終了コード0で完了すること：
 `npm ci`、`npm run test`、`npm run lint`、`npx tsc --noEmit`、
 `npm run build`、`npm run license:check`。
 
@@ -3967,7 +4081,7 @@ git commit -m "chore: address integration test findings"
 | §6 Container and parent-child handling | Task 2-6（Java logical file scope、C++ typeName、declarationKey / ownerKey / parentSymbolId） |
 | §7 Stable symbol identity | Task 2-6（createSymbolId 使用、occurrence カウント） |
 | §8 Import / include / use / using | Task 2-6（各言語 imports モジュール） |
-| §9 Partial parse and fallback | Task 2-6（hasSyntaxProblem スキップ）、Task 9（import-only 修正） |
+| §9 Partial parse and fallback | Task 2-6（hasSyntaxProblem スキップ）、Task 9（import-only 修正、full-rebuild atomicity） |
 | §10 Incremental integration | Task 9（incremental/full-rebuild lifecycle）、Task 11（バックフィル手順ドキュメント） |
 | テスト戦略 | Task 2-9, 11-12（Task 10はTask 8へ統合） |
 | Acceptance Criteria | Task 1-12 |
@@ -3993,6 +4107,9 @@ recursive traversal、owner key、import mapping、parse result、plugin fallbac
   引き続き対象外とする。
 - `LanguagePlugin.languageId` は設計書 §3 と一致: `rust`, `java`, `csharp`, `c`, `cpp`。
 - `fileExtensions` は設計書 §3 と一致。
+- `tree-sitter-c` は依存関係、C parser の `generationFor`、設計書の全記載で
+  `0.24.1` に統一する。各 grammar の peer range ではなく Node.js >=24 の
+  native-load test を互換性の判定根拠とする。
 - `import` レコードの `completeness` はdirect binding/concrete includeを`complete`、wildcard/static/unresolved/syntax-diagnosticを`partial`とする。Rust direct `use`は`bindingName`を抽出する。
 
 ### 4. Bidirectional traceability
@@ -4000,6 +4117,8 @@ recursive traversal、owner key、import mapping、parse result、plugin fallbac
 | Design requirement | Plan evidence |
 | --- | --- |
 | grammar dependencies 5件 | Task 1 package/lockfile + Task 12 `npm ci` |
+| Node.js >=24 native grammar load | Task 12 Step 0 の専用 smoke test |
+| `readStructuredFile()` lazy-load persistence | Task 9 public pipeline regression + Task 12 Step 0 |
 | `.pyi` routing/reuse | Task 1 + Task 7 |
 | Rust §5 declarations | Task 2 fixture/assertions/selector |
 | Java §5 declarations | Task 3 fixture/assertions/selector |
@@ -4024,9 +4143,9 @@ recursive traversal、owner key、import mapping、parse result、plugin fallbac
 | degraded incremental DLQ | Task 9 degraded incremental test + lifecycle regression |
 | degraded full rebuild abort | Task 9 degraded rebuild test + lifecycle regression |
 | active generation preservation | Task 9 state assertions + existing lifecycle test |
-| normal vectors unchanged on failure | Task 9 vector row assertions |
+| normal vectors unchanged on failure | Task 9 cross-file upsert/delete/parse-failure regression、vector rows/counters/Merkle assertions |
 | backfill and complete documentation | Task 11 |
-| all quality gates | Task 12 Steps 1-5 |
+| all quality gates | Task 12 Step 0 and Steps 1-5 |
 
 | Implementation task | Requirements it must leave proven |
 | --- | --- |
@@ -4041,7 +4160,7 @@ recursive traversal、owner key、import mapping、parse result、plugin fallbac
 | Task 9 | catalog persistence and fail-closed incremental/full-rebuild lifecycle |
 | Task 10 | no independent implementation; routing remains owned by Task 8 |
 | Task 11 | supported-extension and backfill documentation |
-| Task 12 | clean install, tests, lint/typecheck, build, license gate |
+| Task 12 | Node.js >=24 native-load, clean install, tests, lint/typecheck, build, license gate |
 
 ---
 

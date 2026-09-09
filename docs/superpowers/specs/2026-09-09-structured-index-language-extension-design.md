@@ -58,7 +58,7 @@ and Go. The following grammar packages are added as dependencies:
 - `tree-sitter-java@0.23.5`
 - `tree-sitter-c-sharp@0.23.5`
 - `tree-sitter-cpp@0.23.4`
-- `tree-sitter-c@0.23.6`
+- `tree-sitter-c@0.24.1`
 
 C and C++ use separate plugins. C uses `tree-sitter-c` and C++ uses
 `tree-sitter-cpp`. `.h` is treated as C++ explicitly per the requirements.
@@ -304,6 +304,18 @@ syntax-diagnostic imports are `partial`.
   legacy vector table is replaced and before the structured shadow table is
   activated. Any structured parse failure aborts the entire rebuild, preserving
   both the pre-rebuild legacy vectors and the active structured generation.
+  This is a transaction boundary for the whole rebuild, not only for the
+  structured catalog: ordinary legacy upserts, file/path-prefix deletions,
+  empty-file removals, and Merkle updates are staged and must not mutate the
+  active index before the parse-failure gate. On an abort, the staged legacy
+  data is discarded, `runFullRebuild()` is not committed, and the pre-rebuild
+  legacy vectors, Merkle state, and active structured generation remain
+  unchanged. `reindex()` may persist failure diagnostics, but must not record
+  successful completion or compact a failed rebuild.
+  The implementation plan selects a legacy shadow table with an atomic swap
+  for this boundary. A backend that cannot provide that primitive must provide
+  an equivalent rollback journal covering complete affected rows and store
+  counters; best-effort per-file undo is not sufficient.
   If future requirements demand that unparseable files be ignored during a
   full rebuild, `src/indexer/pipeline.ts` and its full-rebuild integration
   tests must be changed explicitly.
@@ -344,9 +356,16 @@ but successful index is not rebuilt solely because it is old (see `SPEC.md`
      packages retain older peer ranges, so native runtime compatibility with
      `tree-sitter@0.25.1` is established by the dedicated Node.js >=24 load test
      rather than by the peer range alone.
-2. `src/types/index.ts`
+2. `src/storage/interfaces/vector-store.ts` and `src/storage/vector-store.ts`
+   - Add a legacy full-rebuild staging handle with operations to stage normal
+     vector upserts and file/path-prefix deletions, atomically swap the staged
+     table, and abort it without changing the active legacy table.
+   - The staging operation must preserve existing vector rows for files not in
+     the rebuild input and must keep row counts and store counters consistent
+     across swap and abort.
+3. `src/types/index.ts`
    - Extend `SymbolKind` with `struct`, `trait`, `impl`, `record`, `field`.
-3. New language plugin modules under `src/plugins/languages/`:
+4. New language plugin modules under `src/plugins/languages/`:
    - `rust.ts`, `rust-structured.ts`, `rust-structured-declarations.ts`,
      `rust-structured-imports.ts`, `rust-structured-support.ts`
    - `java.ts`, `java-structured.ts`, `java-structured-declarations.ts`,
@@ -357,16 +376,24 @@ but successful index is not rebuilt solely because it is old (see `SPEC.md`
      `c-structured-imports.ts`, `c-structured-support.ts`
    - `cpp.ts`, `cpp-structured.ts`, `cpp-structured-declarations.ts`,
      `cpp-structured-imports.ts`, `cpp-structured-support.ts`
-4. `src/plugins/languages/python.ts`
+5. `src/plugins/languages/python.ts`
    - Add `.pyi` to `fileExtensions`.
    - The structured parser already handles Python syntax; no grammar change is
      needed.
-5. `src/server/factory.ts`
+6. `src/server/factory.ts`
    - Import and register the new language plugins in
      `NexusServerFactory.setupPluginRegistry`.
-6. `docs/mcp-tools.md`
+7. `docs/mcp-tools.md`
    - Update the `SymbolKind` list in the structured retrieval section.
-7. `src/indexer/pipeline.ts`
+8. `src/indexer/pipeline.ts` and `src/indexer/structured-index-coordinator.ts`
+   - In full-rebuild mode, route all ordinary vector writes and deletions to
+     the legacy shadow table and defer Merkle updates until the rebuild commit.
+   - Abort and discard the legacy shadow table when a later structured parse
+     failure is detected. Do not call `runFullRebuild()` or expose partial
+     legacy writes on this path.
+   - Coordinate the legacy shadow-table commit with the existing structured
+     shadow-table lifecycle, while retaining `reindex()` failure diagnostics
+     and suppressing completion/compaction for an aborted rebuild.
    - Update `readStructuredFile` so that a valid structured result with
      `status === 'ok'` and zero declarations but non-zero imports is kept as
      structured work instead of being retired.
@@ -417,6 +444,13 @@ but successful index is not rebuilt solely because it is old (see `SPEC.md`
    - Structured parse failure in an incremental update routes the file to the
      dead-letter queue.
    - Structured parse failure in a full rebuild aborts the rebuild.
+   - The full-rebuild abort test must process at least one successful upsert
+     and one deletion before a later structured parse failure in the same
+     `reindex()` call. It must compare the pre- and post-rebuild legacy vector
+     rows, store counters, Merkle state, and active structured generation, and
+     verify that all remain unchanged. The test must exercise the public
+     `processEvents()` / `reindex()` path with real metadata and vector stores;
+     a single failing file is not sufficient.
    - An `ok` import-only C/C++ fixture persists its `#include` records in the
      structured catalog.
    - A `degraded` result with zero declarations and non-zero imports is treated
@@ -427,6 +461,19 @@ but successful index is not rebuilt solely because it is old (see `SPEC.md`
      `StructuredIndexCoordinator` plus metadata/vector stores; a direct call to
      the private `readStructuredFile()` method is not sufficient evidence of
      persistence, activation, DLQ routing, rebuild abort, or vector preservation.
+6. Native-load and pipeline wiring test
+   - Add `tests/integration/structured/native-load.test.ts` and run it under
+     Node.js >=24. Without mocking the grammar modules, call
+     `createStructuredParser()` and parse a minimal valid source for every new
+     native grammar (`rust`, `java`, `csharp`, `c`, and `cpp`).
+   - In the same test or a directly linked integration case, use the public
+     `IndexPipeline.processEvents()` / `reindex()` path with the real plugin
+     registry and assert that `readStructuredFile()` persists an active
+     structured generation. This must cover the lazy-load path rather than only
+     constructing parser implementation classes directly.
+   - The test must fail when executed with Node.js <24 and the plan must list
+     `npx vitest run tests/integration/structured/native-load.test.ts` as its
+     focused command. CI already provides the Node.js 24.x execution target.
 
 ## Test Strategy
 
@@ -505,6 +552,12 @@ the implementation is considered complete.
 - [ ] Completely unparseable files do not corrupt the index pipeline. In an
       incremental update they are routed to the dead-letter queue; in a full
       rebuild they abort the rebuild.
+- [ ] A full-rebuild abort after earlier successful upserts or deletions leaves
+      the pre-rebuild legacy vectors, store counters, Merkle state, and active
+      structured generation unchanged; only failure diagnostics may change.
+- [ ] Every new native grammar loads and parses through its plugin's lazy
+      `createStructuredParser()` path under Node.js >=24, and at least one
+      public pipeline test proves the same behavior through `readStructuredFile()`.
 - [ ] After `nexus --reindex --full`, existing unchanged files with newly
       supported extensions appear in the structured catalog.
 - [ ] Rust declarations use the canonical `.` separator in `qualifiedName`
